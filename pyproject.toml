@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-local-proxy"
+version = "0.1.0"
+description = "A loopback OpenAI-compatible proxy for Codex ChatGPT sessions"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Timon Gentzsch" }]
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff>=0.16,<0.17"]
+
+[project.scripts]
+codex-local-proxy = "codex_local_proxy.server:main"
+
+[tool.setuptools.package-data]
+codex_local_proxy = ["static/*.html"]

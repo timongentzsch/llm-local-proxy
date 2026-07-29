@@ -1,0 +1,7 @@
+host = "127.0.0.1"
+port = 8787
+# Empty disables authentication.
+api_key = ""
+codex_home = "~/.codex"
+codex_binary = "codex"
+request_timeout = 600

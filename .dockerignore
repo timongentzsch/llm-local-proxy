@@ -1,0 +1,8 @@
+.DS_Store
+.git
+.venv
+.ruff_cache
+__pycache__
+*.py[cod]
+dist
+tests
