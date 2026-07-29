@@ -3,20 +3,25 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import queue
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, quote, urlparse
 
 from .app_server import AppServer, RpcError
 from .config import Config, load
 from .protocol import ReasoningCache, RequestError, Translator, build_request
 from .upstream import Upstream, UpstreamError
+
+SSE_HEARTBEAT_SECONDS = 15
+_DONE = object()
 
 
 def _api_path(path: str) -> str:
@@ -69,6 +74,40 @@ def _model_info(item: dict[str, Any]) -> dict[str, Any] | None:
         "supported_reasoning_efforts": efforts,
     }
     return value
+
+
+def _with_heartbeats(
+    events: Iterator[dict[str, Any]], interval: float = SSE_HEARTBEAT_SECONDS
+) -> Iterator[dict[str, Any] | None]:
+    items: queue.Queue[dict[str, Any] | Exception | object] = queue.Queue()
+    stopped = threading.Event()
+
+    def read() -> None:
+        try:
+            for event in events:
+                if stopped.is_set():
+                    break
+                items.put(event)
+        except Exception as error:  # noqa: BLE001 - cross the thread boundary
+            items.put(error)
+        finally:
+            items.put(_DONE)
+
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        while True:
+            try:
+                item = items.get(timeout=interval)
+            except queue.Empty:
+                yield None
+                continue
+            if item is _DONE:
+                return
+            if isinstance(item, Exception):
+                raise item
+            yield cast(dict[str, Any], item)
+    finally:
+        stopped.set()
 
 
 class Service:
@@ -222,7 +261,10 @@ def _handler(service: Service):
             self.close_connection = True
             self._sse(translator.start())
             try:
-                for event in events:
+                for event in _with_heartbeats(events):
+                    if event is None:
+                        self._sse_comment("keepalive")
+                        continue
                     for chunk in translator.feed(event):
                         self._sse(chunk)
                 for chunk in translator.finish():
@@ -243,6 +285,10 @@ def _handler(service: Service):
         def _sse(self, value: dict[str, Any]) -> None:
             data = json.dumps(value, separators=(",", ":")).encode()
             self.wfile.write(b"data: " + data + b"\n\n")
+            self.wfile.flush()
+
+        def _sse_comment(self, value: str) -> None:
+            self.wfile.write(f": {value}\n\n".encode())
             self.wfile.flush()
 
         def _body(self) -> dict[str, Any]:
