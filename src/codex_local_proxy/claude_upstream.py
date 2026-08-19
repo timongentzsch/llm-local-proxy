@@ -63,8 +63,7 @@ class ClaudeUpstream:
             if error.code == 401 and not refresh:
                 error.close()
                 return self._models(refresh=True)
-            body = error.read().decode("utf-8", "replace")
-            raise ClaudeUpstreamError(error.code, _error_message(body)) from error
+            raise _upstream_error(error) from error
         except urllib.error.URLError as error:
             raise ClaudeUpstreamError(502, str(error.reason)) from error
         try:
@@ -121,8 +120,7 @@ class ClaudeUpstream:
             if error.code == 401 and not refresh:
                 error.close()
                 return self._open(body, betas, refresh=True)
-            raw = error.read().decode("utf-8", "replace")
-            raise ClaudeUpstreamError(error.code, _error_message(raw)) from error
+            raise _upstream_error(error) from error
         except urllib.error.URLError as error:
             raise ClaudeUpstreamError(502, str(error.reason)) from error
 
@@ -173,6 +171,13 @@ def _normalize_model(item: Any) -> dict[str, Any] | None:
             elif _supported(types.get("enabled")):
                 value["thinking"] = "enabled"
     return value
+
+
+def _upstream_error(error: urllib.error.HTTPError) -> ClaudeUpstreamError:
+    message = _error_message(error.read().decode("utf-8", "replace"))
+    if error.code == 429 and message in {"", "Error"}:
+        message = "Claude usage limit reached; the subscription is rate limited"
+    return ClaudeUpstreamError(error.code, message)
 
 
 def _error_message(raw: str) -> str:
