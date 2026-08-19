@@ -16,6 +16,14 @@ from typing import Any, cast
 from urllib.parse import parse_qs, quote, urlparse
 
 from .app_server import AppServer, RpcError
+from .claude_auth import ClaudeAuth, ClaudeAuthError
+from .claude_protocol import (
+    CLAUDE_MODELS,
+    ClaudeTranslator,
+    build_messages_request,
+    claude_model_name,
+)
+from .claude_upstream import ClaudeUpstream, ClaudeUpstreamError
 from .config import Config, load
 from .protocol import ReasoningCache, RequestError, Translator, build_request
 from .upstream import Upstream, UpstreamError
@@ -76,6 +84,41 @@ def _model_info(item: dict[str, Any]) -> dict[str, Any] | None:
     return value
 
 
+def _claude_model_info(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item["id"],
+        "canonical_slug": item["id"],
+        "object": "model",
+        "created": int(item.get("created") or 0),
+        "owned_by": "anthropic",
+        "name": item["name"],
+        "architecture": {
+            "modality": "text+image->text",
+            "input_modalities": ["text", "image"],
+            "output_modalities": ["text"],
+        },
+        "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "reasoning_effort",
+            "web_search",
+            "temperature",
+            "top_p",
+        ],
+        "default_parameters": (
+            {"max_tokens": item["max_output_tokens"]}
+            if item.get("max_output_tokens")
+            else None
+        ),
+        "per_request_limits": None,
+        "is_default": False,
+        "supported_reasoning_efforts": item.get("reasoning_efforts")
+        or ["low", "medium", "high"],
+    }
+
+
 def _with_heartbeats(
     events: Iterator[dict[str, Any]], interval: float = SSE_HEARTBEAT_SECONDS
 ) -> Iterator[dict[str, Any] | None]:
@@ -115,25 +158,64 @@ class Service:
         self.config = config
         self.app = AppServer(config.codex_binary, config.codex_home)
         self.upstream = Upstream(self.app, config.request_timeout)
+        self.claude_auth = ClaudeAuth(config.path.parent / "claude-credentials.json")
+        self.claude = ClaudeUpstream(self.claude_auth, config.request_timeout)
         self.cache = ReasoningCache()
         self._models: tuple[float, dict[str, Any]] | None = None
+        self._claude_catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._models_lock = threading.Lock()
 
     def models(self) -> dict[str, Any]:
         with self._models_lock:
             if self._models and time.time() - self._models[0] < 60:
                 return self._models[1]
-            result = self.app.call("model/list", {"limit": 100, "includeHidden": False})
-            models = []
-            for item in result.get("data", []):
-                if not isinstance(item, dict):
-                    continue
-                model = _model_info(item)
-                if model:
-                    models.append(model)
-            value = {"object": "list", "data": models}
+        result = self.app.call("model/list", {"limit": 100, "includeHidden": False})
+        models = []
+        for item in result.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            model = _model_info(item)
+            if model:
+                models.append(model)
+        value = {
+            "object": "list",
+            "data": [*models, *self._claude_items()],
+        }
+        with self._models_lock:
             self._models = (time.time(), value)
-            return value
+        return value
+
+    def invalidate_models(self) -> None:
+        with self._models_lock:
+            self._models = None
+            self._claude_catalog = None
+
+    def _load_claude_catalog(self) -> list[dict[str, Any]]:
+        with self._models_lock:
+            if self._claude_catalog and time.time() - self._claude_catalog[0] < 60:
+                return self._claude_catalog[1]
+        try:
+            items = self.claude.models()
+        except ClaudeUpstreamError:
+            items = []
+        with self._models_lock:
+            self._claude_catalog = (time.time(), items)
+        return items
+
+    def _claude_items(self) -> list[dict[str, Any]]:
+        if self.claude_auth.signed_in():
+            live = self._load_claude_catalog()
+            if live:
+                return [_claude_model_info(item) for item in live]
+        return [_claude_model_info(item) for item in CLAUDE_MODELS]
+
+    def _claude_capability(self, model: str, key: str) -> Any:
+        if not self.claude_auth.signed_in():
+            return None
+        for item in self._load_claude_catalog():
+            if item.get("id") == model:
+                return item.get(key)
+        return None
 
     def status(self) -> dict[str, Any]:
         account = self.app.call("account/read", {"refreshToken": False})
@@ -150,6 +232,7 @@ class Service:
         return {
             "account": account.get("account"),
             "rate_limits": optional("account/rateLimits/read"),
+            "claude": self.claude_auth.status(),
             "base_url": self.config.base_url,
         }
 
@@ -231,6 +314,19 @@ def _handler(service: Service):
                 if path == "/api/logout":
                     service.app.call("account/logout")
                     return self._json(HTTPStatus.OK, {"ok": True})
+                if path == "/api/claude/login":
+                    return self._json(HTTPStatus.OK, service.claude_auth.login_start())
+                if path == "/api/claude/code":
+                    code = body.get("code")
+                    if not isinstance(code, str) or not code.strip():
+                        raise RequestError("code is required")
+                    result = service.claude_auth.finish(code)
+                    service.invalidate_models()
+                    return self._json(HTTPStatus.OK, result)
+                if path == "/api/claude/logout":
+                    service.claude_auth.logout()
+                    service.invalidate_models()
+                    return self._json(HTTPStatus.OK, {"ok": True})
                 if path == "/v1/chat/completions":
                     return self._chat(body)
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -240,14 +336,33 @@ def _handler(service: Service):
                 self._api_error(HTTPStatus.BAD_GATEWAY, str(error))
             except UpstreamError as error:
                 self._api_error(error.status, str(error))
+            except ClaudeAuthError as error:
+                self._api_error(error.status, str(error))
+            except ClaudeUpstreamError as error:
+                self._api_error(error.status, str(error))
             except (RuntimeError, OSError, ValueError) as error:
                 self._api_error(HTTPStatus.BAD_GATEWAY, str(error))
 
         def _chat(self, body: dict[str, Any]) -> None:
-            session = self.headers.get("X-Session-Id", "")
-            request, _ = build_request(body, service.cache, session)
-            events = service.upstream.events(request)
-            translator = Translator(str(body["model"]), service.cache)
+            model = claude_model_name(body.get("model"))
+            if model:
+                if not service.claude_auth.signed_in():
+                    raise ClaudeAuthError(
+                        "not signed in to Claude; use the sign in button on the status page"
+                    )
+                request, betas = build_messages_request(
+                    body,
+                    model,
+                    max_output=service._claude_capability(model, "max_output_tokens"),
+                    thinking=service._claude_capability(model, "thinking"),
+                )
+                events = service.claude.events(request, tuple(betas))
+                translator: Translator | ClaudeTranslator = ClaudeTranslator(model)
+            else:
+                session = self.headers.get("X-Session-Id", "")
+                request, _ = build_request(body, service.cache, session)
+                events = service.upstream.events(request)
+                translator = Translator(str(body["model"]), service.cache)
             if not body.get("stream", False):
                 for event in events:
                     translator.feed(event)

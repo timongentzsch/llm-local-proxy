@@ -51,6 +51,21 @@ curl -N http://127.0.0.1:8787/api/v1/chat/completions \
 The stream uses Chat Completions chunks, OpenRouter-style `url_citation`
 annotations, and `server_tool_use.web_search_requests` in the final usage chunk.
 
+## Claude subscription
+
+The same endpoint can also serve Claude models from a Claude subscription.
+Sign in from the status page; the proxy runs the same OAuth flow as the
+Claude Code CLI and keeps its own token pair in `claude-credentials.json`
+next to the config. It refreshes that pair itself, so it does not contend
+with Claude Code logins on other machines. In Docker the file lives in the
+`proxy-config` volume.
+
+Requests for any `claude-*` model route to the Messages API; everything
+else routes to Codex as before. `GET /v1/models` merges the live Anthropic
+catalog (output limits, reasoning-effort levels) with the Codex model list
+and falls back to a small static table when Claude is not signed in.
+Both subscriptions keep their own usage windows and rate limits.
+
 ## Docker
 
 ```sh
@@ -63,13 +78,14 @@ both volumes.
 
 ## API
 
-- `GET /v1/models` with Codex capabilities and `?q=` search
+- `GET /v1/models` with Codex and Claude capabilities and `?q=` search
 - `GET /v1/models/count`
 - `POST /v1/chat/completions`
 - streaming, images, function tools, web search, parallel calls, reasoning
   effort, usage
+- `POST /api/claude/login`, `POST /api/claude/code`, `POST /api/claude/logout`
 
-The request's `model` selects the Codex model, as on OpenRouter. Responses
+The request's `model` selects the Codex or Claude model, as on OpenRouter. Responses
 include prompt, completion, cached, and reasoning token counts. The proxy does
 not invent per-token pricing, cost, provider routing, or generation history:
 ChatGPT subscriptions do not expose truthful equivalents.
