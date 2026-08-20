@@ -283,16 +283,16 @@ match priority, Claude claims `claude-*`, Codex is the fallback. Auth accepts
 Each phase is one PR, independently revertible, and leaves the suite green.
 No externally visible behaviour changes before R5.
 
-| Phase | Scope | Risk | Est. |
-| --- | --- | --- | --- |
-| **R0** | **Safety net.** Capture golden transcripts: real upstream SSE in, wire bytes out, for both providers × current dialect, plus a replay harness. No src changes | — | 0.5d |
-| **R1** | Mechanical moves only: create the tree, relocate modules, fix imports. Zero logic edits. Tests change by import line only | low | 0.5d |
-| **R2** | `Dialect` seam in `http/`: framing, errors, auth, route table. OpenAI output byte-identical against R0 goldens | low | 1d |
-| **R3** | `ChatRequest` + ingress split; both `request.py` builders read IR; `subscription.py` split out of `claude_protocol.py` | medium | 1.5d |
-| **R4** | `StreamEvent` + both `events.py` rewritten; `openai/egress.py` reconstructs chunks. **Goldens must be byte-identical** | **high** | 2–3d |
-| **R5** | Anthropic dialect: ingress, egress, catalog. Genuinely additive by now | medium | 2d |
-| **R6** | `REGISTRY` + `ProviderContext`; `Service` reduces to caching and status aggregation | low | 1d |
-| **R7** | `transport.py` dedup, conformance tests, dashboard, README | low | 1d |
+| Phase | Scope | Risk | Est. | Status |
+| --- | --- | --- | --- | --- |
+| **R0** | **Safety net.** Capture golden transcripts: upstream SSE in, wire bytes out, for both providers × current dialect, plus a replay harness. No src changes | — | 0.5d | **done** |
+| **R1** | Mechanical moves only: create the tree, relocate modules, fix imports. Zero logic edits. Tests change by import line only | low | 0.5d | **done** |
+| **R2** | `Dialect` seam in `http/`: framing, errors, auth, route table. OpenAI output byte-identical against R0 goldens | low | 1d | **done** |
+| **R3** | `ChatRequest` + ingress split; both `request.py` builders read IR; `subscription.py` split out of `claude_protocol.py` | medium | 1.5d | **done** |
+| **R4** | `StreamEvent` + both `events.py` rewritten; `openai/egress.py` reconstructs chunks. **Goldens must be byte-identical** | **high** | 2–3d | next |
+| **R5** | Anthropic dialect: ingress, egress, catalog. Genuinely additive by now | medium | 2d | |
+| **R6** | `REGISTRY` + `ProviderContext`; `Service` reduces to caching and status aggregation | low | 1d | |
+| **R7** | `transport.py` dedup, conformance tests, dashboard, README | low | 1d | |
 
 Roughly ten working days. R4 is the phase to slow down on; if goldens diverge
 there and the cause is not understood within a day, revert it and fall back to
@@ -301,6 +301,45 @@ that still ships R5.
 
 R0 is not optional. It is what converts "the tests still pass" into "the bytes
 on the wire are identical", and it is the only thing that makes R4 safe.
+
+## Where the migration stands
+
+R0–R3 are on `refactor/dialect-provider-architecture`, one commit per phase,
+each green. 100 tests pass, and the 29 goldens pass **untouched** — so every
+upstream request body is byte-identical to what the pre-refactor code sent.
+
+The request axis is finished: a Chat Completions body is parsed once by
+`dialects/openai/ingress.py` and rendered by `providers/codex/request.py` or
+`providers/claude/request.py`, neither of which knows which dialect asked.
+Adding the Anthropic *request* path is now one new ingress module.
+
+The response axis is untouched: `providers/codex/events.py` and
+`providers/claude/events.py` still emit `chat.completion.chunk` directly, so
+the 2×2 grid survives on that side until R4.
+
+### Starting R4
+
+The decoder/encoder split is the shape to build:
+
+- `providers/<p>/events.py` exposes a stateful decoder, `decode(event) ->
+  list[StreamEvent]`, owning the reasoning-cache writes (encrypted content for
+  Codex, signed thinking for Claude) since those are upstream state.
+- `dialects/<d>/egress.py` exposes an encoder built around a decoder and
+  holding the wire shaping: chunk envelopes, citation and usage mapping,
+  finish-reason narrowing. `Dialect` gains an `encode(model, decoder)` factory
+  so the handler wires the pair without either side naming the other.
+
+Two pieces of genuine duplication collapse here, and they are the argument for
+doing R4 at all rather than adapting chunks: `protocol._usage`/`_annotation`
+and their Claude twins compute the same Chat Completions shapes from different
+inputs. Under the split, both providers emit canonical `Usage` and `Citation`
+events and a single encoder shapes them once.
+
+The goldens are the specification for that encoder — each file is an exact
+chunk sequence to reproduce. Work from them rather than from the old
+translators, and keep the abort criterion in mind: if they diverge and the
+cause is not understood within a day, revert and fall back to adapting Chat
+Completions output into Anthropic frames.
 
 ## Transport: extract only what is provably identical
 
