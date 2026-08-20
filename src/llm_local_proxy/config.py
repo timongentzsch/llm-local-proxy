@@ -7,6 +7,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .atomic import atomic_write_bytes
+
 
 @dataclass(frozen=True)
 class Config:
@@ -24,9 +26,12 @@ class Config:
         return f"http://{host}:{self.port}/v1"
 
 
+def _config_root() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
 def default_path() -> Path:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "codex-local-proxy" / "config.toml"
+    return _config_root() / "llm-local-proxy" / "config.toml"
 
 
 def _is_loopback(host: str) -> bool:
@@ -39,9 +44,7 @@ def _is_loopback(host: str) -> bool:
 
 
 def _container_mode() -> bool:
-    return (
-        os.environ.get("CODEX_PROXY_CONTAINER") == "1" and Path("/.dockerenv").exists()
-    )
+    return os.environ.get("LLM_PROXY_CONTAINER") == "1" and Path("/.dockerenv").exists()
 
 
 def _write_default(path: Path) -> None:
@@ -56,25 +59,16 @@ def _write_default(path: Path) -> None:
         'codex_binary = "codex"\n'
         "request_timeout = 600\n"
     )
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w") as file:
-            file.write(text)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
+    atomic_write_bytes(path, text.encode())
 
 
 def load(path: Path | None = None) -> Config:
-    path = (path or default_path()).expanduser()
-    if not path.exists():
-        _write_default(path)
-    if path.stat().st_mode & 0o077:
-        raise ValueError(f"config is not private; run: chmod 600 {path}")
-    data = tomllib.loads(path.read_text())
+    resolved = (path or default_path()).expanduser()
+    if not resolved.exists():
+        _write_default(resolved)
+    if resolved.stat().st_mode & 0o077:
+        raise ValueError(f"config is not private; run: chmod 600 {resolved}")
+    data = tomllib.loads(resolved.read_text())
     host = str(data.get("host", "127.0.0.1"))
     port = int(data.get("port", 8787))
     api_key = str(data.get("api_key", ""))
@@ -91,5 +85,5 @@ def load(path: Path | None = None) -> Config:
         codex_home=Path(str(data.get("codex_home", "~/.codex"))).expanduser(),
         codex_binary=str(data.get("codex_binary", "codex")),
         request_timeout=max(1, int(data.get("request_timeout", 600))),
-        path=path,
+        path=resolved,
     )

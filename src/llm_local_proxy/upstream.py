@@ -4,9 +4,11 @@ import json
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 from .app_server import AppServer, RpcError
+from .ledger import TokenLedger
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -25,14 +27,31 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class Upstream:
     """The only module coupled to ChatGPT's private Codex transport."""
 
-    def __init__(self, app: AppServer, timeout: int):
+    def __init__(self, app: AppServer, timeout: int, tokens_path: Path | None = None):
         self.app = app
         self.timeout = timeout
+        self.ledger = TokenLedger(tokens_path)
         self._opener = urllib.request.build_opener(_NoRedirect)
 
     def events(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         response = self._open(body, refresh=False)
-        return self._events(response)
+        return self._tracked(self._events(response))
+
+    def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        """Yield events unchanged, tallying the final usage of each request."""
+        for event in events:
+            if event.get("type") == "response.completed":
+                usage = (event.get("response") or {}).get("usage") or {}
+                details = usage.get("input_tokens_details") or {}
+                record = {
+                    "input_tokens": usage.get("input_tokens") or 0,
+                    "output_tokens": usage.get("output_tokens") or 0,
+                    "cache_read": details.get("cached_tokens") or 0,
+                    "cache_write": details.get("cache_write_tokens") or 0,
+                }
+                if any(record.values()):
+                    self.ledger.add(**record)
+            yield event
 
     @staticmethod
     def _events(response) -> Iterator[dict[str, Any]]:
@@ -64,8 +83,8 @@ class Upstream:
                 "ChatGPT-Account-ID": account,
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
-                "User-Agent": "codex-local-proxy/0.1.0",
-                "originator": "codex_local_proxy",
+                "User-Agent": "llm-local-proxy/0.1.0",
+                "originator": "llm_local_proxy",
             },
         )
         try:

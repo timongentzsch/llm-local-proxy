@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_local_proxy.config import load
+from llm_local_proxy.config import load
 
 
 class ConfigTest(unittest.TestCase):
@@ -40,17 +40,30 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not private"):
                 load(path)
 
+    def test_default_path_under_llm_local_proxy(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict("os.environ", {"XDG_CONFIG_HOME": directory}),
+        ):
+            config = load()
+            self.assertEqual(
+                config.path, Path(directory) / "llm-local-proxy" / "config.toml"
+            )
+
     def test_container_default_uses_internal_wildcard(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.toml"
-            with (
-                patch.dict(
-                    "os.environ",
-                    {"CODEX_PROXY_CONTAINER": "1", "CODEX_HOME": "/codex"},
-                ),
-                patch("codex_local_proxy.config._container_mode", return_value=True),
-            ):
-                config = load(path)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(
+                "os.environ",
+                {
+                    "LLM_PROXY_CONTAINER": "1",
+                    "CODEX_HOME": "/codex",
+                    "XDG_CONFIG_HOME": directory,
+                },
+            ),
+            patch("llm_local_proxy.config._container_mode", return_value=True),
+        ):
+            config = load()
             self.assertEqual(config.host, "0.0.0.0")
             self.assertEqual(config.codex_home, Path("/codex"))
 

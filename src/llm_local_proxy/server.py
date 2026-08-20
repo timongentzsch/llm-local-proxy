@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -24,8 +25,11 @@ from .claude_protocol import (
     claude_model_name,
 )
 from .claude_upstream import ClaudeUpstream, ClaudeUpstreamError
+from .codex_auth import CodexAuth
 from .config import Config, load
 from .protocol import ReasoningCache, RequestError, Translator, build_request
+from .providers import Provider
+from .status import ProviderStatus
 from .upstream import Upstream, UpstreamError
 
 SSE_HEARTBEAT_SECONDS = 15
@@ -37,7 +41,9 @@ def _api_path(path: str) -> str:
     return f"/v1/{path[len(prefix) :]}" if path.startswith(prefix) else path
 
 
-def _model_info(item: dict[str, Any]) -> dict[str, Any] | None:
+def _model_info(
+    item: dict[str, Any], context_windows: dict[str, int] | None = None
+) -> dict[str, Any] | None:
     model = item.get("model") or item.get("id")
     if not model:
         return None
@@ -81,11 +87,14 @@ def _model_info(item: dict[str, Any]) -> dict[str, Any] | None:
         "is_default": bool(item.get("isDefault")),
         "supported_reasoning_efforts": efforts,
     }
+    context = (context_windows or {}).get(str(model), 0)
+    if context > 0:
+        value["context_length"] = context
     return value
 
 
 def _claude_model_info(item: dict[str, Any]) -> dict[str, Any]:
-    return {
+    value = {
         "id": item["id"],
         "canonical_slug": item["id"],
         "object": "model",
@@ -117,6 +126,19 @@ def _claude_model_info(item: dict[str, Any]) -> dict[str, Any]:
         "supported_reasoning_efforts": item.get("reasoning_efforts")
         or ["low", "medium", "high"],
     }
+    context = item.get("context_length")
+    if not isinstance(context, int) or isinstance(context, bool) or context <= 0:
+        context = next(
+            (
+                model.get("context_length")
+                for model in CLAUDE_MODELS
+                if model["id"] == item["id"]
+            ),
+            None,
+        )
+    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+        value["context_length"] = context
+    return value
 
 
 def _with_heartbeats(
@@ -157,30 +179,144 @@ class Service:
     def __init__(self, config: Config):
         self.config = config
         self.app = AppServer(config.codex_binary, config.codex_home)
-        self.upstream = Upstream(self.app, config.request_timeout)
-        self.claude_auth = ClaudeAuth(config.path.parent / "claude-credentials.json")
-        self.claude = ClaudeUpstream(self.claude_auth, config.request_timeout)
+        config_dir = config.path.parent
+        self.upstream = Upstream(
+            self.app,
+            config.request_timeout,
+            tokens_path=config_dir / "codex-tokens.json",
+        )
+        self.claude_auth = ClaudeAuth(config_dir / "claude-credentials.json")
+        self.claude = ClaudeUpstream(
+            self.claude_auth,
+            config.request_timeout,
+            usage_path=config_dir / "claude-usage.json",
+            tokens_path=config_dir / "claude-tokens.json",
+        )
+        self.codex_auth = CodexAuth(self.app)
         self.cache = ReasoningCache()
+        self.claude_reasoning = ReasoningCache()
+        self.providers = self._providers()
         self._models: tuple[float, dict[str, Any]] | None = None
         self._claude_catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._models_lock = threading.Lock()
+
+    def _providers(self) -> list[Provider]:
+        """The wired provider registry; later entries may fall back on any model."""
+
+        def codex_match(model: str) -> str | None:
+            # Codex is the fallback transport: it serves everything the more
+            # specific providers did not claim.
+            return None if claude_model_name(model) else model
+
+        return [
+            Provider(
+                name="claude",
+                auth=self.claude_auth,
+                login_flow="paste_code",
+                match=claude_model_name,
+                chat=self._claude_chat,
+                models=self._claude_items,
+                status=self._claude_status,
+                routes={
+                    "code": self._claude_code,
+                    "usage": self._claude_usage,
+                },
+            ),
+            Provider(
+                name="codex",
+                auth=self.codex_auth,
+                login_flow="device_code",
+                match=codex_match,
+                chat=self._codex_chat,
+                models=self._codex_models,
+                status=self._codex_status,
+                routes={},
+            ),
+        ]
+
+    def provider(self, name: str) -> Provider | None:
+        return next((item for item in self.providers if item.name == name), None)
+
+    def route(self, model: str) -> tuple[Provider, str] | None:
+        """First provider whose ``match`` claims the model, or None."""
+        for provider in self.providers:
+            canonical = provider.match(model)
+            if canonical is not None:
+                return provider, canonical
+        return None
+
+    # -- per-provider handlers -------------------------------------------
+
+    def _codex_chat(
+        self, canonical: str, body: dict[str, Any], session: str
+    ) -> tuple[Iterator[dict[str, Any]], Translator]:
+        request, _ = build_request(body, self.cache, session)
+        return self.upstream.events(request), Translator(canonical, self.cache)
+
+    def _codex_models(self) -> list[dict[str, Any]]:
+        result = self.app.call("model/list", {"limit": 100, "includeHidden": False})
+        context_windows = self.app.model_contexts()
+        models = []
+        for item in result.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            model = _model_info(item, context_windows)
+            if model:
+                models.append(model)
+        return models
+
+    def _claude_chat(
+        self, canonical: str, body: dict[str, Any], session: str
+    ) -> tuple[Iterator[dict[str, Any]], ClaudeTranslator]:
+        if not self.claude_auth.signed_in():
+            raise ClaudeAuthError(
+                "not signed in to Claude; use the sign in button on the status page"
+            )
+        request, betas = build_messages_request(
+            body,
+            canonical,
+            max_output=self._claude_capability(canonical, "max_output_tokens"),
+            thinking=self._claude_capability(canonical, "thinking"),
+            reasoning_cache=self.claude_reasoning,
+        )
+        events = self.claude.events(request, tuple(betas))
+        return events, ClaudeTranslator(canonical, self.claude_reasoning)
+
+    def _claude_code(self, body: dict[str, Any]) -> dict[str, Any]:
+        code = body.get("code")
+        if not isinstance(code, str) or not code.strip():
+            raise RequestError("code is required")
+        result = self.claude_auth.finish(code)
+        self.invalidate_models()
+        return result
+
+    def _claude_usage(self, body: dict[str, Any]) -> dict[str, Any]:
+        return {"usage": self.claude.ping_usage()}
+
+    def _claude_status(self) -> ProviderStatus:
+        return replace(
+            self.claude_auth.status(),
+            limits=self.claude.usage.limits(),
+            tokens=self.claude.ledger.windows(),
+            updated_at=self.claude.usage.updated_at(),
+        )
+
+    def _codex_status(self) -> ProviderStatus:
+        return replace(self.codex_auth.status(), tokens=self.upstream.ledger.windows())
 
     def models(self) -> dict[str, Any]:
         with self._models_lock:
             if self._models and time.time() - self._models[0] < 60:
                 return self._models[1]
-        result = self.app.call("model/list", {"limit": 100, "includeHidden": False})
-        models = []
-        for item in result.get("data", []):
-            if not isinstance(item, dict):
+        data: list[dict[str, Any]] = []
+        for provider in self.providers:
+            try:
+                data.extend(provider.models())
+            except (RpcError, ClaudeUpstreamError, OSError, ValueError):
+                # One provider being down must not take the whole catalog
+                # down with it; degrade just that provider's slice.
                 continue
-            model = _model_info(item)
-            if model:
-                models.append(model)
-        value = {
-            "object": "list",
-            "data": [*models, *self._claude_items()],
-        }
+        value = {"object": "list", "data": data}
         with self._models_lock:
             self._models = (time.time(), value)
         return value
@@ -218,23 +354,23 @@ class Service:
         return None
 
     def status(self) -> dict[str, Any]:
-        account = self.app.call("account/read", {"refreshToken": False})
-        signed_in = bool(account.get("account"))
-
-        def optional(method: str) -> dict[str, Any] | None:
-            if not signed_in:
-                return None
+        cards = []
+        for provider in self.providers:
             try:
-                return self.app.call(method)
-            except RpcError:
-                return None
-
-        return {
-            "account": account.get("account"),
-            "rate_limits": optional("account/rateLimits/read"),
-            "claude": self.claude_auth.status(),
-            "base_url": self.config.base_url,
-        }
+                value = provider.status()
+            except (RpcError, ClaudeUpstreamError, OSError, ValueError) as error:
+                # A provider that is unreachable degrades to its own card
+                # instead of blanking out the healthy providers.
+                value = ProviderStatus(error=str(error) or "unavailable")
+            cards.append(
+                {
+                    "name": provider.name,
+                    "login_flow": provider.login_flow,
+                    "routes": sorted(provider.routes),
+                    **value.payload(),
+                }
+            )
+        return {"base_url": self.config.base_url, "providers": cards}
 
     def close(self) -> None:
         self.app.close()
@@ -243,7 +379,7 @@ class Service:
 def _handler(service: Service):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
-        server_version = "codex-local-proxy/0.1"
+        server_version = "llm-local-proxy/0.1"
 
         def do_GET(self) -> None:
             if not self._valid_host():
@@ -252,7 +388,7 @@ def _handler(service: Service):
             path = _api_path(parsed.path)
             if path == "/":
                 page = (
-                    files("codex_local_proxy")
+                    files("llm_local_proxy")
                     .joinpath("static/index.html")
                     .read_text()
                     .replace(
@@ -306,27 +442,19 @@ def _handler(service: Service):
                 return self._json(HTTPStatus.FORBIDDEN, {"error": "bad origin"})
             try:
                 body = self._body()
-                if path == "/api/login":
-                    result = service.app.call(
-                        "account/login/start", {"type": "chatgptDeviceCode"}
-                    )
-                    return self._json(HTTPStatus.OK, result)
-                if path == "/api/logout":
-                    service.app.call("account/logout")
-                    return self._json(HTTPStatus.OK, {"ok": True})
-                if path == "/api/claude/login":
-                    return self._json(HTTPStatus.OK, service.claude_auth.login_start())
-                if path == "/api/claude/code":
-                    code = body.get("code")
-                    if not isinstance(code, str) or not code.strip():
-                        raise RequestError("code is required")
-                    result = service.claude_auth.finish(code)
-                    service.invalidate_models()
-                    return self._json(HTTPStatus.OK, result)
-                if path == "/api/claude/logout":
-                    service.claude_auth.logout()
-                    service.invalidate_models()
-                    return self._json(HTTPStatus.OK, {"ok": True})
+                provider_route = self._provider_route(path)
+                if provider_route:
+                    provider, route = provider_route
+                    if route == "login":
+                        return self._json(HTTPStatus.OK, provider.auth.login_start())
+                    if route == "logout":
+                        provider.auth.logout()
+                        service.invalidate_models()
+                        return self._json(HTTPStatus.OK, {"ok": True})
+                    handler = provider.routes.get(route)
+                    if handler is None:
+                        return self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    return self._json(HTTPStatus.OK, handler(body))
                 if path == "/v1/chat/completions":
                     return self._chat(body)
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -343,26 +471,22 @@ def _handler(service: Service):
             except (RuntimeError, OSError, ValueError) as error:
                 self._api_error(HTTPStatus.BAD_GATEWAY, str(error))
 
+        def _provider_route(self, path: str) -> tuple[Provider, str] | None:
+            parts = path.split("/")
+            if len(parts) == 4 and parts[0] == "" and parts[1] == "api":
+                provider = service.provider(parts[2])
+                if provider and parts[3]:
+                    return provider, parts[3]
+            return None
+
         def _chat(self, body: dict[str, Any]) -> None:
-            model = claude_model_name(body.get("model"))
-            if model:
-                if not service.claude_auth.signed_in():
-                    raise ClaudeAuthError(
-                        "not signed in to Claude; use the sign in button on the status page"
-                    )
-                request, betas = build_messages_request(
-                    body,
-                    model,
-                    max_output=service._claude_capability(model, "max_output_tokens"),
-                    thinking=service._claude_capability(model, "thinking"),
-                )
-                events = service.claude.events(request, tuple(betas))
-                translator: Translator | ClaudeTranslator = ClaudeTranslator(model)
-            else:
-                session = self.headers.get("X-Session-Id", "")
-                request, _ = build_request(body, service.cache, session)
-                events = service.upstream.events(request)
-                translator = Translator(str(body["model"]), service.cache)
+            session = self.headers.get("X-Session-Id", "")
+            requested = str(body.get("model", ""))
+            routed = service.route(requested)
+            if routed is None:
+                raise RequestError(f"no provider handles model: {requested}")
+            canonical = routed[1]
+            events, translator = routed[0].chat(canonical, body, session)
             if not body.get("stream", False):
                 for event in events:
                     translator.feed(event)
@@ -504,7 +628,9 @@ class Server(ThreadingHTTPServer):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Local Codex ChatGPT proxy")
+    parser = argparse.ArgumentParser(
+        description="Local proxy for Codex and Claude subscriptions"
+    )
     parser.add_argument("--config", type=Path)
     parser.add_argument(
         "--show-config", action="store_true", help="print the config path and exit"
@@ -521,10 +647,10 @@ def main() -> None:
     except (OSError, ValueError, RpcError) as error:
         if service:
             service.close()
-        raise SystemExit(f"codex-local-proxy: {error}") from error
+        raise SystemExit(f"llm-local-proxy: {error}") from error
     display_host = "127.0.0.1" if config.host in {"0.0.0.0", "::"} else config.host
     fragment = f"#key={quote(config.api_key)}" if config.api_key else ""
-    print(f"Codex Local Proxy: http://{display_host}:{config.port}/{fragment}")
+    print(f"LLM Local Proxy: http://{display_host}:{config.port}/{fragment}")
     print(f"Config: {config.path}")
     try:
         server.serve_forever()

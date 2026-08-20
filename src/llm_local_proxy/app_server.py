@@ -30,6 +30,9 @@ class AppServer:
 
     def __init__(self, binary: str, codex_home: Path):
         codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.binary = binary
+        self.codex_home = codex_home
+        self._model_contexts: dict[str, int] | None = None
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         self.auth_path = codex_home / "auth.json"
@@ -57,8 +60,8 @@ class AppServer:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "codex_local_proxy",
-                    "title": "Codex Local Proxy",
+                    "name": "llm_local_proxy",
+                    "title": "LLM Local Proxy",
                     "version": "0.1.0",
                 }
             },
@@ -167,6 +170,39 @@ class AppServer:
 
     def alive(self) -> bool:
         return self._proc.poll() is None
+
+    def model_contexts(self) -> dict[str, int]:
+        """Effective context windows from the installed Codex catalog."""
+        if self._model_contexts is not None:
+            return self._model_contexts
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(self.codex_home)
+        try:
+            completed = subprocess.run(
+                [self.binary, "debug", "models"],
+                capture_output=True,
+                check=True,
+                env=env,
+                text=True,
+                timeout=30,
+            )
+            value = json.loads(completed.stdout)
+            models = value.get("models", []) if isinstance(value, dict) else []
+            self._model_contexts = {
+                str(item["slug"]): int(item["context_window"])
+                for item in models
+                if isinstance(item, dict)
+                and item.get("slug")
+                and isinstance(item.get("context_window"), int)
+                and item["context_window"] > 0
+            }
+        except (
+            OSError,
+            ValueError,
+            subprocess.SubprocessError,
+        ):
+            self._model_contexts = {}
+        return self._model_contexts
 
     def close(self) -> None:
         if self._proc.poll() is None:

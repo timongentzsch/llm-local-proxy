@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LLM Local Proxy</title>
+<style>
+  :root{color-scheme:light dark;font:14px ui-monospace,SFMono-Regular,Consolas,monospace}
+  body{max-width:640px;margin:64px auto;padding:0 20px;line-height:1.5}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:40px}
+  h1{font-size:16px;margin:0}h2{font-size:14px;margin:32px 0 8px}
+  .muted{opacity:.6}.row{display:flex;gap:12px;justify-content:space-between;border-top:1px solid #8884;padding:9px 0}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#888;margin-right:7px}.dot.on{background:#16a34a}
+  .spin{display:none;width:9px;height:9px;border:2px solid #8885;border-top-color:currentColor;border-radius:50%;margin-right:7px;animation:spin .7s linear infinite}
+  body.loading .spin{display:inline-block}body.loading .dot{display:none}
+  body:not(.ready).loading .remote{color:transparent;background:#8882;border-radius:3px;min-width:12ch;animation:pulse 1s ease-in-out infinite}
+  button{font:inherit;border:1px solid #8886;border-radius:4px;background:none;color:inherit;padding:5px 9px;cursor:pointer}
+  button:hover{border-color:#888}code{font:inherit;word-break:break-all}input{font:inherit;border:1px solid #8886;border-radius:4px;background:none;color:inherit;padding:5px 9px;flex:1;min-width:0}.actions{display:flex;gap:8px;margin:20px 0}
+  .limit{margin:10px 0}.bar{height:3px;background:#8884}.bar i{display:block;height:100%;background:currentColor}
+  #models{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}.model{display:inline-flex;align-items:center;gap:5px;border:1px solid #8885;border-radius:999px;padding:3px 8px}
+  [hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{opacity:.45}}
+</style>
+<header><h1>llm local proxy</h1><span><i class="spin"></i><i id="dot" class="dot"></i><span id="state">loading</span></span></header>
+<main>
+  <div id="providers"></div>
+  <h2>client</h2>
+  <div class="row"><span class="muted">base url</span><code id="base"></code></div>
+  <div class="row"><span class="muted">api key</span><span><code id="key"></code> <button id="copy">copy</button></span></div>
+  <div class="row"><span class="muted">models</span><span id="models" class="remote">loading</span></div>
+</main>
+<template id="provider-card">
+  <section class="provider">
+    <h2 class="title"></h2>
+    <div class="row"><span class="muted">account</span><span class="account">loading</span></div>
+    <div class="usage"></div>
+    <div class="actions"><span class="muted stamp"></span></div>
+    <div class="actions"><button class="signin"></button><button class="signout" hidden></button></div>
+    <div class="login" hidden>
+      <p>Open <a class="login-url" target="_blank" rel="noreferrer">the sign in page</a><span class="login-hint"></span></p>
+      <div class="row paste" hidden><input class="login-code" type="text" placeholder="paste the code" autocomplete="off"><button class="confirm">confirm</button></div>
+    </div>
+  </section>
+</template>
+<script>
+const authRequired=__AUTH_REQUIRED__,key=new URLSearchParams(location.hash.slice(1)).get("key")||"",q=s=>document.querySelector(s);if(key)history.replaceState(null,"",location.pathname+location.search);
+let active=0,providers=[];
+function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
+async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json();if(!r.ok)throw Error(j.error?.message||j.error||r.statusText);return j}finally{busy(-1)}}
+const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});
+function fmtTime(v){if(v==null||v==="")return"";const n=Number(v);let d=Number.isFinite(n)&&n>1e9?new Date(n>1e12?n:n*1000):new Date(v);return isNaN(d)?String(v):timeFmt.format(d)}
+function fmtTokens(n){if(!n)return"0";if(n>=1e9)return(n/1e9).toFixed(2)+"B";if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
+function windowLabel(w){return w==="5h"?"5 hour":w==="7d"?"weekly":w}
+function bar(root,label,percent,resetsAt){const pct=Math.min(100,Math.round(percent||0));const box=document.createElement("div"),line=document.createElement("div"),fill=document.createElement("i");const reset=resetsAt?` · resets ${fmtTime(resetsAt)}`:"";box.className="limit";box.textContent=`${label} · ${pct}% used${reset}`;line.className="bar";fill.style.width=pct+"%";line.append(fill);box.append(line);root.append(box)}
+function hasTokens(t){return !!(t&&Object.values(t).some(w=>w&&(w.input||w.output||w.cache_read||w.cache_write)))}
+function tokenLine(t){const read=t.cache_read||0,input=(t.input||0)+read+(t.cache_write||0);let s=`${fmtTokens(input)} in`;if(input&&read)s+=` · ${Math.round(read/input*100)}% cache hits`;return`${s} · ${fmtTokens(t.output||0)} out`}
+function showTokens(root,tokens){if(!hasTokens(tokens))return;let shown="";for(const w of Object.keys(tokens)){const t=tokens[w];if(!t||(!t.input&&!t.output&&!t.cache_read&&!t.cache_write))continue;const line=tokenLine(t);if(line===shown)continue;shown=line;const div=document.createElement("div");div.className="limit";div.textContent=`proxy tokens · ${windowLabel(w)}: ${line}`;root.append(div)}}
+function card(name){let c=document.getElementById(`provider-${name}`);if(c)return c;c=q("#provider-card").content.firstElementChild.cloneNode(true);c.id=`provider-${name}`;q("#providers").append(c);wire(name,c);return c}
+function wire(name,c){
+  const login=c.querySelector(".login");
+  c.querySelector(".signin").onclick=async()=>{try{const r=await api(`/api/${name}/login`,{method:"POST",body:"{}"}),url=new URL(r.url);if(url.protocol!=="https:")throw Error("invalid sign in URL");c.querySelector(".login-url").href=url;c.querySelector(".login-hint").textContent=r.code?` and enter ${r.code}.`:", approve, then paste the code from the callback page below.";c.querySelector(".paste").hidden=!!r.code;login.hidden=false;window.open(url,"_blank","noopener")}catch(e){alert(e.message)}};
+  c.querySelector(".signout").onclick=async()=>{await api(`/api/${name}/logout`,{method:"POST",body:"{}"});login.hidden=true;load()};
+  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:JSON.stringify({code:input.value})});input.value="";login.hidden=true;load()}catch(e){alert(e.message)}};
+}
+function showProvider(p){
+  const c=card(p.name),on=!!p.signed_in;
+  c.querySelector(".title").textContent=`${p.name} subscription`;
+  c.querySelector(".account").textContent=p.error?`unavailable · ${p.error}`:on?p.account||"signed in":"not signed in";
+  c.querySelector(".signin").textContent=`${p.name} sign in`;c.querySelector(".signin").hidden=on;
+  c.querySelector(".signout").textContent=`${p.name} sign out`;c.querySelector(".signout").hidden=!on;
+  if(on)c.querySelector(".login").hidden=true;
+  const usage=c.querySelector(".usage");usage.replaceChildren();
+  if(on){for(const limit of p.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);showTokens(usage,p.tokens||{})}
+  c.querySelector(".stamp").textContent=on&&p.updated_at?`updated ${fmtTime(p.updated_at)}`:"";
+}
+function showModels(models){const root=q("#models");root.replaceChildren();for(const model of models){const pill=document.createElement("code");pill.className="model";pill.title=model.name;pill.textContent=model.id;root.append(pill)}}
+async function load(){
+  const [status,models]=await Promise.allSettled([api("/api/status"),api("/v1/models")]);
+  if(models.status==="fulfilled")showModels(models.value.data);else q("#models").textContent="unavailable";
+  if(status.status==="fulfilled"){
+    providers=status.value.providers||[];
+    for(const p of providers)showProvider(p);
+    const on=providers.filter(p=>p.signed_in).length;
+    q("#dot").classList.toggle("on",on>0);q("#state").textContent=`${on}/${providers.length} signed in`;
+  }else q("#state").textContent=status.reason.message;
+  document.body.classList.add("ready");
+}
+function poll(){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).map(p=>api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{}));Promise.all(pings).then(load)}
+q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
+q("#base").textContent=`${location.origin}/v1`;q("#key").textContent=key||(authRequired?"missing from URL":"disabled");q("#copy").style.display=key?"":"none";
+if(authRequired&&!key){q("#state").textContent="api key required";q("#models").textContent="unavailable";document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
+</script>
+</html>

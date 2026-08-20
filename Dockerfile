@@ -23,10 +23,10 @@ RUN uv sync --locked --no-dev \
     && chown runner:runner /config /codex
 
 ENV CODEX_HOME=/codex \
-    CODEX_PROXY_CONTAINER=1 \
+    LLM_PROXY_CONTAINER=1 \
     PATH="/app/.venv/bin:$PATH" \
     XDG_CONFIG_HOME=/config
 
 USER runner
 EXPOSE 8787
-CMD ["codex-local-proxy"]
+CMD ["llm-local-proxy"]

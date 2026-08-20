@@ -1,3 +1,5 @@
+name: llm-local-proxy
+
 services:
   proxy:
     build: .

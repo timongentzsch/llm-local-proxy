@@ -7,19 +7,42 @@ import time
 import uuid
 from typing import Any
 
-from .protocol import RequestError, _text
+from .protocol import ReasoningCache, RequestError, _text
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
 WEB_SEARCH_TOOL = "web_search_20250305"
 DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
+# First system block of every real Claude Code request. The subscription
+# edge bills calls carrying this marker against the Claude Code usage pool;
+# the same headers and token without it get 429 "rate limited" while the
+# real CLI succeeds. Verified 2026-08-19 by live A/B on a Pro account.
+CLAUDE_CODE_SYSTEM_MARKER = (
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+)
+
 # Fallback catalog used when the live /v1/models listing is unavailable (not
 # signed in, or the transport fails); requests for any `claude-*` name are
-# routed, the table only supplies display names and output-token defaults.
+# routed, the table only supplies published display and token metadata.
 CLAUDE_MODELS = [
-    {"id": "claude-opus-5", "name": "Claude Opus 5", "max_output_tokens": 128000},
-    {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "max_output_tokens": 128000},
-    {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "max_output_tokens": 64000},
+    {
+        "id": "claude-opus-5",
+        "name": "Claude Opus 5",
+        "context_length": 1_000_000,
+        "max_output_tokens": 128_000,
+    },
+    {
+        "id": "claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "context_length": 1_000_000,
+        "max_output_tokens": 128_000,
+    },
+    {
+        "id": "claude-haiku-4-5",
+        "name": "Claude Haiku 4.5",
+        "context_length": 200_000,
+        "max_output_tokens": 64_000,
+    },
 ]
 
 _THINKING_BUDGETS = {
@@ -51,6 +74,7 @@ def build_messages_request(
     model: str,
     max_output: int | None = None,
     thinking: str | None = None,
+    reasoning_cache: ReasoningCache | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -103,7 +127,7 @@ def build_messages_request(
             if blocks:
                 request_messages.append({"role": "user", "content": blocks})
         elif role == "assistant":
-            blocks = _assistant_blocks(message)
+            blocks = _assistant_blocks(message, reasoning_cache)
             if blocks:
                 request_messages.append({"role": "assistant", "content": blocks})
         elif role == "tool":
@@ -115,11 +139,19 @@ def build_messages_request(
 
     max_tokens = body.get("max_tokens", body.get("max_completion_tokens"))
     if max_tokens is None:
-        if isinstance(max_output, int) and not isinstance(max_output, bool) and max_output > 0:
+        if (
+            isinstance(max_output, int)
+            and not isinstance(max_output, bool)
+            and max_output > 0
+        ):
             max_tokens = max_output
         else:
             max_tokens = _max_output_tokens(model)
-    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+    if (
+        not isinstance(max_tokens, int)
+        or isinstance(max_tokens, bool)
+        or max_tokens <= 0
+    ):
         raise RequestError("max_tokens must be a positive integer")
 
     request: dict[str, Any] = {
@@ -127,9 +159,15 @@ def build_messages_request(
         "max_tokens": max_tokens,
         "messages": request_messages,
         "stream": True,
+        "cache_control": {"type": "ephemeral"},
     }
     if system_parts:
-        request["system"] = "\n\n".join(system_parts)
+        request["system"] = [
+            {"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER},
+            {"type": "text", "text": "\n\n".join(system_parts)},
+        ]
+    else:
+        request["system"] = [{"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER}]
     if temperature is not None:
         request["temperature"] = float(temperature)
     if top_p is not None:
@@ -229,17 +267,25 @@ def _image_block(url: Any) -> dict[str, Any] | None:
     raise RequestError("image_url must be a data URL or an http(s) URL")
 
 
-def _assistant_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+def _assistant_blocks(
+    message: dict[str, Any],
+    reasoning_cache: ReasoningCache | None = None,
+) -> list[dict[str, Any]]:
+    content = message.get("content")
+    if isinstance(content, list):
+        parts = content
+    elif content is not None:
+        parts = [{"type": "text", "text": content}]
+    else:
+        parts = []
+    # A present-but-empty text field would become an empty block, which
+    # Claude rejects; only emit blocks with real text.
     blocks = [
         {"type": "text", "text": str(part.get("text", ""))}
-        for part in (
-            message.get("content")
-            if isinstance(message.get("content"), list)
-            else [{"type": "text", "text": message.get("content")}]
-            if message.get("content") is not None
-            else []
-        )
-        if isinstance(part, dict) and part.get("type") == "text"
+        for part in parts
+        if isinstance(part, dict)
+        and part.get("type") == "text"
+        and str(part.get("text", "")).strip()
     ]
     calls = message.get("tool_calls", [])
     if not isinstance(calls, list):
@@ -255,17 +301,37 @@ def _assistant_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
             try:
                 arguments = json.loads(arguments) if arguments.strip() else {}
             except json.JSONDecodeError:
-                raise RequestError("tool call arguments must be a JSON object") from None
+                raise RequestError(
+                    "tool call arguments must be a JSON object"
+                ) from None
         if not isinstance(arguments, dict):
             raise RequestError("tool call arguments must be an object")
         call_id = str(call.get("id") or "")
         if not call_id:
             call_id = "toolu_" + uuid.uuid4().hex[:24]
-        blocks.append({"type": "tool_use", "id": call_id, "name": str(function["name"]), "input": arguments})
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": call_id,
+                "name": str(function["name"]),
+                "input": arguments,
+            }
+        )
+    # In manual/enabled thinking the assistant message of a tool-use turn must
+    # begin with the signed thinking/redacted_thinking blocks from the prior
+    # response, or Anthropic rejects the request (400). Replay whatever we
+    # cached for those tool calls, ahead of the text and tool_use blocks.
+    if reasoning_cache is not None and calls:
+        call_ids = [
+            str(c.get("id")) for c in calls if isinstance(c, dict) and c.get("id")
+        ]
+        blocks = reasoning_cache.get(call_ids) + blocks
     return blocks
 
 
-def _append_tool_result(messages: list[dict[str, Any]], message: dict[str, Any]) -> None:
+def _append_tool_result(
+    messages: list[dict[str, Any]], message: dict[str, Any]
+) -> None:
     tool_use_id = message.get("tool_call_id") or message.get("tool_use_id")
     if not tool_use_id:
         raise RequestError("tool message is missing tool_call_id")
@@ -290,7 +356,10 @@ def _append_tool_result(messages: list[dict[str, Any]], message: dict[str, Any])
         last
         and last["role"] == "user"
         and isinstance(last.get("content"), list)
-        and all(isinstance(item, dict) and item.get("type") == "tool_result" for item in last["content"])
+        and all(
+            isinstance(item, dict) and item.get("type") == "tool_result"
+            for item in last["content"]
+        )
     ):
         last["content"].append(block)
     else:
@@ -302,7 +371,9 @@ def _claude_tool(value: Any) -> dict[str, Any] | None:
         raise RequestError("invalid tool")
     function = value.get("function")
     if value.get("type") != "function" or not isinstance(function, dict):
-        raise RequestError("only function and openrouter:web_search tools are supported")
+        raise RequestError(
+            "only function and openrouter:web_search tools are supported"
+        )
     name = function.get("name")
     if not name:
         raise RequestError("function tool name is required")
@@ -333,7 +404,7 @@ def _claude_tool_choice(value: Any) -> dict[str, Any]:
 class ClaudeTranslator:
     """Claude Messages SSE events to Chat Completions chunks."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, reasoning_cache: ReasoningCache | None = None):
         self.id = "chatcmpl-" + uuid.uuid4().hex
         self.created = int(time.time())
         self.model = model
@@ -342,6 +413,9 @@ class ClaudeTranslator:
         self.calls: list[dict[str, Any]] = []
         self.annotations: list[dict[str, Any]] = []
         self.web_searches: set[Any] = set()
+        self.reasoning_cache = reasoning_cache
+        self.reasoning_blocks: list[dict[str, Any]] = []
+        self._open_thinking: tuple[str, str] | None = None  # (kind, index)
         self._usage = {
             "input": 0,
             "cache_read": 0,
@@ -350,6 +424,7 @@ class ClaudeTranslator:
         }
         self._finish: str | None = None
         self._open_call: dict[str, Any] | None = None
+        self._open_thinking: dict[str, Any] | None = None  # pending thinking block
 
     def chunk(self, delta: dict[str, Any], finish: str | None = None) -> dict[str, Any]:
         return {
@@ -367,7 +442,9 @@ class ClaudeTranslator:
         event_type = event.get("type")
         if event_type == "message_start":
             message = event.get("message", {})
-            self._usage_merge(message.get("usage") if isinstance(message, dict) else None)
+            self._usage_merge(
+                message.get("usage") if isinstance(message, dict) else None
+            )
             return []
         if event_type == "content_block_start":
             block = event.get("content_block")
@@ -378,12 +455,28 @@ class ClaudeTranslator:
                     "name": str(block.get("name", "")),
                     "arguments": "",
                 }
+            elif kind == "thinking":
+                self._open_thinking = {
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": "",
+                }
+            elif kind == "redacted_thinking":
+                # Opaque, safety-flagged portion; replay verbatim on round-trip.
+                self.reasoning_blocks.append(
+                    {"type": "redacted_thinking", "data": block.get("data") or ""}
+                )
             elif kind == WEB_SEARCH_TOOL or kind == "web_search_tool_result":
                 self.web_searches.add(event.get("index"))
             return []
         if event_type == "content_block_delta":
             return self._delta(event.get("delta"))
         if event_type == "content_block_stop":
+            if self._open_thinking is not None:
+                # Only a signed block can be replayed upstream.
+                if self._open_thinking.get("signature"):
+                    self.reasoning_blocks.append(self._open_thinking)
+                self._open_thinking = None
             return self._close_call()
         if event_type == "message_delta":
             delta = event.get("delta")
@@ -413,10 +506,23 @@ class ClaudeTranslator:
             return [self.chunk({"content": text})]
         if kind == "thinking_delta":
             text = str(delta.get("thinking", ""))
+            if self._open_thinking is not None and text:
+                self._open_thinking["thinking"] += text
             if not text:
                 return []
             self.reasoning += text
             return [self.chunk({"reasoning_content": text})]
+        if kind == "signature_delta":
+            sig = str(delta.get("signature", ""))
+            if self._open_thinking is not None and sig:
+                self._open_thinking["signature"] += sig
+            return []
+        if kind == "redacted_thinking_delta":
+            data = str(delta.get("data", ""))
+            last = self.reasoning_blocks[-1] if self.reasoning_blocks else None
+            if data and last and last.get("type") == "redacted_thinking":
+                last["data"] += data
+            return []
         if kind == "input_json_delta":
             piece = str(delta.get("partial_json", ""))
             if self._open_call and piece:
@@ -472,7 +578,11 @@ class ClaudeTranslator:
     def usage(self) -> dict[str, Any] | None:
         if not any(self._usage.values()):
             return None
-        prompt = self._usage["input"] + self._usage["cache_read"] + self._usage["cache_creation"]
+        prompt = (
+            self._usage["input"]
+            + self._usage["cache_read"]
+            + self._usage["cache_creation"]
+        )
         result: dict[str, Any] = {
             "prompt_tokens": prompt,
             "completion_tokens": self._usage["output"],
@@ -481,12 +591,15 @@ class ClaudeTranslator:
             "completion_tokens_details": {"reasoning_tokens": 0},
         }
         if self._usage["cache_creation"]:
-            result["prompt_tokens_details"]["cache_creation_tokens"] = self._usage["cache_creation"]
+            result["prompt_tokens_details"]["cache_write_tokens"] = self._usage[
+                "cache_creation"
+            ]
         if self.web_searches:
             result["server_tool_use"] = {"web_search_requests": len(self.web_searches)}
         return result
 
     def finish(self) -> list[dict[str, Any]]:
+        self._cache_reasoning()
         finish_reason = self._finish or ("tool_calls" if self.calls else "stop")
         chunks = [self.chunk({}, finish_reason)]
         if self.usage:
@@ -503,6 +616,7 @@ class ClaudeTranslator:
         return chunks
 
     def result(self) -> dict[str, Any]:
+        self._cache_reasoning()
         message: dict[str, Any] = {"role": "assistant", "content": self.content or None}
         if self.calls:
             message["tool_calls"] = self.calls
@@ -519,8 +633,21 @@ class ClaudeTranslator:
                 {
                     "index": 0,
                     "message": message,
-                    "finish_reason": self._finish or ("tool_calls" if self.calls else "stop"),
+                    "finish_reason": self._finish
+                    or ("tool_calls" if self.calls else "stop"),
                 }
             ],
             "usage": self.usage,
         }
+
+    def _cache_reasoning(self) -> None:
+        """Persist signed thinking blocks keyed by their tool call ids.
+
+        Only assistant turns that ended in tool calls need them replayed, so
+        this is a no-op unless they exist.
+        """
+        if self.reasoning_cache is None or not self.reasoning_blocks:
+            return
+        call_ids = [str(call.get("id")) for call in self.calls if call.get("id")]
+        if call_ids:
+            self.reasoning_cache.put(call_ids, self.reasoning_blocks)

@@ -1,6 +1,6 @@
 import unittest
 
-from codex_local_proxy.protocol import (
+from llm_local_proxy.protocol import (
     ReasoningCache,
     RequestError,
     Translator,
@@ -10,7 +10,7 @@ from codex_local_proxy.protocol import (
 
 class ProtocolTest(unittest.TestCase):
     def test_rejects_invalid_tools_and_multiple_choices(self):
-        base = {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
+        base = {"model": "acme-gpt-1", "messages": [{"role": "user", "content": "hi"}]}
         with self.assertRaises(RequestError):
             build_request({**base, "tools": [None]}, ReasoningCache())
         with self.assertRaises(RequestError):
@@ -31,7 +31,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_does_not_inject_default_instructions(self):
         request, _ = build_request(
-            {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
+            {"model": "acme-gpt-1", "messages": [{"role": "user", "content": "hi"}]},
             ReasoningCache(),
         )
         self.assertEqual(request["instructions"], "")
@@ -39,7 +39,7 @@ class ProtocolTest(unittest.TestCase):
     def test_accepts_max_tokens_as_compatibility_hint(self):
         request, _ = build_request(
             {
-                "model": "gpt-5.4",
+                "model": "acme-gpt-1",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 200,
             },
@@ -52,7 +52,7 @@ class ProtocolTest(unittest.TestCase):
         cache.put(["call_1"], [{"type": "reasoning", "encrypted_content": "secret"}])
         request, session = build_request(
             {
-                "model": "gpt-5.4",
+                "model": "acme-gpt-1",
                 "messages": [
                     {"role": "system", "content": "Be concise."},
                     {"role": "user", "content": "Read a file."},
@@ -99,7 +99,7 @@ class ProtocolTest(unittest.TestCase):
     def test_openrouter_web_search_becomes_responses_tool(self):
         request, _ = build_request(
             {
-                "model": "gpt-5.4",
+                "model": "acme-gpt-1",
                 "messages": [{"role": "user", "content": "search"}],
                 "tools": [
                     {
@@ -119,7 +119,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_response_tool_call_becomes_chat_chunk(self):
         cache = ReasoningCache()
-        translator = Translator("gpt-5.4", cache)
+        translator = Translator("acme-gpt-1", cache)
         translator.feed(
             {
                 "type": "response.output_item.done",
@@ -150,7 +150,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(cache.get(["call_1"])[0]["encrypted_content"], "encrypted")
 
     def test_usage_is_mapped(self):
-        translator = Translator("gpt-5.4", ReasoningCache())
+        translator = Translator("acme-gpt-1", ReasoningCache())
         translator.feed(
             {
                 "type": "response.completed",
@@ -174,7 +174,7 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_non_stream_result_keeps_reasoning(self):
-        translator = Translator("gpt-5.4", ReasoningCache())
+        translator = Translator("acme-gpt-1", ReasoningCache())
         translator.feed(
             {
                 "type": "response.reasoning_summary_text.delta",
@@ -187,7 +187,7 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_web_search_citation_and_usage_are_mapped(self):
-        translator = Translator("gpt-5.4", ReasoningCache())
+        translator = Translator("acme-gpt-1", ReasoningCache())
         translator.feed(
             {
                 "type": "response.output_item.added",
@@ -219,7 +219,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(result["choices"][0]["message"]["annotations"], [citation])
 
     def test_completed_output_can_supply_web_search_count(self):
-        translator = Translator("gpt-5.4", ReasoningCache())
+        translator = Translator("acme-gpt-1", ReasoningCache())
         translator.feed(
             {
                 "type": "response.completed",

@@ -1,11 +1,13 @@
-# Codex Local Proxy
+# LLM Local Proxy
 
-A small OpenAI-compatible gateway for a Codex ChatGPT session. Your client keeps
-the agent and tool loop; this process only translates the protocol.
+A small OpenAI-compatible gateway for your own Codex (ChatGPT) and Claude
+subscriptions. Your client keeps the agent and tool loop; this process only
+translates the protocol.
 
 ![Dashboard with example data](docs/dashboard.png)
 
-_Example data; the dashboard reads your local Codex account at runtime._
+_Account and key above are placeholders; the dashboard reads your own local
+accounts at runtime._
 
 ## Run
 
@@ -15,7 +17,7 @@ Native installs require [uv](https://docs.astral.sh/uv/) and the
 
 ```sh
 uv tool install .
-codex-local-proxy
+llm-local-proxy
 ```
 
 Open the URL printed at startup. The first run creates a private config and
@@ -31,7 +33,7 @@ This streams a selected Codex model and lets it search when needed:
 
 ```sh
 curl -N http://127.0.0.1:8787/api/v1/chat/completions \
-  -H "Authorization: Bearer $CODEX_PROXY_API_KEY" \
+  -H "Authorization: Bearer $LLM_PROXY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-5.6-sol",
@@ -83,7 +85,10 @@ both volumes.
 - `POST /v1/chat/completions`
 - streaming, images, function tools, web search, parallel calls, reasoning
   effort, usage
-- `POST /api/claude/login`, `POST /api/claude/code`, `POST /api/claude/logout`
+- `GET /api/status` with each provider's account, limits, and proxy token counts
+- `POST /api/codex/login`, `POST /api/codex/logout`
+- `POST /api/claude/login`, `POST /api/claude/code`, `POST /api/claude/usage`,
+  `POST /api/claude/logout`
 
 The request's `model` selects the Codex or Claude model, as on OpenRouter. Responses
 include prompt, completion, cached, and reasoning token counts. The proxy does
@@ -118,7 +123,7 @@ codex_binary = "codex"
 request_timeout = 600
 ```
 
-The default path is `~/.config/codex-local-proxy/config.toml`; pass
+The default path is `~/.config/llm-local-proxy/config.toml`; pass
 `--config PATH` to use another. Config files must be readable only by their
 owner (`chmod 600`).
 
@@ -135,3 +140,29 @@ Codex app-server owns login, refresh, models, and account limits. Keeping the
 binary avoids reimplementing undocumented ChatGPT authentication. The small
 private transport and credential adapters may change with Codex. Use the public
 OpenAI API when a supported third-party integration is required.
+
+## Disclaimer
+
+This project is an unofficial, independent wrapper around the publicly
+distributed [Codex CLI](https://github.com/openai/codex) and the subscription
+endpoints used by Anthropic's Claude Code. It is not affiliated with, endorsed
+by, or supported by OpenAI or Anthropic.
+
+Use at your own risk. The authors make no claims regarding compliance with
+OpenAI's or Anthropic's Terms of Service. It is your responsibility to review
+and comply with the OpenAI Terms of Use and Usage Policies and Anthropic's
+Consumer Terms of Service and Usage Policy, including whatever they say about
+programmatic access to a subscription. Terms may change at any time.
+
+The proxy runs entirely on your machine against your own authenticated
+accounts. No API keys are intercepted, no authentication is bypassed, and no
+credentials leave your device: Codex login and refresh are delegated to the
+official binary, and Claude tokens are obtained through the same OAuth flow the
+first-party client uses and stored only in your local config directory.
+
+It does, however, speak two undocumented interfaces — the Codex app-server
+JSON-RPC surface and the Claude subscription Messages transport, including the
+client identifiers and beta headers that identify first-party traffic. These
+have no public specification, may change or break without notice, and their use
+may fall outside what your subscription permits. Use the paid OpenAI or
+Anthropic APIs when a supported integration is required.
