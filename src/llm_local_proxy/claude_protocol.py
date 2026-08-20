@@ -450,11 +450,21 @@ class ClaudeTranslator:
             block = event.get("content_block")
             kind = block.get("type") if isinstance(block, dict) else None
             if kind == "tool_use":
+                call_id = str(block.get("id") or "toolu_" + uuid.uuid4().hex[:24])
+                name = str(block.get("name", ""))
                 self._open_call = {
-                    "id": str(block.get("id") or "toolu_" + uuid.uuid4().hex[:24]),
-                    "name": str(block.get("name", "")),
+                    "index": event.get("index"),
+                    "id": call_id,
+                    "name": name,
                     "arguments": "",
                 }
+                # Announce the call immediately so the client's time-to-first-
+                # token isn't stalled until the full JSON arguments assemble.
+                return self._tool_call_chunk(
+                    event.get("index"),
+                    {"name": name, "arguments": ""},
+                    id=call_id,
+                )
             elif kind == "thinking":
                 self._open_thinking = {
                     "type": "thinking",
@@ -525,9 +535,10 @@ class ClaudeTranslator:
             return []
         if kind == "input_json_delta":
             piece = str(delta.get("partial_json", ""))
-            if self._open_call and piece:
-                self._open_call["arguments"] += piece
-            return []
+            if not self._open_call or not piece:
+                return []
+            self._open_call["arguments"] += piece
+            return self._tool_call_chunk(self._open_call["index"], {"arguments": piece})
         if kind == "citations_delta":
             return self._citation(delta.get("citation"))
         return []
@@ -539,15 +550,28 @@ class ClaudeTranslator:
             return []
         if any(existing["id"] == call["id"] for existing in self.calls):
             return []
-        arguments = call["arguments"].strip() or "{}"
+        streamed = call["arguments"].strip()
+        arguments = streamed or "{}"
         item = {
             "id": call["id"],
             "type": "function",
             "function": {"name": call["name"], "arguments": arguments},
         }
         self.calls.append(item)
-        index = len(self.calls) - 1
-        return [self.chunk({"tool_calls": [{"index": index, **item}]})]
+        if streamed:
+            # Already sent by content_block_start plus input_json_delta.
+            return []
+        # A no-argument call streams no input_json_delta at all, so the client
+        # would be left with "" instead of parseable JSON.
+        return self._tool_call_chunk(call["index"], {"arguments": "{}"})
+
+    def _tool_call_chunk(
+        self, index: Any, function: dict[str, Any], **fields: Any
+    ) -> list[dict[str, Any]]:
+        call: dict[str, Any] = {"index": index, **fields, "function": function}
+        if "id" in fields:
+            call["type"] = "function"
+        return [self.chunk({"tool_calls": [call]})]
 
     def _citation(self, value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, dict) or value.get("type") != "url_citation":

@@ -257,6 +257,33 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(usage["total_tokens"], 22)
         self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], 3)
 
+    def test_tool_call_without_arguments_streams_empty_object(self):
+        translator = ClaudeTranslator("claude-fake-1")
+        chunks = []
+        for event in [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "list_files",
+                },
+            },
+            {"type": "content_block_stop", "index": 0},
+        ]:
+            chunks.extend(translator.feed(event))
+        arguments = "".join(
+            chunk["choices"][0]["delta"]["tool_calls"][0]["function"].get(
+                "arguments", ""
+            )
+            for chunk in chunks
+            if chunk["choices"] and chunk["choices"][0]["delta"].get("tool_calls")
+        )
+        self.assertEqual(arguments, "{}")
+        call = translator.result()["choices"][0]["message"]["tool_calls"][0]
+        self.assertEqual(call["function"]["arguments"], "{}")
+
     def test_cache_creation_uses_openai_compatible_usage_field(self):
         translator = ClaudeTranslator("claude-fake-1")
         translator.feed(
@@ -313,10 +340,20 @@ class ClaudeTranslatorTest(unittest.TestCase):
             for chunk in chunks
             if chunk["choices"] and chunk["choices"][0]["delta"].get("tool_calls")
         ]
-        call = tool_chunks[0]["choices"][0]["delta"]["tool_calls"][0]
-        self.assertEqual(call["id"], "toolu_9")
-        self.assertEqual(call["function"]["name"], "get_weather")
-        self.assertEqual(call["function"]["arguments"], '{"city":"Berlin"}')
+        # Streams incrementally: an announce chunk (id/name, empty arguments),
+        # then one argument-only chunk per input_json_delta.
+        self.assertEqual(len(tool_chunks), 3)
+        announce = tool_chunks[0]["choices"][0]["delta"]["tool_calls"][0]
+        self.assertEqual(announce["id"], "toolu_9")
+        self.assertEqual(announce["function"]["name"], "get_weather")
+        self.assertEqual(announce["function"]["arguments"], "")
+        arguments = "".join(
+            chunk["choices"][0]["delta"]["tool_calls"][0]["function"].get(
+                "arguments", ""
+            )
+            for chunk in tool_chunks
+        )
+        self.assertEqual(arguments, '{"city":"Berlin"}')
         self.assertEqual(
             translator.result()["choices"][0]["finish_reason"], "tool_calls"
         )
