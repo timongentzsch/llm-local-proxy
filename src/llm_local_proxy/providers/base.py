@@ -12,11 +12,25 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from ..config import Config
 from ..ir import ChatRequest
 from ..status import ProviderStatus
 from .auth import Auth
+
+
+@dataclass(frozen=True)
+class ProviderContext:
+    """What every provider needs from the host to construct itself."""
+
+    config: Config
+    #: Where credentials and token ledgers are persisted, beside the config.
+    directory: Path
+    #: Ask the host to drop cached catalogs, e.g. after a login changes what
+    #: this provider can see.
+    invalidate: Callable[[], None]
 
 
 @dataclass(frozen=True, eq=False)
@@ -46,3 +60,8 @@ class Provider:
     #: dispatch and always call auth.login_start()/auth.logout() instead of
     #: any handler registered here.
     routes: Mapping[str, Callable[[dict[str, Any]], Any]]
+    #: Whether the provider's local machinery is running. Defaults suit any
+    #: provider that is just an HTTPS client with nothing to keep alive.
+    healthy: Callable[[], bool] = lambda: True
+    #: Release anything long-lived. Called once at shutdown.
+    close: Callable[[], None] = lambda: None

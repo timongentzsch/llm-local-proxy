@@ -26,6 +26,54 @@ CLAUDE_MODELS = [
 ]
 
 
+def model_info(item: dict[str, Any]) -> dict[str, Any]:
+    value = {
+        "id": item["id"],
+        "canonical_slug": item["id"],
+        "object": "model",
+        "created": int(item.get("created") or 0),
+        "owned_by": "anthropic",
+        "name": item["name"],
+        "architecture": {
+            "modality": "text+image->text",
+            "input_modalities": ["text", "image"],
+            "output_modalities": ["text"],
+        },
+        "supported_parameters": [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "reasoning_effort",
+            "web_search",
+            "temperature",
+            "top_p",
+        ],
+        "default_parameters": (
+            {"max_tokens": item["max_output_tokens"]}
+            if item.get("max_output_tokens")
+            else None
+        ),
+        "per_request_limits": None,
+        "is_default": False,
+        "supported_reasoning_efforts": item.get("reasoning_efforts")
+        or ["low", "medium", "high"],
+    }
+    context = item.get("context_length")
+    if not isinstance(context, int) or isinstance(context, bool) or context <= 0:
+        context = next(
+            (
+                model.get("context_length")
+                for model in CLAUDE_MODELS
+                if model["id"] == item["id"]
+            ),
+            None,
+        )
+    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+        value["context_length"] = context
+    return value
+
+
 def claude_model_name(model: Any) -> str | None:
     if not isinstance(model, str) or not model:
         return None

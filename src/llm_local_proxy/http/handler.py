@@ -58,7 +58,7 @@ def make_handler(service: Service):
                     HTTPStatus.OK, page.encode(), "text/html; charset=utf-8"
                 )
             if path == "/healthz":
-                healthy = service.app.alive()
+                healthy = service.healthy()
                 return self._json(
                     HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE,
                     {"status": "ok" if healthy else "unhealthy"},
@@ -105,6 +105,7 @@ def make_handler(service: Service):
                     if route == "logout":
                         provider.auth.logout()
                         service.invalidate_models()
+
                         return self._json(HTTPStatus.OK, {"ok": True})
                     handler = provider.routes.get(route)
                     if handler is None:
