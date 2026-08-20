@@ -20,6 +20,7 @@ import os
 import unittest
 from pathlib import Path
 
+from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.protocol import ReasoningCache
@@ -33,6 +34,7 @@ RECORD = os.environ.get("LLM_PROXY_RECORD") == "1"
 
 # Streams are frozen so ids and timestamps never enter a golden file.
 FIXED_ID = "chatcmpl-0000000000000000000000000000000f"
+FIXED_MESSAGE_ID = "msg_00000000000000000000000f"
 FIXED_CREATED = 1700000000
 
 
@@ -491,10 +493,17 @@ CLAUDE_REQUESTS = {
 }
 
 
-def _freeze(translator):
-    translator.id = FIXED_ID
-    translator.created = FIXED_CREATED
-    return translator
+def _chunks(model, decoder):
+    encoder = ChunkEncoder(model, decoder)
+    encoder.id = FIXED_ID
+    encoder.created = FIXED_CREATED
+    return encoder
+
+
+def _message(model, decoder):
+    encoder = MessageEncoder(model, decoder)
+    encoder.id = FIXED_MESSAGE_ID
+    return encoder
 
 
 def _run_stream(translator, events: list[dict]) -> dict:
@@ -515,21 +524,35 @@ def _run_result(translator, events: list[dict]) -> dict:
 def build_all() -> dict[str, dict]:
     """Every golden, keyed by file name. Pure: no network, no clock, no uuid."""
     out: dict[str, dict] = {}
+    # Every (provider, dialect) pair over the same upstream fixtures. The
+    # cross pairs are the ones no single translator used to cover.
     for name, events in CODEX_STREAMS.items():
+        codex = lambda: CodexDecoder(ReasoningCache())
         out[f"codex_stream_{name}"] = _run_stream(
-            _freeze(ChunkEncoder("gpt-5.6-sol", CodexDecoder(ReasoningCache()))), events
+            _chunks("gpt-5.6-sol", codex()), events
         )
         out[f"codex_result_{name}"] = _run_result(
-            _freeze(ChunkEncoder("gpt-5.6-sol", CodexDecoder(ReasoningCache()))), events
+            _chunks("gpt-5.6-sol", codex()), events
+        )
+        out[f"codex_anthropic_stream_{name}"] = _run_stream(
+            _message("gpt-5.6-sol", codex()), events
+        )
+        out[f"codex_anthropic_result_{name}"] = _run_result(
+            _message("gpt-5.6-sol", codex()), events
         )
     for name, events in CLAUDE_STREAMS.items():
+        claude = lambda: ClaudeDecoder(ReasoningCache())
         out[f"claude_stream_{name}"] = _run_stream(
-            _freeze(ChunkEncoder("claude-sonnet-5", ClaudeDecoder(ReasoningCache()))),
-            events,
+            _chunks("claude-sonnet-5", claude()), events
         )
         out[f"claude_result_{name}"] = _run_result(
-            _freeze(ChunkEncoder("claude-sonnet-5", ClaudeDecoder(ReasoningCache()))),
-            events,
+            _chunks("claude-sonnet-5", claude()), events
+        )
+        out[f"claude_anthropic_stream_{name}"] = _run_stream(
+            _message("claude-sonnet-5", claude()), events
+        )
+        out[f"claude_anthropic_result_{name}"] = _run_result(
+            _message("claude-sonnet-5", claude()), events
         )
     for name, body in CODEX_REQUESTS.items():
         request, session = build_codex_request(parse(body), ReasoningCache())

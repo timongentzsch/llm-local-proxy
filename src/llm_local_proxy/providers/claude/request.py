@@ -242,12 +242,14 @@ def build(
         body["tools"] = tools
         body["tool_choice"] = _tool_choice(choice)
 
-    if request.reasoning_effort:
+    budget = request.thinking_budget
+    if budget is None and request.reasoning_effort:
         budget = THINKING_BUDGETS.get(str(request.reasoning_effort).casefold())
         if not budget:
             raise RequestError(
                 f"unsupported reasoning_effort: {request.reasoning_effort}"
             )
+    if budget is not None:
         budget = min(budget, max_tokens - 1)
         if budget < 1024:
             raise RequestError(

@@ -69,18 +69,15 @@ def make_handler(service: Service):
                 if path == "/api/status":
                     return self._json(HTTPStatus.OK, service.status())
                 if path == "/v1/models":
-                    models = service.models()
+                    models = service.models()["data"]
                     query = parse_qs(parsed.query).get("q", [""])[0].casefold()
                     if query:
-                        models = {
-                            **models,
-                            "data": [
-                                model
-                                for model in models["data"]
-                                if query in f"{model['id']} {model['name']}".casefold()
-                            ],
-                        }
-                    return self._json(HTTPStatus.OK, models)
+                        models = [
+                            model
+                            for model in models
+                            if query in f"{model['id']} {model['name']}".casefold()
+                        ]
+                    return self._json(HTTPStatus.OK, dialect.catalog(models))
                 if path == "/v1/models/count":
                     return self._json(
                         HTTPStatus.OK,
@@ -157,21 +154,23 @@ def make_handler(service: Service):
             self.end_headers()
             self.close_connection = True
             sse = SseStream(self.wfile, dialect)
-            sse.send(stream.start())
+            start = stream.start()
+            sse.send(start, dialect.event_name(start))
             try:
                 for event in with_heartbeats(events):
                     if event is None:
                         sse.keepalive()
                         continue
                     for chunk in stream.feed(event):
-                        sse.send(chunk)
+                        sse.send(chunk, dialect.event_name(chunk))
                 for chunk in stream.finish():
-                    sse.send(chunk)
+                    sse.send(chunk, dialect.event_name(chunk))
             except (BrokenPipeError, ConnectionResetError):
                 return
             except (RuntimeError, OSError, ValueError) as error:
                 try:
-                    sse.send(dialect.error(HTTPStatus.BAD_GATEWAY, str(error)))
+                    failure = dialect.error(HTTPStatus.BAD_GATEWAY, str(error))
+                    sse.send(failure, dialect.event_name(failure))
                 except (BrokenPipeError, ConnectionResetError):
                     return
             try:

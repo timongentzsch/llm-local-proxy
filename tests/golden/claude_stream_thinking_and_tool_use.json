@@ -44,11 +44,11 @@
               {
                 "index": 1,
                 "id": "toolu_1",
+                "type": "function",
                 "function": {
                   "name": "get_weather",
                   "arguments": ""
-                },
-                "type": "function"
+                }
               }
             ]
           },

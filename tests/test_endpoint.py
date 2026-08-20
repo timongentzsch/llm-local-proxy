@@ -1,0 +1,203 @@
+"""End-to-end HTTP: both dialects served over one socket by one provider.
+
+This is the 2x2 matrix at the level a client actually sees it. The provider
+below replays a canned Claude stream, so any difference between the two
+responses comes from the dialect and nothing else.
+"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import threading
+import unittest
+from types import SimpleNamespace
+
+from llm_local_proxy.http.handler import make_handler
+from llm_local_proxy.http.server import Server
+from llm_local_proxy.protocol import ReasoningCache
+from llm_local_proxy.providers.claude.events import ClaudeDecoder
+
+STREAM = [
+    {
+        "type": "message_start",
+        "message": {"usage": {"input_tokens": 11, "output_tokens": 0}},
+    },
+    {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    },
+    {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": "Hello"},
+    },
+    {"type": "content_block_stop", "index": 0},
+    {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 3},
+    },
+    {"type": "message_stop"},
+]
+
+MODELS = {
+    "object": "list",
+    "data": [{"id": "claude-sonnet-5", "name": "Claude Sonnet 5"}],
+}
+
+
+def _service():
+    provider = SimpleNamespace(
+        name="claude",
+        routes={},
+        auth=SimpleNamespace(),
+        chat=lambda canonical, request: (
+            iter(STREAM),
+            ClaudeDecoder(ReasoningCache()),
+        ),
+    )
+    return SimpleNamespace(
+        config=SimpleNamespace(api_key="", host="127.0.0.1"),
+        app=SimpleNamespace(alive=lambda: True),
+        route=lambda model: (provider, model),
+        provider=lambda name: provider if name == "claude" else None,
+        models=lambda: MODELS,
+        status=lambda: {"providers": []},
+        invalidate_models=lambda: None,
+    )
+
+
+class EndpointTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = Server(("127.0.0.1", 0), make_handler(_service()))
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def request(self, method, path, body=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        payload = json.dumps(body) if body is not None else None
+        headers = {"Content-Type": "application/json"} if payload else {}
+        connection.request(method, path, payload, headers)
+        response = connection.getresponse()
+        text = response.read().decode()
+        connection.close()
+        return response.status, text
+
+    # -- streaming --------------------------------------------------------
+
+    def test_chat_completions_stream(self):
+        status, text = self.request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "claude-sonnet-5",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(text.endswith("data: [DONE]\n\n"))
+        self.assertNotIn("event:", text)
+        first = json.loads(text.split("\n")[0][len("data: ") :])
+        self.assertEqual(first["object"], "chat.completion.chunk")
+
+    def test_messages_stream(self):
+        status, text = self.request(
+            "POST",
+            "/anthropic/v1/messages",
+            {
+                "model": "claude-sonnet-5",
+                "max_tokens": 64,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        # Named frames, and no Chat Completions sentinel.
+        self.assertNotIn("[DONE]", text)
+        names = [
+            line[len("event: ") :]
+            for line in text.splitlines()
+            if line.startswith("event: ")
+        ]
+        self.assertEqual(names[0], "message_start")
+        self.assertEqual(names[-1], "message_stop")
+        self.assertIn("content_block_delta", names)
+        # Every frame is named after the type in its own payload.
+        payloads = [
+            json.loads(line[len("data: ") :])
+            for line in text.splitlines()
+            if line.startswith("data: ")
+        ]
+        self.assertEqual([p["type"] for p in payloads], names)
+
+    # -- non streaming ----------------------------------------------------
+
+    def test_chat_completions_body(self):
+        status, text = self.request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "claude-sonnet-5",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        body = json.loads(text)
+        self.assertEqual(body["object"], "chat.completion")
+        self.assertEqual(body["choices"][0]["message"]["content"], "Hello")
+
+    def test_messages_body(self):
+        status, text = self.request(
+            "POST",
+            "/anthropic/v1/messages",
+            {
+                "model": "claude-sonnet-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        body = json.loads(text)
+        self.assertEqual(body["type"], "message")
+        self.assertEqual(body["content"], [{"type": "text", "text": "Hello"}])
+        self.assertEqual(body["stop_reason"], "end_turn")
+        self.assertEqual(body["usage"]["input_tokens"], 11)
+
+    # -- catalog and errors -----------------------------------------------
+
+    def test_model_catalogs_differ_per_dialect(self):
+        _, openai = self.request("GET", "/v1/models")
+        _, anthropic = self.request("GET", "/anthropic/v1/models")
+        self.assertEqual(json.loads(openai)["object"], "list")
+        listing = json.loads(anthropic)
+        self.assertEqual(listing["data"][0]["type"], "model")
+        self.assertFalse(listing["has_more"])
+
+    def test_errors_use_each_dialect_envelope(self):
+        status, text = self.request(
+            "POST", "/v1/chat/completions", {"model": "m", "messages": []}
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(text)["error"]["type"], "proxy_error")
+
+        status, text = self.request(
+            "POST", "/anthropic/v1/messages", {"model": "m", "messages": []}
+        )
+        self.assertEqual(status, 400)
+        body = json.loads(text)
+        self.assertEqual(body["type"], "error")
+        self.assertEqual(body["error"]["type"], "invalid_request_error")
+
+
+if __name__ == "__main__":
+    unittest.main()

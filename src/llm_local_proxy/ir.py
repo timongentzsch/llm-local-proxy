@@ -195,6 +195,9 @@ class ChatRequest:
     tool_choice: ToolChoice | None = None
     max_tokens: Any = None
     reasoning_effort: Any = None
+    #: An explicit thinking budget, when the client gave one instead of a
+    #: coarse effort tier. Preferred over reasoning_effort where supported.
+    thinking_budget: int | None = None
     parallel_tool_calls: Any = None
     stream: bool = False
     session: str = ""

@@ -53,6 +53,10 @@ class Dialect:
     #: wire output. Pairing happens here so neither side names the other,
     #: which is what keeps dialects and providers at N+M rather than N×M.
     encode: Callable[[str, Any], Any]
+    #: Merged provider catalogs -> this dialect's model listing.
+    catalog: Callable[[list[dict[str, Any]]], dict[str, Any]]
+    #: Payload -> the SSE event name to write, or None for anonymous frames.
+    event_name: Callable[[dict[str, Any]], str | None]
     #: Header carrying the proxy's local API key, and the scheme within it.
     #: An empty scheme means the header holds the bare key.
     auth_header: str

@@ -6,12 +6,13 @@ since its empty prefix matches every path.
 
 from __future__ import annotations
 
+from .anthropic import ANTHROPIC
 from .base import Dialect, Frame
 from .openai import OPENAI
 
-DIALECTS: tuple[Dialect, ...] = (OPENAI,)
+DIALECTS: tuple[Dialect, ...] = (ANTHROPIC, OPENAI)
 
-__all__ = ["DIALECTS", "OPENAI", "Dialect", "Frame", "resolve"]
+__all__ = ["ANTHROPIC", "DIALECTS", "OPENAI", "Dialect", "Frame", "resolve"]
 
 
 def resolve(path: str) -> tuple[Dialect, str]:

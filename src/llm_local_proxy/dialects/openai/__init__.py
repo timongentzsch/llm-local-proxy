@@ -19,12 +19,19 @@ def _error(status: int, message: str) -> dict[str, Any]:
     return {"error": {"message": message, "type": "proxy_error"}}
 
 
+def _catalog(models: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"object": "list", "data": models}
+
+
 OPENAI = Dialect(
     name="openai",
     prefix="",
     chat_route="/v1/chat/completions",
     parse=parse,
     encode=ChunkEncoder,
+    catalog=_catalog,
+    # Chat Completions streams anonymous data: frames.
+    event_name=lambda data: None,
     auth_header="Authorization",
     auth_scheme="bearer",
     error=_error,

@@ -29,11 +29,11 @@
               {
                 "index": 0,
                 "id": "toolu_2",
+                "type": "function",
                 "function": {
                   "name": "now",
                   "arguments": ""
-                },
-                "type": "function"
+                }
               }
             ]
           },

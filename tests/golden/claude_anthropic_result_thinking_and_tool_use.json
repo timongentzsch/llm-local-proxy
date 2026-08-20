@@ -1,0 +1,38 @@
+{
+  "result": {
+    "id": "msg_00000000000000000000000f",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-5",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "Let me check",
+        "signature": "SIG-1"
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "get_weather",
+        "input": {
+          "city": "Berlin"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "stop_details": null,
+    "container": null,
+    "usage": {
+      "input_tokens": 90,
+      "output_tokens": 42,
+      "cache_read_input_tokens": 30,
+      "cache_creation_input_tokens": 10,
+      "output_tokens_details": {
+        "thinking_tokens": 15
+      },
+      "cache_creation": null,
+      "service_tier": null
+    }
+  }
+}
