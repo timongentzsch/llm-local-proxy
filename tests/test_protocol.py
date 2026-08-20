@@ -1,7 +1,9 @@
 import unittest
 
+from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
-from llm_local_proxy.protocol import ReasoningCache, RequestError, Translator
+from llm_local_proxy.protocol import ReasoningCache, RequestError
+from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build
 
 
@@ -125,7 +127,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_response_tool_call_becomes_chat_chunk(self):
         cache = ReasoningCache()
-        translator = Translator("acme-gpt-1", cache)
+        translator = ChunkEncoder("acme-gpt-1", CodexDecoder(cache))
         translator.feed(
             {
                 "type": "response.output_item.done",
@@ -156,7 +158,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(cache.get(["call_1"])[0]["encrypted_content"], "encrypted")
 
     def test_usage_is_mapped(self):
-        translator = Translator("acme-gpt-1", ReasoningCache())
+        translator = ChunkEncoder("acme-gpt-1", CodexDecoder(ReasoningCache()))
         translator.feed(
             {
                 "type": "response.completed",
@@ -180,7 +182,7 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_non_stream_result_keeps_reasoning(self):
-        translator = Translator("acme-gpt-1", ReasoningCache())
+        translator = ChunkEncoder("acme-gpt-1", CodexDecoder(ReasoningCache()))
         translator.feed(
             {
                 "type": "response.reasoning_summary_text.delta",
@@ -193,7 +195,7 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_web_search_citation_and_usage_are_mapped(self):
-        translator = Translator("acme-gpt-1", ReasoningCache())
+        translator = ChunkEncoder("acme-gpt-1", CodexDecoder(ReasoningCache()))
         translator.feed(
             {
                 "type": "response.output_item.added",
@@ -225,7 +227,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(result["choices"][0]["message"]["annotations"], [citation])
 
     def test_completed_output_can_supply_web_search_count(self):
-        translator = Translator("acme-gpt-1", ReasoningCache())
+        translator = ChunkEncoder("acme-gpt-1", CodexDecoder(ReasoningCache()))
         translator.feed(
             {
                 "type": "response.completed",

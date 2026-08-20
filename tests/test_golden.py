@@ -20,10 +20,12 @@ import os
 import unittest
 from pathlib import Path
 
+from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
-from llm_local_proxy.protocol import ReasoningCache, Translator
-from llm_local_proxy.providers.claude.events import ClaudeTranslator
+from llm_local_proxy.protocol import ReasoningCache
+from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude_request
+from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build as build_codex_request
 
 GOLDEN = Path(__file__).parent / "golden"
@@ -515,17 +517,19 @@ def build_all() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for name, events in CODEX_STREAMS.items():
         out[f"codex_stream_{name}"] = _run_stream(
-            _freeze(Translator("gpt-5.6-sol", ReasoningCache())), events
+            _freeze(ChunkEncoder("gpt-5.6-sol", CodexDecoder(ReasoningCache()))), events
         )
         out[f"codex_result_{name}"] = _run_result(
-            _freeze(Translator("gpt-5.6-sol", ReasoningCache())), events
+            _freeze(ChunkEncoder("gpt-5.6-sol", CodexDecoder(ReasoningCache()))), events
         )
     for name, events in CLAUDE_STREAMS.items():
         out[f"claude_stream_{name}"] = _run_stream(
-            _freeze(ClaudeTranslator("claude-sonnet-5", ReasoningCache())), events
+            _freeze(ChunkEncoder("claude-sonnet-5", ClaudeDecoder(ReasoningCache()))),
+            events,
         )
         out[f"claude_result_{name}"] = _run_result(
-            _freeze(ClaudeTranslator("claude-sonnet-5", ReasoningCache())), events
+            _freeze(ChunkEncoder("claude-sonnet-5", ClaudeDecoder(ReasoningCache()))),
+            events,
         )
     for name, body in CODEX_REQUESTS.items():
         request, session = build_codex_request(parse(body), ReasoningCache())

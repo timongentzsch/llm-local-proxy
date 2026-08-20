@@ -143,11 +143,12 @@ def make_handler(service: Service):
             if routed is None:
                 raise RequestError(f"no provider handles model: {request.model}")
             provider, canonical = routed
-            events, translator = provider.chat(canonical, request)
+            events, decoder = provider.chat(canonical, request)
+            stream = dialect.encode(canonical, decoder)
             if not request.stream:
                 for event in events:
-                    translator.feed(event)
-                return self._json(HTTPStatus.OK, translator.result())
+                    stream.feed(event)
+                return self._json(HTTPStatus.OK, stream.result())
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
@@ -155,26 +156,26 @@ def make_handler(service: Service):
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
-            stream = SseStream(self.wfile, dialect)
-            stream.send(translator.start())
+            sse = SseStream(self.wfile, dialect)
+            sse.send(stream.start())
             try:
                 for event in with_heartbeats(events):
                     if event is None:
-                        stream.keepalive()
+                        sse.keepalive()
                         continue
-                    for chunk in translator.feed(event):
-                        stream.send(chunk)
-                for chunk in translator.finish():
-                    stream.send(chunk)
+                    for chunk in stream.feed(event):
+                        sse.send(chunk)
+                for chunk in stream.finish():
+                    sse.send(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 return
             except (RuntimeError, OSError, ValueError) as error:
                 try:
-                    stream.send(dialect.error(HTTPStatus.BAD_GATEWAY, str(error)))
+                    sse.send(dialect.error(HTTPStatus.BAD_GATEWAY, str(error)))
                 except (BrokenPipeError, ConnectionResetError):
                     return
             try:
-                stream.end()
+                sse.end()
             except (BrokenPipeError, ConnectionResetError):
                 pass
 

@@ -15,15 +15,16 @@ from typing import Any
 
 from .config import Config
 from .ir import ChatRequest
-from .protocol import ReasoningCache, RequestError, Translator
+from .protocol import ReasoningCache, RequestError
 from .providers import Provider
 from .providers.claude.auth import ClaudeAuth, ClaudeAuthError
 from .providers.claude.catalog import CLAUDE_MODELS, claude_model_name
-from .providers.claude.events import ClaudeTranslator
+from .providers.claude.events import ClaudeDecoder
 from .providers.claude.request import build as build_claude_request
 from .providers.claude.upstream import ClaudeUpstream, ClaudeUpstreamError
 from .providers.codex.app_server import AppServer, RpcError
 from .providers.codex.auth import CodexAuth
+from .providers.codex.events import CodexDecoder
 from .providers.codex.request import build as build_codex_request
 from .providers.codex.upstream import Upstream
 from .status import ProviderStatus
@@ -203,9 +204,9 @@ class Service:
 
     def _codex_chat(
         self, canonical: str, request: ChatRequest
-    ) -> tuple[Iterator[dict[str, Any]], Translator]:
+    ) -> tuple[Iterator[dict[str, Any]], CodexDecoder]:
         body, _ = build_codex_request(request, self.cache)
-        return self.upstream.events(body), Translator(canonical, self.cache)
+        return self.upstream.events(body), CodexDecoder(self.cache)
 
     def _codex_models(self) -> list[dict[str, Any]]:
         result = self.app.call("model/list", {"limit": 100, "includeHidden": False})
@@ -221,7 +222,7 @@ class Service:
 
     def _claude_chat(
         self, canonical: str, request: ChatRequest
-    ) -> tuple[Iterator[dict[str, Any]], ClaudeTranslator]:
+    ) -> tuple[Iterator[dict[str, Any]], ClaudeDecoder]:
         if not self.claude_auth.signed_in():
             raise ClaudeAuthError(
                 "not signed in to Claude; use the sign in button on the status page"
@@ -234,7 +235,7 @@ class Service:
             reasoning_cache=self.claude_reasoning,
         )
         events = self.claude.events(body, tuple(betas))
-        return events, ClaudeTranslator(canonical, self.claude_reasoning)
+        return events, ClaudeDecoder(self.claude_reasoning)
 
     def _claude_code(self, body: dict[str, Any]) -> dict[str, Any]:
         code = body.get("code")

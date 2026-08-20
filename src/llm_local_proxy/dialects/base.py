@@ -49,6 +49,10 @@ class Dialect:
     chat_route: str
     #: (body, session) -> the dialect-neutral request every provider reads.
     parse: Callable[[dict[str, Any], str], ChatRequest]
+    #: (model, provider decoder) -> the encoder that writes this dialect's
+    #: wire output. Pairing happens here so neither side names the other,
+    #: which is what keeps dialects and providers at N+M rather than N×M.
+    encode: Callable[[str, Any], Any]
     #: Header carrying the proxy's local API key, and the scheme within it.
     #: An empty scheme means the header holds the bare key.
     auth_header: str

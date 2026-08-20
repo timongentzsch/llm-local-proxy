@@ -86,6 +86,104 @@ class ToolChoice:
     name: str = ""
 
 
+# --- response side ---------------------------------------------------------
+#
+# What a provider decodes an upstream stream into, and what a dialect encodes
+# onto the wire. Finish reasons use Anthropic's vocabulary because it is the
+# richer of the two; narrowing to Chat Completions' four is the encoder's job.
+
+
+@dataclass
+class TextDelta:
+    text: str
+
+
+@dataclass
+class ThinkingDelta:
+    text: str
+
+
+@dataclass
+class ThinkingSignature:
+    """Closes a thinking block. Chat Completions has nowhere to put it."""
+
+    signature: str
+
+
+@dataclass
+class RedactedThinkingDelta:
+    data: str
+
+
+@dataclass
+class ToolCallStart:
+    #: Position the dialect should stream this call under. Providers choose
+    #: it differently — Codex by call ordinal, Claude by content block — and
+    #: clients only require that it be stable within one response.
+    index: Any
+    id: str
+    name: str
+    #: Complete when the upstream sends a call whole, empty when it streams.
+    arguments: str = ""
+
+
+@dataclass
+class ToolCallArgs:
+    index: Any
+    fragment: str
+
+
+@dataclass
+class ToolCallEnd:
+    """The assembled call. Carries no new bytes; completes the accumulator."""
+
+    index: Any
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
+class Citation:
+    url: str
+    title: str | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+
+
+@dataclass
+class Usage:
+    #: Total input including cache. Anthropic reports these apart and OpenAI
+    #: together, so each decoder normalises to the total here.
+    prompt: int = 0
+    completion: int = 0
+    #: None when the upstream does not report one; encoders then add it up.
+    total: int | None = None
+    cache_read: int = 0
+    cache_write: int = 0
+    thinking: int = 0
+    web_searches: int = 0
+
+
+@dataclass
+class Finish:
+    reason: str = "end_turn"
+
+
+StreamEvent = (
+    TextDelta
+    | ThinkingDelta
+    | ThinkingSignature
+    | RedactedThinkingDelta
+    | ToolCallStart
+    | ToolCallArgs
+    | ToolCallEnd
+    | Citation
+    | Usage
+    | Finish
+)
+
+
 @dataclass
 class ChatRequest:
     #: Empty when the client named the model out of band; providers that

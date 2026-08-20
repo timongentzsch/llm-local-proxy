@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..base import Dialect
+from .egress import ChunkEncoder
 from .ingress import parse
 
 
@@ -23,6 +24,7 @@ OPENAI = Dialect(
     prefix="",
     chat_route="/v1/chat/completions",
     parse=parse,
+    encode=ChunkEncoder,
     auth_header="Authorization",
     auth_scheme="bearer",
     error=_error,

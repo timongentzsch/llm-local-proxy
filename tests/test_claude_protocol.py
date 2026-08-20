@@ -1,9 +1,10 @@
 import unittest
 
+from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.protocol import ReasoningCache, RequestError
 from llm_local_proxy.providers.claude.catalog import claude_model_name
-from llm_local_proxy.providers.claude.events import ClaudeTranslator
+from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     build,
@@ -232,7 +233,7 @@ class BuildMessagesRequestTest(unittest.TestCase):
 
 class ClaudeTranslatorTest(unittest.TestCase):
     def test_text_stream_and_result(self):
-        translator = ClaudeTranslator("claude-fake-1")
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         chunks = []
         for event in [
             {
@@ -279,7 +280,7 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], 3)
 
     def test_web_search_citation_becomes_url_citation_annotation(self):
-        translator = ClaudeTranslator("claude-fake-1")
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         chunks = []
         for event in [
             {
@@ -325,7 +326,7 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(message["annotations"], annotations)
 
     def test_citation_without_url_is_ignored(self):
-        translator = ClaudeTranslator("claude-fake-1")
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         chunks = translator.feed(
             {
                 "type": "content_block_delta",
@@ -339,7 +340,7 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(chunks, [])
 
     def test_tool_call_without_arguments_streams_empty_object(self):
-        translator = ClaudeTranslator("claude-fake-1")
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         chunks = []
         for event in [
             {
@@ -366,7 +367,7 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(call["function"]["arguments"], "{}")
 
     def test_cache_creation_uses_openai_compatible_usage_field(self):
-        translator = ClaudeTranslator("claude-fake-1")
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         translator.feed(
             {
                 "type": "message_start",
@@ -379,13 +380,15 @@ class ClaudeTranslatorTest(unittest.TestCase):
                 },
             }
         )
+        # Usage is finalised when the response ends, not mid-stream.
+        translator.result()
         self.assertEqual(
             translator.usage["prompt_tokens_details"],
             {"cached_tokens": 3, "cache_write_tokens": 5},
         )
 
     def test_tool_call_stream(self):
-        translator = ClaudeTranslator("claude-fake-1")
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         chunks = []
         for event in [
             {
@@ -443,7 +446,7 @@ class ClaudeTranslatorTest(unittest.TestCase):
 class ClaudeReasoningCaptureTest(unittest.TestCase):
     def test_captures_thinking_signature_and_replays_across_tool_use(self):
         cache = ReasoningCache()
-        translator = ClaudeTranslator("claude-fake-1", reasoning_cache=cache)
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder(reasoning_cache=cache))
         for event in [
             {
                 "type": "content_block_start",
@@ -500,7 +503,7 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
 
     def test_streaming_finish_caches_signed_blocks(self):
         cache = ReasoningCache()
-        translator = ClaudeTranslator("claude-fake-1", reasoning_cache=cache)
+        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder(reasoning_cache=cache))
         for event in [
             {
                 "type": "content_block_start",
@@ -535,7 +538,8 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
 
     def test_unsigned_thinking_block_is_not_cached_and_resets(self):
         cache = ReasoningCache()
-        translator = ClaudeTranslator("claude-fake-1", reasoning_cache=cache)
+        decoder = ClaudeDecoder(reasoning_cache=cache)
+        translator = ChunkEncoder("claude-fake-1", decoder)
         for event in [
             {
                 "type": "content_block_start",
@@ -557,13 +561,14 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
         ]:
             translator.feed(event)
         translator.result()
-        self.assertEqual(translator.reasoning_blocks, [])
-        self.assertIsNone(translator._open_thinking)
+        self.assertEqual(decoder.reasoning_blocks, [])
+        self.assertIsNone(decoder._open_thinking)
         self.assertEqual(cache.get(["toolu_2"]), [])
 
     def test_thinking_without_tool_calls_is_not_cached(self):
         cache = ReasoningCache()
-        translator = ClaudeTranslator("claude-fake-1", reasoning_cache=cache)
+        decoder = ClaudeDecoder(reasoning_cache=cache)
+        translator = ChunkEncoder("claude-fake-1", decoder)
         for event in [
             {
                 "type": "content_block_start",
@@ -579,7 +584,7 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
         ]:
             translator.feed(event)
         translator.result()
-        self.assertEqual(translator.reasoning_blocks[0]["signature"], "SIG")
+        self.assertEqual(decoder.reasoning_blocks[0]["signature"], "SIG")
         self.assertEqual(cache.get(["toolu_absent"]), [])
 
     def test_replay_without_cached_blocks_sends_plain_tool_use(self):
