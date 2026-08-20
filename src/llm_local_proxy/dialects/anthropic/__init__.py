@@ -65,6 +65,8 @@ def _catalog(models: list[dict[str, Any]]) -> dict[str, Any]:
 ANTHROPIC = Dialect(
     name="anthropic",
     prefix="/anthropic",
+    # A client appends /v1/messages to this itself.
+    base_path="/anthropic",
     chat_route="/v1/messages",
     parse=parse,
     encode=MessageEncoder,

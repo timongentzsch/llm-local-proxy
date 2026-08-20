@@ -269,13 +269,22 @@ Two constraints on `dialects/anthropic/egress.py`:
 
 ## Endpoints
 
-Mount the new dialect under a prefix so the two `/v1/models` shapes cannot
-collide: `ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic`.
+Every dialect is mounted under its own prefix, because the two formats
+disagree about what `/v1/models` returns and neither can own it outright.
+`DEFAULT` (Chat Completions) additionally answers on the bare paths, which
+predate the prefixes and stay valid.
 
-- `POST /anthropic/v1/messages`, plus bare `/v1/messages` as an alias
-- `POST /anthropic/v1/messages/count_tokens`
-- `GET /anthropic/v1/models`
-- `/v1/chat/completions` and `/v1/models` keep their current shapes exactly
+| Mount | Routes |
+| --- | --- |
+| `/openai/v1` | `chat/completions`, `models`, `models/count` |
+| `/anthropic` | `v1/messages`, `v1/messages/count_tokens`, `v1/models` |
+| `/v1` | legacy alias of `/openai/v1`, byte-identical |
+
+`Dialect.base_path` is what a client is configured with, and is not always
+`prefix + "/v1"`: an OpenAI client wants `/v1` inside its base url and appends
+`/chat/completions`, while an Anthropic client appends `/v1/messages` itself.
+The dashboard renders one row per registered dialect from that field, so a new
+dialect appears there without the dashboard or `Service` changing.
 
 Model routing is unchanged: the registry order in `providers/__init__.py` is the
 match priority, Claude claims `claude-*`, Codex is the fallback. Auth accepts

@@ -108,7 +108,7 @@ class ServerTest(unittest.TestCase):
             _lock=Lock(),
             config=SimpleNamespace(
                 base_url="http://127.0.0.1:8787/v1",
-                anthropic_base_url="http://127.0.0.1:8787/anthropic",
+                origin="http://127.0.0.1:8787",
             ),
         )
         seen_claude: list[str] = []
@@ -209,6 +209,14 @@ class ServerTest(unittest.TestCase):
         service.status = MethodType(Service.status, service)
         value = service.status()
         self.assertEqual(value["base_url"], "http://127.0.0.1:8787/v1")
+        # One client base url per registered dialect, derived from the registry.
+        self.assertEqual(
+            {dialect["name"]: dialect["base_url"] for dialect in value["dialects"]},
+            {
+                "openai": "http://127.0.0.1:8787/openai/v1",
+                "anthropic": "http://127.0.0.1:8787/anthropic",
+            },
+        )
         cards = value["providers"]
         self.assertEqual([card["name"] for card in cards], ["claude", "codex"])
         # Every card carries the same keys, whatever the upstream shape is.

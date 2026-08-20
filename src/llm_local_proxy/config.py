@@ -22,12 +22,8 @@ class Config:
 
     @property
     def base_url(self) -> str:
+        """The unprefixed mount, kept for clients configured before /openai."""
         return f"{self.origin}/v1"
-
-    @property
-    def anthropic_base_url(self) -> str:
-        """What ANTHROPIC_BASE_URL should be set to for Claude Code."""
-        return f"{self.origin}/anthropic"
 
     @property
     def origin(self) -> str:

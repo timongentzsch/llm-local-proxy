@@ -40,11 +40,16 @@ class Frame:
 class Dialect:
     #: Registry key and mount name (e.g. "openai", "anthropic").
     name: str
-    #: URL mount point. The default dialect uses "" and owns the bare paths;
-    #: any other dialect is mounted under a prefix so its routes cannot
-    #: collide with the default's (notably /v1/models, whose response shape
-    #: differs per dialect).
+    #: URL mount point. Every dialect has one, so no two can collide over a
+    #: shared route name — notably /v1/models, whose response shape differs
+    #: per dialect. The dialect named by DEFAULT additionally answers on the
+    #: bare paths, for clients configured before the prefixes existed.
     prefix: str
+    #: What a client should be configured with, below the origin. Not always
+    #: prefix + "/v1": an OpenAI client wants /v1 included in its base url
+    #: and appends "/chat/completions", while an Anthropic client appends
+    #: "/v1/messages" itself.
+    base_path: str
     #: Path, below the prefix, that accepts a chat request.
     chat_route: str
     #: (body, session) -> the dialect-neutral request every provider reads.

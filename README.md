@@ -83,31 +83,45 @@ both volumes.
 
 ## API
 
-The proxy speaks two downstream formats over the same subscriptions. Either
-one reaches either provider: the request's `model` chooses.
+The proxy speaks two downstream formats over the same subscriptions, each
+mounted under its own prefix. Either format reaches either provider: the
+request's `model` chooses.
 
-OpenAI Chat Completions, at `/v1`:
+OpenAI Chat Completions, at `/openai/v1`:
 
-- `GET /v1/models` with Codex and Claude capabilities and `?q=` search
-- `GET /v1/models/count`
-- `POST /v1/chat/completions`
+- `GET /openai/v1/models` with Codex and Claude capabilities and `?q=` search
+- `GET /openai/v1/models/count`
+- `POST /openai/v1/chat/completions`
 - streaming, images, function tools, web search, parallel calls, reasoning
   effort, usage
 
 Anthropic Messages, at `/anthropic`:
 
 - `POST /anthropic/v1/messages`, streaming with named SSE events
+- `POST /anthropic/v1/messages/count_tokens`, exact for `claude-*` models;
+  `404` for Codex ones, whose upstream cannot count. A client that gets the
+  404 falls back to its own estimate knowing it is one
 - `GET /anthropic/v1/models`
 - authenticates with `x-api-key` as well as `Authorization: Bearer`
 
+The unprefixed `/v1/...` paths are the Chat Completions mount as it was
+before the prefixes existed, and stay valid: `/v1/chat/completions` and
+`/openai/v1/chat/completions` are the same endpoint. Prefixes exist because
+the two formats disagree about what `/v1/models` returns.
+
 ```sh
+# Claude Code, or any Anthropic SDK
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \
   ANTHROPIC_API_KEY=$YOUR_LOCAL_PROXY_KEY claude
+
+# Any OpenAI-compatible client
+OPENAI_BASE_URL=http://127.0.0.1:8787/openai/v1 \
+  OPENAI_API_KEY=$YOUR_LOCAL_PROXY_KEY
 ```
 
-Asking that endpoint for a Codex model routes it to Codex, translated both
-ways. `POST /anthropic/v1/messages/count_tokens` is not implemented; a client
-that needs it should count locally rather than trust a guess.
+Asking either endpoint for the other vendor's model routes it there and
+translates both ways, so Claude Code can drive Codex and an OpenAI SDK can
+drive Claude. The dashboard prints the base url for every mounted format.
 - `GET /api/status` with each provider's account, limits, and proxy token counts
 - `POST /api/codex/login`, `POST /api/codex/logout`
 - `POST /api/claude/login`, `POST /api/claude/code`, `POST /api/claude/usage`,

@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from .config import Config
+from .dialects import DIALECTS
 from .providers import REGISTRY, Provider, ProviderContext
 from .providers.claude.upstream import ClaudeUpstreamError
 from .providers.codex.app_server import RpcError
@@ -86,8 +87,16 @@ class Service:
                 }
             )
         return {
+            # Derived from the registry, so a new dialect appears on the
+            # dashboard without anything here changing.
+            "dialects": [
+                {
+                    "name": dialect.name,
+                    "base_url": self.config.origin + dialect.base_path,
+                }
+                for dialect in DIALECTS
+            ],
             "base_url": self.config.base_url,
-            "anthropic_base_url": self.config.anthropic_base_url,
             "providers": cards,
         }
 

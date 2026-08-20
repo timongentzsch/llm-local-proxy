@@ -23,8 +23,7 @@
 <main>
   <div id="providers"></div>
   <h2>client</h2>
-  <div class="row"><span class="muted">base url</span><code id="base"></code></div>
-  <div class="row"><span class="muted">anthropic base url</span><code id="anthropicBase"></code></div>
+  <div id="clients"></div>
   <div class="row"><span class="muted">api key</span><span><code id="key"></code> <button id="copy">copy</button></span></div>
   <div class="row"><span class="muted">models</span><span id="models" class="remote">loading</span></div>
 </main>
@@ -72,11 +71,13 @@ function showProvider(p){
   if(on){for(const limit of p.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);showTokens(usage,p.tokens||{})}
   c.querySelector(".stamp").textContent=on&&p.updated_at?`updated ${fmtTime(p.updated_at)}`:"";
 }
+function showDialects(dialects){const root=q("#clients");root.replaceChildren();for(const d of dialects){const row=document.createElement("div");row.className="row";const label=document.createElement("span");label.className="muted";label.textContent=`${d.name} base url`;const value=document.createElement("code");value.textContent=d.base_url;row.append(label,value);root.append(row)}}
 function showModels(models){const root=q("#models");root.replaceChildren();for(const model of models){const pill=document.createElement("code");pill.className="model";pill.title=model.name;pill.textContent=model.id;root.append(pill)}}
 async function load(){
   const [status,models]=await Promise.allSettled([api("/api/status"),api("/v1/models")]);
   if(models.status==="fulfilled")showModels(models.value.data);else q("#models").textContent="unavailable";
   if(status.status==="fulfilled"){
+    showDialects(status.value.dialects||[]);
     providers=status.value.providers||[];
     for(const p of providers)showProvider(p);
     const on=providers.filter(p=>p.signed_in).length;
@@ -86,7 +87,7 @@ async function load(){
 }
 function poll(){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).map(p=>api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{}));Promise.all(pings).then(load)}
 q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
-q("#base").textContent=`${location.origin}/v1`;q("#anthropicBase").textContent=`${location.origin}/anthropic`;q("#key").textContent=key||(authRequired?"missing from URL":"disabled");q("#copy").style.display=key?"":"none";
+q("#key").textContent=key||(authRequired?"missing from URL":"disabled");q("#copy").style.display=key?"":"none";
 if(authRequired&&!key){q("#state").textContent="api key required";q("#models").textContent="unavailable";document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
 </script>
 </html>

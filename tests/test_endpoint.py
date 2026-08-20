@@ -180,6 +180,43 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["stop_reason"], "end_turn")
         self.assertEqual(body["usage"]["input_tokens"], 11)
 
+    # -- mounts -----------------------------------------------------------
+
+    def test_openai_prefix_and_bare_path_are_byte_identical(self):
+        body = {
+            "model": "claude-sonnet-5",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+
+        def normalised(path):
+            status, text = self.request("POST", path, body)
+            value = json.loads(text)
+            # Each response carries a fresh id and timestamp by design.
+            value.pop("id"), value.pop("created")
+            return status, value
+
+        prefixed = normalised("/openai/v1/chat/completions")
+        self.assertEqual(prefixed[0], 200)
+        self.assertEqual(prefixed, normalised("/v1/chat/completions"))
+
+    def test_both_model_listings_are_reachable_either_way(self):
+        for path in ("/v1/models", "/openai/v1/models"):
+            with self.subTest(path=path):
+                status, text = self.request("GET", path)
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(text)["object"], "list")
+
+    def test_prefixes_do_not_cross_dialects(self):
+        # The Anthropic mount has no Chat Completions route, and vice versa.
+        status, _ = self.request(
+            "POST", "/anthropic/v1/chat/completions", {"model": "m", "messages": []}
+        )
+        self.assertEqual(status, 404)
+        status, _ = self.request(
+            "POST", "/openai/v1/messages", {"model": "m", "messages": []}
+        )
+        self.assertEqual(status, 404)
+
     # -- token counting ---------------------------------------------------
 
     def test_count_tokens(self):

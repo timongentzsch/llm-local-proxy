@@ -25,7 +25,8 @@ def _catalog(models: list[dict[str, Any]]) -> dict[str, Any]:
 
 OPENAI = Dialect(
     name="openai",
-    prefix="",
+    prefix="/openai",
+    base_path="/openai/v1",
     chat_route="/v1/chat/completions",
     parse=parse,
     encode=ChunkEncoder,

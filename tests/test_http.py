@@ -10,7 +10,7 @@ import io
 import unittest
 from threading import Event
 
-from llm_local_proxy.dialects import DIALECTS, OPENAI, Frame, resolve
+from llm_local_proxy.dialects import DEFAULT, DIALECTS, OPENAI, Frame, resolve
 from llm_local_proxy.http import security
 from llm_local_proxy.http.handler import api_path
 from llm_local_proxy.http.sse import SseStream, render, with_heartbeats
@@ -46,14 +46,29 @@ class FramingTest(unittest.TestCase):
 
 
 class ResolveTest(unittest.TestCase):
-    def test_bare_paths_belong_to_the_default_dialect(self):
+    def test_each_dialect_answers_under_its_own_prefix(self):
+        for dialect in DIALECTS:
+            with self.subTest(dialect=dialect.name):
+                found, path = resolve(f"{dialect.prefix}/v1/models")
+                self.assertEqual(found.name, dialect.name)
+                self.assertEqual(path, "/v1/models")
+
+    def test_bare_paths_still_reach_the_default_dialect(self):
+        # Configured before the prefixes existed; must keep working.
         dialect, path = resolve("/v1/chat/completions")
-        self.assertEqual(dialect.name, "openai")
+        self.assertIs(dialect, DEFAULT)
         self.assertEqual(path, "/v1/chat/completions")
 
-    def test_every_dialect_has_a_distinct_mount(self):
+    def test_prefixed_and_bare_default_paths_agree(self):
+        self.assertEqual(resolve(f"{DEFAULT.prefix}/v1/models"), resolve("/v1/models"))
+
+    def test_a_bare_prefix_serves_the_dialect_root(self):
+        self.assertEqual(resolve("/anthropic")[1], "/")
+
+    def test_every_dialect_has_a_distinct_nonempty_mount(self):
         prefixes = [dialect.prefix for dialect in DIALECTS]
         self.assertEqual(len(prefixes), len(set(prefixes)))
+        self.assertTrue(all(prefixes))
 
     def test_dashboard_alias_maps_onto_the_api_path(self):
         self.assertEqual(api_path("/api/v1/models"), "/v1/models")
