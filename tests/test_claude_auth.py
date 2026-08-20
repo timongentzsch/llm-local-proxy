@@ -3,7 +3,11 @@ import tempfile
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-from llm_local_proxy.claude_auth import ClaudeAuth, ClaudeAuthError, _normalize
+from llm_local_proxy.providers.claude.auth import (
+    ClaudeAuth,
+    ClaudeAuthError,
+    _normalize,
+)
 
 
 class ClaudeAuthTest(unittest.TestCase):

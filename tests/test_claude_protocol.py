@@ -1,13 +1,13 @@
 import unittest
 
-from llm_local_proxy.claude_protocol import (
+from llm_local_proxy.protocol import ReasoningCache, RequestError
+from llm_local_proxy.providers.claude.protocol import (
     CLAUDE_CODE_SYSTEM_MARKER,
     DEFAULT_MAX_OUTPUT_TOKENS,
     ClaudeTranslator,
     build_messages_request,
     claude_model_name,
 )
-from llm_local_proxy.protocol import ReasoningCache, RequestError
 
 BASE = {"model": "claude-fake-1", "messages": [{"role": "user", "content": "hi"}]}
 

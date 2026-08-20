@@ -22,9 +22,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .atomic import atomic_write_json
-from .auth import Auth
-from .status import ProviderStatus
+from ...atomic import atomic_write_json
+from ...status import ProviderStatus
+from ..auth import Auth
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 AUTHORIZE_URL = "https://platform.claude.com/oauth/authorize"

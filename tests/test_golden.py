@@ -20,8 +20,11 @@ import os
 import unittest
 from pathlib import Path
 
-from llm_local_proxy.claude_protocol import ClaudeTranslator, build_messages_request
 from llm_local_proxy.protocol import ReasoningCache, Translator, build_request
+from llm_local_proxy.providers.claude.protocol import (
+    ClaudeTranslator,
+    build_messages_request,
+)
 
 GOLDEN = Path(__file__).parent / "golden"
 RECORD = os.environ.get("LLM_PROXY_RECORD") == "1"
@@ -45,7 +48,10 @@ CODEX_STREAMS: dict[str, list[dict]] = {
     "text": [
         {"type": "response.output_text.delta", "delta": "Hello"},
         {"type": "response.output_text.delta", "delta": ", world"},
-        {"type": "response.completed", "response": {"output": [], "usage": CODEX_USAGE}},
+        {
+            "type": "response.completed",
+            "response": {"output": [], "usage": CODEX_USAGE},
+        },
     ],
     "reasoning_and_tool_call": [
         {"type": "response.reasoning_summary_text.delta", "delta": "Weighing "},
@@ -68,7 +74,10 @@ CODEX_STREAMS: dict[str, list[dict]] = {
                 "arguments": '{"city":"Berlin"}',
             },
         },
-        {"type": "response.completed", "response": {"output": [], "usage": CODEX_USAGE}},
+        {
+            "type": "response.completed",
+            "response": {"output": [], "usage": CODEX_USAGE},
+        },
     ],
     "two_tool_calls": [
         {
@@ -89,7 +98,10 @@ CODEX_STREAMS: dict[str, list[dict]] = {
                 "arguments": '{"x":1}',
             },
         },
-        {"type": "response.completed", "response": {"output": [], "usage": CODEX_USAGE}},
+        {
+            "type": "response.completed",
+            "response": {"output": [], "usage": CODEX_USAGE},
+        },
     ],
     "web_search_and_citation": [
         {
@@ -117,7 +129,10 @@ CODEX_STREAMS: dict[str, list[dict]] = {
                 "end_index": 5,
             },
         },
-        {"type": "response.completed", "response": {"output": [], "usage": CODEX_USAGE}},
+        {
+            "type": "response.completed",
+            "response": {"output": [], "usage": CODEX_USAGE},
+        },
     ],
     "items_only_on_completed": [
         {

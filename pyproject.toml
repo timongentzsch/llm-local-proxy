@@ -16,7 +16,7 @@ dependencies = []
 dev = ["ruff>=0.16,<0.17"]
 
 [project.scripts]
-llm-local-proxy = "llm_local_proxy.server:main"
+llm-local-proxy = "llm_local_proxy.http.server:main"
 
 [tool.setuptools.package-data]
 llm_local_proxy = ["static/*.html"]

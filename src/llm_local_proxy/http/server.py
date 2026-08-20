@@ -16,21 +16,21 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, quote, urlparse
 
-from .app_server import AppServer, RpcError
-from .claude_auth import ClaudeAuth, ClaudeAuthError
-from .claude_protocol import (
+from ..config import Config, load
+from ..protocol import ReasoningCache, RequestError, Translator, build_request
+from ..providers import Provider
+from ..providers.claude.auth import ClaudeAuth, ClaudeAuthError
+from ..providers.claude.protocol import (
     CLAUDE_MODELS,
     ClaudeTranslator,
     build_messages_request,
     claude_model_name,
 )
-from .claude_upstream import ClaudeUpstream, ClaudeUpstreamError
-from .codex_auth import CodexAuth
-from .config import Config, load
-from .protocol import ReasoningCache, RequestError, Translator, build_request
-from .providers import Provider
-from .status import ProviderStatus
-from .upstream import Upstream, UpstreamError
+from ..providers.claude.upstream import ClaudeUpstream, ClaudeUpstreamError
+from ..providers.codex.app_server import AppServer, RpcError
+from ..providers.codex.auth import CodexAuth
+from ..providers.codex.upstream import Upstream, UpstreamError
+from ..status import ProviderStatus
 
 SSE_HEARTBEAT_SECONDS = 15
 _DONE = object()

@@ -14,8 +14,8 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..status import ProviderStatus
 from .auth import Auth
-from .status import ProviderStatus
 
 
 @dataclass(frozen=True, eq=False)

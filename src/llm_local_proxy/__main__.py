@@ -1,3 +1,3 @@
-from .server import main
+from .http.server import main
 
 main()

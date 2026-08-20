@@ -3,9 +3,9 @@ import tempfile
 import time
 import unittest
 
-from llm_local_proxy.claude_upstream import ClaudeUpstream
 from llm_local_proxy.ledger import WINDOWS, TokenLedger
-from llm_local_proxy.upstream import Upstream
+from llm_local_proxy.providers.claude.upstream import ClaudeUpstream
+from llm_local_proxy.providers.codex.upstream import Upstream
 
 
 class TokenLedgerTest(unittest.TestCase):

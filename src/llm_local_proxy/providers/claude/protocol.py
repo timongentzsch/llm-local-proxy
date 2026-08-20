@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-from .protocol import ReasoningCache, RequestError, _text
+from ...protocol import ReasoningCache, RequestError, _text
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
 WEB_SEARCH_TOOL = "web_search_20250305"

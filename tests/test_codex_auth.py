@@ -1,7 +1,7 @@
 import unittest
 
-from llm_local_proxy.app_server import RpcError
-from llm_local_proxy.codex_auth import CodexAuth
+from llm_local_proxy.providers.codex.app_server import RpcError
+from llm_local_proxy.providers.codex.auth import CodexAuth
 
 
 class _App:

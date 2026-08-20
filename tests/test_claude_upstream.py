@@ -5,7 +5,7 @@ import unittest
 import urllib.error
 from email.message import Message
 
-from llm_local_proxy.claude_upstream import (
+from llm_local_proxy.providers.claude.upstream import (
     ClaudeUpstreamError,
     UsageStore,
     _thinking_rejected,

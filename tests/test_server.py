@@ -5,17 +5,17 @@ from threading import Event, Lock
 from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
-from llm_local_proxy.claude_protocol import claude_model_name
-from llm_local_proxy.claude_upstream import ClaudeUpstreamError
 from llm_local_proxy.config import load
-from llm_local_proxy.providers import Provider
-from llm_local_proxy.server import (
+from llm_local_proxy.http.server import (
     Service,
     _api_path,
     _claude_model_info,
     _model_info,
     _with_heartbeats,
 )
+from llm_local_proxy.providers import Provider
+from llm_local_proxy.providers.claude.protocol import claude_model_name
+from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
 from llm_local_proxy.status import ProviderStatus
 
 
@@ -44,13 +44,15 @@ class ServiceWiringTest(unittest.TestCase):
                 )
 
             with (
-                patch("llm_local_proxy.server.AppServer"),
-                patch("llm_local_proxy.server.Upstream", side_effect=fake_upstream),
+                patch("llm_local_proxy.http.server.AppServer"),
                 patch(
-                    "llm_local_proxy.server.ClaudeUpstream",
+                    "llm_local_proxy.http.server.Upstream", side_effect=fake_upstream
+                ),
+                patch(
+                    "llm_local_proxy.http.server.ClaudeUpstream",
                     side_effect=fake_claude_upstream,
                 ),
-                patch("llm_local_proxy.server.ClaudeAuth"),
+                patch("llm_local_proxy.http.server.ClaudeAuth"),
             ):
                 Service(config)
             self.assertEqual(

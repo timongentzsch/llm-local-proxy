@@ -12,9 +12,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ...status import Limit, ProviderStatus, window_name
+from ..auth import Auth
 from .app_server import AppServer, RpcError
-from .auth import Auth
-from .status import Limit, ProviderStatus, window_name
 
 
 class CodexAuth(Auth):
