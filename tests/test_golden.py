@@ -20,11 +20,11 @@ import os
 import unittest
 from pathlib import Path
 
-from llm_local_proxy.protocol import ReasoningCache, Translator, build_request
-from llm_local_proxy.providers.claude.protocol import (
-    ClaudeTranslator,
-    build_messages_request,
-)
+from llm_local_proxy.dialects.openai.ingress import parse
+from llm_local_proxy.protocol import ReasoningCache, Translator
+from llm_local_proxy.providers.claude.events import ClaudeTranslator
+from llm_local_proxy.providers.claude.request import build as build_claude_request
+from llm_local_proxy.providers.codex.request import build as build_codex_request
 
 GOLDEN = Path(__file__).parent / "golden"
 RECORD = os.environ.get("LLM_PROXY_RECORD") == "1"
@@ -528,11 +528,11 @@ def build_all() -> dict[str, dict]:
             _freeze(ClaudeTranslator("claude-sonnet-5", ReasoningCache())), events
         )
     for name, body in CODEX_REQUESTS.items():
-        request, session = build_request(body, ReasoningCache(), "")
+        request, session = build_codex_request(parse(body), ReasoningCache())
         out[f"codex_request_{name}"] = {"request": request, "session": session}
     for name, body in CLAUDE_REQUESTS.items():
-        request, betas = build_messages_request(
-            body, body["model"], reasoning_cache=ReasoningCache()
+        request, betas = build_claude_request(
+            parse(body), body["model"], reasoning_cache=ReasoningCache()
         )
         out[f"claude_request_{name}"] = {"request": request, "betas": betas}
     return out

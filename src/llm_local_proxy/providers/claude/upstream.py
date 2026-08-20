@@ -17,7 +17,7 @@ from ...atomic import atomic_write_json
 from ...ledger import TokenLedger
 from ...status import Limit, window_label
 from .auth import OAUTH_BETA, ClaudeAuth, ClaudeAuthError
-from .protocol import CLAUDE_CODE_SYSTEM_MARKER
+from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 MODELS_URL = "https://api.anthropic.com/v1/models"

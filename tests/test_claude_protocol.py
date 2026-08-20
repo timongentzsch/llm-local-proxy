@@ -1,13 +1,20 @@
 import unittest
 
+from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.protocol import ReasoningCache, RequestError
-from llm_local_proxy.providers.claude.protocol import (
-    CLAUDE_CODE_SYSTEM_MARKER,
+from llm_local_proxy.providers.claude.catalog import claude_model_name
+from llm_local_proxy.providers.claude.events import ClaudeTranslator
+from llm_local_proxy.providers.claude.request import (
     DEFAULT_MAX_OUTPUT_TOKENS,
-    ClaudeTranslator,
-    build_messages_request,
-    claude_model_name,
+    build,
 )
+from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
+
+
+def build_messages_request(body, model, **kwargs):
+    """The whole path a Chat Completions request takes to Claude."""
+    return build(parse(body), model, **kwargs)
+
 
 BASE = {"model": "claude-fake-1", "messages": [{"role": "user", "content": "hi"}]}
 

@@ -138,14 +138,13 @@ def make_handler(service: Service):
             return None
 
         def _chat(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            session = self.headers.get("X-Session-Id", "")
-            requested = str(body.get("model", ""))
-            routed = service.route(requested)
+            request = dialect.parse(body, self.headers.get("X-Session-Id", ""))
+            routed = service.route(request.model)
             if routed is None:
-                raise RequestError(f"no provider handles model: {requested}")
-            canonical = routed[1]
-            events, translator = routed[0].chat(canonical, body, session)
-            if not body.get("stream", False):
+                raise RequestError(f"no provider handles model: {request.model}")
+            provider, canonical = routed
+            events, translator = provider.chat(canonical, request)
+            if not request.stream:
                 for event in events:
                     translator.feed(event)
                 return self._json(HTTPStatus.OK, translator.result())

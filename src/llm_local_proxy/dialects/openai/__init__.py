@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..base import Dialect
+from .ingress import parse
 
 
 def _error(status: int, message: str) -> dict[str, Any]:
@@ -21,6 +22,7 @@ OPENAI = Dialect(
     name="openai",
     prefix="",
     chat_route="/v1/chat/completions",
+    parse=parse,
     auth_header="Authorization",
     auth_scheme="bearer",
     error=_error,

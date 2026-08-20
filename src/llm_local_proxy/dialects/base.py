@@ -20,6 +20,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from ..ir import ChatRequest
+
 
 @dataclass(frozen=True, eq=False)
 class Frame:
@@ -45,6 +47,8 @@ class Dialect:
     prefix: str
     #: Path, below the prefix, that accepts a chat request.
     chat_route: str
+    #: (body, session) -> the dialect-neutral request every provider reads.
+    parse: Callable[[dict[str, Any], str], ChatRequest]
     #: Header carrying the proxy's local API key, and the scheme within it.
     #: An empty scheme means the header holds the bare key.
     auth_header: str

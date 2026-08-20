@@ -14,18 +14,17 @@ from dataclasses import replace
 from typing import Any
 
 from .config import Config
-from .protocol import ReasoningCache, RequestError, Translator, build_request
+from .ir import ChatRequest
+from .protocol import ReasoningCache, RequestError, Translator
 from .providers import Provider
 from .providers.claude.auth import ClaudeAuth, ClaudeAuthError
-from .providers.claude.protocol import (
-    CLAUDE_MODELS,
-    ClaudeTranslator,
-    build_messages_request,
-    claude_model_name,
-)
+from .providers.claude.catalog import CLAUDE_MODELS, claude_model_name
+from .providers.claude.events import ClaudeTranslator
+from .providers.claude.request import build as build_claude_request
 from .providers.claude.upstream import ClaudeUpstream, ClaudeUpstreamError
 from .providers.codex.app_server import AppServer, RpcError
 from .providers.codex.auth import CodexAuth
+from .providers.codex.request import build as build_codex_request
 from .providers.codex.upstream import Upstream
 from .status import ProviderStatus
 
@@ -203,10 +202,10 @@ class Service:
     # -- per-provider handlers -------------------------------------------
 
     def _codex_chat(
-        self, canonical: str, body: dict[str, Any], session: str
+        self, canonical: str, request: ChatRequest
     ) -> tuple[Iterator[dict[str, Any]], Translator]:
-        request, _ = build_request(body, self.cache, session)
-        return self.upstream.events(request), Translator(canonical, self.cache)
+        body, _ = build_codex_request(request, self.cache)
+        return self.upstream.events(body), Translator(canonical, self.cache)
 
     def _codex_models(self) -> list[dict[str, Any]]:
         result = self.app.call("model/list", {"limit": 100, "includeHidden": False})
@@ -221,20 +220,20 @@ class Service:
         return models
 
     def _claude_chat(
-        self, canonical: str, body: dict[str, Any], session: str
+        self, canonical: str, request: ChatRequest
     ) -> tuple[Iterator[dict[str, Any]], ClaudeTranslator]:
         if not self.claude_auth.signed_in():
             raise ClaudeAuthError(
                 "not signed in to Claude; use the sign in button on the status page"
             )
-        request, betas = build_messages_request(
-            body,
+        body, betas = build_claude_request(
+            request,
             canonical,
             max_output=self._claude_capability(canonical, "max_output_tokens"),
             thinking=self._claude_capability(canonical, "thinking"),
             reasoning_cache=self.claude_reasoning,
         )
-        events = self.claude.events(request, tuple(betas))
+        events = self.claude.events(body, tuple(betas))
         return events, ClaudeTranslator(canonical, self.claude_reasoning)
 
     def _claude_code(self, body: dict[str, Any]) -> dict[str, Any]:

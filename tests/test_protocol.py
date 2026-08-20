@@ -1,11 +1,17 @@
 import unittest
 
-from llm_local_proxy.protocol import (
-    ReasoningCache,
-    RequestError,
-    Translator,
-    build_request,
-)
+from llm_local_proxy.dialects.openai.ingress import parse
+from llm_local_proxy.protocol import ReasoningCache, RequestError, Translator
+from llm_local_proxy.providers.codex.request import build
+
+
+def build_request(body, cache, session=""):
+    """The whole path a Chat Completions request takes to Codex.
+
+    Which layer rejects a bad body — the dialect's ingress or the provider's
+    renderer — is an implementation detail these tests should not pin.
+    """
+    return build(parse(body, session), cache)
 
 
 class ProtocolTest(unittest.TestCase):

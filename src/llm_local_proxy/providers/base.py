@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..ir import ChatRequest
 from ..status import ProviderStatus
 from .auth import Auth
 
@@ -31,8 +32,10 @@ class Provider:
     #: Maps a requested model id to a canonical name for this provider, or
     #: None when the model does not belong to it (used to route requests).
     match: Callable[[str], str | None]
-    #: (canonical model, chat body, session id) -> (events iterator, translator).
-    chat: Callable[[str, dict[str, Any], str], tuple[Iterator[Any], Any]]
+    #: (canonical model, parsed request) -> (upstream events, translator).
+    #: The request arrives dialect-neutral, so a provider serves every
+    #: downstream format without knowing which one asked.
+    chat: Callable[[str, ChatRequest], tuple[Iterator[Any], Any]]
     #: Model catalog entries to merge into the /v1/models listing.
     models: Callable[[], list[dict[str, Any]]]
     #: The provider's card for /api/status, normalised so every provider

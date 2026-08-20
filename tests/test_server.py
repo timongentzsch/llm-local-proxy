@@ -9,7 +9,7 @@ from llm_local_proxy.config import load
 from llm_local_proxy.http.handler import api_path as _api_path
 from llm_local_proxy.http.sse import with_heartbeats as _with_heartbeats
 from llm_local_proxy.providers import Provider
-from llm_local_proxy.providers.claude.protocol import claude_model_name
+from llm_local_proxy.providers.claude.catalog import claude_model_name
 from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
 from llm_local_proxy.service import (
     Service,
