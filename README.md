@@ -93,7 +93,7 @@ both volumes.
 The request's `model` selects the Codex or Claude model, as on OpenRouter. Responses
 include prompt, completion, cached, and reasoning token counts. The proxy does
 not invent per-token pricing, cost, provider routing, or generation history:
-ChatGPT subscriptions do not expose truthful equivalents.
+subscriptions do not expose truthful equivalents.
 
 ## OpenRouter compatibility
 
@@ -102,17 +102,21 @@ OpenRouter-style behavior includes model selection, model metadata/search/count,
 streaming Chat Completions, tools, images, reasoning effort, and token usage.
 Function calls are returned to the client for execution; only web search runs
 upstream, with source annotations and search usage returned in the stream.
-Codex controls output length, so `max_tokens` and `max_completion_tokens` are
-accepted as compatibility hints but cannot be enforced. Unsupported sampling
-and structured-output parameters fail explicitly rather than being ignored.
-Pricing, provider preferences/fallbacks, key spend, and generation-cost history
-are intentionally absent because Codex does not expose equivalent data.
+`max_tokens` and `max_completion_tokens` are hints on Codex, which controls its
+own output length, but the Messages API requires a limit: Claude sends the
+requested value or the model's maximum, and that limit also bounds any thinking
+budget from `reasoning_effort`, so a small one caps reasoning too. Unsupported
+sampling and structured-output parameters fail explicitly rather than being
+ignored, unless the value is a no-op. Pricing, provider preferences/fallbacks,
+key spend, and generation-cost history are intentionally absent: neither
+subscription exposes equivalent data.
 
-API routes require the generated bearer key. Set `api_key = ""` to disable
-authentication. Native installs always reject non-loopback bind addresses.
-With Docker, no-auth mode is safe only while the port remains published to
-`127.0.0.1` as supplied. Never publish it on all interfaces. Change the port or
-key in:
+API routes require the generated bearer key; the dashboard and `/healthz` do
+not, and a key must be empty or at least 24 characters. Set `api_key = ""` to
+disable authentication. Native installs always reject non-loopback bind
+addresses. With Docker, no-auth mode is safe only while the port remains
+published to `127.0.0.1` as supplied. Never publish it on all interfaces.
+Change the port or key in:
 
 ```toml
 host = "127.0.0.1"
