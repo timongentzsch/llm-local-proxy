@@ -52,6 +52,9 @@ curl -N http://127.0.0.1:8787/api/v1/chat/completions \
 
 The stream uses Chat Completions chunks, OpenRouter-style `url_citation`
 annotations, and `server_tool_use.web_search_requests` in the final usage chunk.
+`openrouter:web_search` is only OpenRouter's wire name for server-side search,
+which the proxy maps to the upstream's own tool; no OpenRouter account or key is
+involved, and the search runs inside the subscription serving the request.
 
 ## Claude subscription
 
