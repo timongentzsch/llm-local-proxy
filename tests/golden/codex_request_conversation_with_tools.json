@@ -1,0 +1,65 @@
+{
+  "request": {
+    "model": "gpt-5.6-sol",
+    "instructions": "Be terse.\n\nPrefer SI units.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Weather in Berlin?"
+          }
+        ]
+      },
+      {
+        "type": "function_call",
+        "call_id": "call_abc",
+        "name": "get_weather",
+        "arguments": "{\"city\":\"Berlin\"}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_abc",
+        "output": "17C"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Thanks"
+          }
+        ]
+      }
+    ],
+    "store": false,
+    "stream": true,
+    "prompt_cache_key": "proxy-cb602c8157f188a9e63a5a57",
+    "tools": [
+      {
+        "type": "function",
+        "name": "get_weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Look up weather"
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {
+      "effort": "high",
+      "summary": "auto"
+    },
+    "include": [
+      "reasoning.encrypted_content"
+    ]
+  },
+  "session": "proxy-cb602c8157f188a9e63a5a57"
+}

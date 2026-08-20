@@ -1,0 +1,21 @@
+{
+  "request": {
+    "model": "gpt-5.6-sol",
+    "instructions": "",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Hello"
+          }
+        ]
+      }
+    ],
+    "store": false,
+    "stream": true,
+    "prompt_cache_key": "proxy-90b626dbb1e994c962942db2"
+  },
+  "session": "proxy-90b626dbb1e994c962942db2"
+}

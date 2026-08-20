@@ -1,0 +1,136 @@
+{
+  "stream": [
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "role": "assistant",
+            "content": ""
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "reasoning_content": "Let me check"
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 1,
+                "id": "toolu_1",
+                "function": {
+                  "name": "get_weather",
+                  "arguments": ""
+                },
+                "type": "function"
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 1,
+                "function": {
+                  "arguments": "{\"city\":"
+                }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 1,
+                "function": {
+                  "arguments": "\"Berlin\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {},
+          "finish_reason": "tool_calls"
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [],
+      "usage": {
+        "prompt_tokens": 130,
+        "completion_tokens": 42,
+        "total_tokens": 172,
+        "prompt_tokens_details": {
+          "cached_tokens": 30,
+          "cache_write_tokens": 10
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 15
+        }
+      }
+    }
+  ]
+}

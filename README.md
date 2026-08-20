@@ -136,6 +136,12 @@ owner (`chmod 600`).
 
 ## Development
 
+[docs/architecture.md](docs/architecture.md) is the architecture of record:
+the dialect/provider/auth axes, the migration that gets there, and the wire
+contracts each downstream endpoint must honour. `specs/` holds the pinned
+OpenAI and Anthropic specifications those contracts are checked against;
+refresh them with `scripts/refresh-specs.sh`.
+
 ```sh
 uv sync
 uv run python -m unittest discover -s tests -v
