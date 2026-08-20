@@ -22,8 +22,17 @@ class Config:
 
     @property
     def base_url(self) -> str:
+        return f"{self.origin}/v1"
+
+    @property
+    def anthropic_base_url(self) -> str:
+        """What ANTHROPIC_BASE_URL should be set to for Claude Code."""
+        return f"{self.origin}/anthropic"
+
+    @property
+    def origin(self) -> str:
         host = "127.0.0.1" if self.host in {"0.0.0.0", "::"} else self.host
-        return f"http://{host}:{self.port}/v1"
+        return f"http://{host}:{self.port}"
 
 
 def _config_root() -> Path:

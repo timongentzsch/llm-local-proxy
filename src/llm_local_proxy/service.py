@@ -85,7 +85,11 @@ class Service:
                     **value.payload(),
                 }
             )
-        return {"base_url": self.config.base_url, "providers": cards}
+        return {
+            "base_url": self.config.base_url,
+            "anthropic_base_url": self.config.anthropic_base_url,
+            "providers": cards,
+        }
 
     def close(self) -> None:
         for provider in self.providers:

@@ -24,6 +24,7 @@
   <div id="providers"></div>
   <h2>client</h2>
   <div class="row"><span class="muted">base url</span><code id="base"></code></div>
+  <div class="row"><span class="muted">anthropic base url</span><code id="anthropicBase"></code></div>
   <div class="row"><span class="muted">api key</span><span><code id="key"></code> <button id="copy">copy</button></span></div>
   <div class="row"><span class="muted">models</span><span id="models" class="remote">loading</span></div>
 </main>
@@ -85,7 +86,7 @@ async function load(){
 }
 function poll(){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).map(p=>api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{}));Promise.all(pings).then(load)}
 q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
-q("#base").textContent=`${location.origin}/v1`;q("#key").textContent=key||(authRequired?"missing from URL":"disabled");q("#copy").style.display=key?"":"none";
+q("#base").textContent=`${location.origin}/v1`;q("#anthropicBase").textContent=`${location.origin}/anthropic`;q("#key").textContent=key||(authRequired?"missing from URL":"disabled");q("#copy").style.display=key?"":"none";
 if(authRequired&&!key){q("#state").textContent="api key required";q("#models").textContent="unavailable";document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
 </script>
 </html>

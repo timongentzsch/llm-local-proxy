@@ -289,10 +289,10 @@ No externally visible behaviour changes before R5.
 | **R1** | Mechanical moves only: create the tree, relocate modules, fix imports. Zero logic edits. Tests change by import line only | low | 0.5d | **done** |
 | **R2** | `Dialect` seam in `http/`: framing, errors, auth, route table. OpenAI output byte-identical against R0 goldens | low | 1d | **done** |
 | **R3** | `ChatRequest` + ingress split; both `request.py` builders read IR; `subscription.py` split out of `claude_protocol.py` | medium | 1.5d | **done** |
-| **R4** | `StreamEvent` + both `events.py` rewritten; `openai/egress.py` reconstructs chunks. **Goldens must be byte-identical** | **high** | 2–3d | next |
-| **R5** | Anthropic dialect: ingress, egress, catalog. Genuinely additive by now | medium | 2d | |
-| **R6** | `REGISTRY` + `ProviderContext`; `Service` reduces to caching and status aggregation | low | 1d | |
-| **R7** | `transport.py` dedup, conformance tests, dashboard, README | low | 1d | |
+| **R4** | `StreamEvent` + both `events.py` rewritten; `openai/egress.py` reconstructs chunks. **Goldens must be byte-identical** | **high** | 2–3d | **done** |
+| **R5** | Anthropic dialect: ingress, egress, catalog. Genuinely additive by now | medium | 2d | **done** |
+| **R6** | `REGISTRY` + `ProviderContext`; `Service` reduces to caching and status aggregation | low | 1d | **done** |
+| **R7** | `transport.py` dedup, conformance tests, dashboard, README | low | 1d | **done** |
 
 Roughly ten working days. R4 is the phase to slow down on; if goldens diverge
 there and the cause is not understood within a day, revert it and fall back to
@@ -304,42 +304,32 @@ on the wire are identical", and it is the only thing that makes R4 safe.
 
 ## Where the migration stands
 
-R0–R3 are on `refactor/dialect-provider-architecture`, one commit per phase,
-each green. 100 tests pass, and the 29 goldens pass **untouched** — so every
-upstream request body is byte-identical to what the pre-refactor code sent.
+Complete, on `refactor/dialect-provider-architecture`, one commit per phase.
+141 tests pass. The Chat Completions goldens pass **untouched** through both
+rewrites, so every upstream request body and every downstream chunk is
+byte-identical to what the pre-refactor code produced.
 
-The request axis is finished: a Chat Completions body is parsed once by
-`dialects/openai/ingress.py` and rendered by `providers/codex/request.py` or
-`providers/claude/request.py`, neither of which knows which dialect asked.
-Adding the Anthropic *request* path is now one new ingress module.
+Both axes are done. A request is parsed once into `ChatRequest` by the
+ingress of whichever dialect received it, and rendered by whichever provider
+claims the model. The response comes back as `StreamEvent` from the provider's
+decoder and is written by the dialect's encoder. Neither side names the other.
 
-The response axis is untouched: `providers/codex/events.py` and
-`providers/claude/events.py` still emit `chat.completion.chunk` directly, so
-the 2×2 grid survives on that side until R4.
+The modularity contract holds as stated below: `dialects/anthropic/` is three
+files and one registry line, and touches no provider; `providers/*/` build
+themselves from a `ProviderContext` and touch no dialect and no line of
+`http/`.
 
-### Starting R4
+### What is deliberately not implemented
 
-The decoder/encoder split is the shape to build:
-
-- `providers/<p>/events.py` exposes a stateful decoder, `decode(event) ->
-  list[StreamEvent]`, owning the reasoning-cache writes (encrypted content for
-  Codex, signed thinking for Claude) since those are upstream state.
-- `dialects/<d>/egress.py` exposes an encoder built around a decoder and
-  holding the wire shaping: chunk envelopes, citation and usage mapping,
-  finish-reason narrowing. `Dialect` gains an `encode(model, decoder)` factory
-  so the handler wires the pair without either side naming the other.
-
-Two pieces of genuine duplication collapse here, and they are the argument for
-doing R4 at all rather than adapting chunks: `protocol._usage`/`_annotation`
-and their Claude twins compute the same Chat Completions shapes from different
-inputs. Under the split, both providers emit canonical `Usage` and `Citation`
-events and a single encoder shapes them once.
-
-The goldens are the specification for that encoder — each file is an exact
-chunk sequence to reproduce. Work from them rather than from the old
-translators, and keep the abort criterion in mind: if they diverge and the
-cause is not understood within a day, revert and fall back to adapting Chat
-Completions output into Anthropic frames.
+- `POST /anthropic/v1/messages/count_tokens`. The upstream endpoint is not
+  wired, and a client that trusts a guessed token count will manage its
+  context wrongly. Better absent than approximate.
+- A native Codex→Anthropic encoder. The existing one is exact, but the block
+  indices it produces follow Codex's ordering rather than a model's natural
+  one. No client has complained; revisit if one does.
+- `pause_turn` resolution. It narrows to `stop` for Chat Completions clients
+  and passes through intact to Anthropic ones, which is correct for both, but
+  the proxy does not itself continue a paused server-tool turn.
 
 ## Transport: extract only what is provably identical
 

@@ -83,17 +83,37 @@ both volumes.
 
 ## API
 
+The proxy speaks two downstream formats over the same subscriptions. Either
+one reaches either provider: the request's `model` chooses.
+
+OpenAI Chat Completions, at `/v1`:
+
 - `GET /v1/models` with Codex and Claude capabilities and `?q=` search
 - `GET /v1/models/count`
 - `POST /v1/chat/completions`
 - streaming, images, function tools, web search, parallel calls, reasoning
   effort, usage
+
+Anthropic Messages, at `/anthropic`:
+
+- `POST /anthropic/v1/messages`, streaming with named SSE events
+- `GET /anthropic/v1/models`
+- authenticates with `x-api-key` as well as `Authorization: Bearer`
+
+```sh
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \
+  ANTHROPIC_API_KEY=$YOUR_LOCAL_PROXY_KEY claude
+```
+
+Asking that endpoint for a Codex model routes it to Codex, translated both
+ways. `POST /anthropic/v1/messages/count_tokens` is not implemented; a client
+that needs it should count locally rather than trust a guess.
 - `GET /api/status` with each provider's account, limits, and proxy token counts
 - `POST /api/codex/login`, `POST /api/codex/logout`
 - `POST /api/claude/login`, `POST /api/claude/code`, `POST /api/claude/usage`,
   `POST /api/claude/logout`
 
-The request's `model` selects the Codex or Claude model, as on OpenRouter. Responses
+Common to both: the request's `model` selects the Codex or Claude model. Responses
 include prompt, completion, cached, and reasoning token counts. The proxy does
 not invent per-token pricing, cost, provider routing, or generation history:
 subscriptions do not expose truthful equivalents.

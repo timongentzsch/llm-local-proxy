@@ -16,6 +16,7 @@ from typing import Any
 from ...atomic import atomic_write_json
 from ...ledger import TokenLedger
 from ...status import Limit, window_label
+from .. import transport
 from .auth import OAUTH_BETA, ClaudeAuth, ClaudeAuthError
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 
@@ -33,11 +34,6 @@ class ClaudeUpstreamError(RuntimeError):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 
 class UsageStore:
@@ -131,7 +127,7 @@ class ClaudeUpstream:
         self.timeout = timeout
         self.usage = UsageStore(usage_path)
         self.ledger = TokenLedger(tokens_path)
-        self._opener = urllib.request.build_opener(_NoRedirect)
+        self._opener = transport.opener()
 
     def models(self) -> list[dict[str, Any]]:
         return self._models(refresh=False)
@@ -186,7 +182,7 @@ class ClaudeUpstream:
                 raise
             body = {**body, "thinking": {"type": "adaptive"}}
             response = self._open(body, betas_header, refresh=False)
-        yield from self._tracked(self._events(response))
+        yield from self._tracked(transport.read_events(response))
 
     @staticmethod
     def _token_usage(event: dict[str, Any]) -> dict[str, int] | None:
@@ -253,22 +249,6 @@ class ClaudeUpstream:
         finally:
             response.close()
         return self.usage.get()
-
-    @staticmethod
-    def _events(response) -> Iterator[dict[str, Any]]:
-        try:
-            for raw in response:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    continue
-                event = json.loads(data)
-                if isinstance(event, dict):
-                    yield event
-        finally:
-            response.close()
 
     def _open(self, body: dict[str, Any], betas: str, refresh: bool):
         try:

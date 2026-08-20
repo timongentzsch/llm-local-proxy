@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...ledger import TokenLedger
+from .. import transport
 from .app_server import AppServer, RpcError
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -19,11 +20,6 @@ class UpstreamError(RuntimeError):
         self.status = status
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 class Upstream:
     """The only module coupled to ChatGPT's private Codex transport."""
 
@@ -31,11 +27,11 @@ class Upstream:
         self.app = app
         self.timeout = timeout
         self.ledger = TokenLedger(tokens_path)
-        self._opener = urllib.request.build_opener(_NoRedirect)
+        self._opener = transport.opener()
 
     def events(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         response = self._open(body, refresh=False)
-        return self._tracked(self._events(response))
+        return self._tracked(transport.read_events(response))
 
     def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
         """Yield events unchanged, tallying the final usage of each request."""
@@ -52,22 +48,6 @@ class Upstream:
                 if any(record.values()):
                     self.ledger.add(**record)
             yield event
-
-    @staticmethod
-    def _events(response) -> Iterator[dict[str, Any]]:
-        try:
-            for raw in response:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    continue
-                event = json.loads(data)
-                if isinstance(event, dict):
-                    yield event
-        finally:
-            response.close()
 
     def _open(self, body: dict[str, Any], refresh: bool):
         try:

@@ -17,18 +17,19 @@ from ..base import Dialect
 from .egress import MessageEncoder
 from .ingress import parse
 
-#: Anthropic's error types; the proxy's own failures are api_error unless
-#: the status maps onto something more specific.
+#: Anthropic's error types, every one of them from the ErrorType enum in
+#: specs/anthropic-openapi.json. Anything unmapped is api_error.
+#: tests/test_conformance.py checks this against the spec, which is how the
+#: plausible-looking gateway_timeout_error and request_too_large were caught.
 ERROR_TYPES = {
     400: "invalid_request_error",
     401: "authentication_error",
+    402: "billing_error",
     403: "permission_error",
     404: "not_found_error",
-    413: "request_too_large",
+    408: "timeout_error",
     429: "rate_limit_error",
-    500: "api_error",
-    502: "api_error",
-    504: "gateway_timeout_error",
+    504: "timeout_error",
     529: "overloaded_error",
 }
 

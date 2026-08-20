@@ -108,7 +108,10 @@ class ServerTest(unittest.TestCase):
         """A Service-shaped object wired with the real claude/codex match funcs."""
         service = SimpleNamespace(
             _lock=Lock(),
-            config=SimpleNamespace(base_url="http://127.0.0.1:8787/v1"),
+            config=SimpleNamespace(
+                base_url="http://127.0.0.1:8787/v1",
+                anthropic_base_url="http://127.0.0.1:8787/anthropic",
+            ),
         )
         seen_claude: list[str] = []
         seen_codex: list[str] = []
