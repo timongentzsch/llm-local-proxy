@@ -5,7 +5,12 @@ import unittest
 import urllib.error
 from email.message import Message
 
-from llm_local_proxy.claude_upstream import UsageStore, _upstream_error
+from llm_local_proxy.claude_upstream import (
+    ClaudeUpstreamError,
+    UsageStore,
+    _thinking_rejected,
+    _upstream_error,
+)
 
 
 def _http_error(code: int, body: str) -> urllib.error.HTTPError:
@@ -44,6 +49,27 @@ def _headers(**values):
     for key, value in values.items():
         message[key] = value
     return message
+
+
+ENABLED = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+
+
+class ThinkingFallbackTest(unittest.TestCase):
+    def test_rejected_budget_falls_back(self):
+        error = ClaudeUpstreamError(400, "thinking.enabled: not permitted")
+        self.assertTrue(_thinking_rejected(error, ENABLED))
+
+    def test_unrelated_400_is_not_retried(self):
+        error = ClaudeUpstreamError(400, "messages: must not be empty")
+        self.assertFalse(_thinking_rejected(error, ENABLED))
+
+    def test_other_statuses_are_not_retried(self):
+        error = ClaudeUpstreamError(429, "thinking")
+        self.assertFalse(_thinking_rejected(error, ENABLED))
+
+    def test_adaptive_request_is_never_retried(self):
+        error = ClaudeUpstreamError(400, "thinking")
+        self.assertFalse(_thinking_rejected(error, {"thinking": {"type": "adaptive"}}))
 
 
 class UsageStoreTest(unittest.TestCase):

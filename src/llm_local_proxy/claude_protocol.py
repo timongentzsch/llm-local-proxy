@@ -210,18 +210,21 @@ def build_messages_request(
     if not effort and isinstance(body.get("reasoning"), dict):
         effort = body["reasoning"].get("effort")
     if effort:
-        if thinking == "adaptive":
-            request["thinking"] = {"type": "adaptive"}
-        else:
-            budget = _THINKING_BUDGETS.get(str(effort).casefold())
-            if not budget:
-                raise RequestError(f"unsupported reasoning_effort: {effort}")
-            budget = min(budget, max_tokens - 1)
-            if budget < 1024:
-                raise RequestError(
-                    "max_tokens is too small for the requested thinking budget"
-                )
-            request["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        budget = _THINKING_BUDGETS.get(str(effort).casefold())
+        if not budget:
+            raise RequestError(f"unsupported reasoning_effort: {effort}")
+        budget = min(budget, max_tokens - 1)
+        if budget < 1024:
+            raise RequestError(
+                "max_tokens is too small for the requested thinking budget"
+            )
+        # An explicit budget is the only form the Messages API accepts that
+        # actually varies with effort; adaptive ignores the requested tier.
+        # Anthropic's catalog can report enabled as unsupported while still
+        # honouring it, so ClaudeUpstream falls back to adaptive on rejection.
+        request["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    elif thinking == "adaptive":
+        request["thinking"] = {"type": "adaptive"}
     return request, betas
 
 
@@ -421,6 +424,7 @@ class ClaudeTranslator:
             "cache_read": 0,
             "cache_creation": 0,
             "output": 0,
+            "thinking": 0,
         }
         self._finish: str | None = None
         self._open_call: dict[str, Any] | None = None
@@ -597,6 +601,11 @@ class ClaudeTranslator:
             self._usage["cache_read"] = value["cache_read_input_tokens"]
         if isinstance(value.get("cache_creation_input_tokens"), int):
             self._usage["cache_creation"] = value["cache_creation_input_tokens"]
+        details = value.get("output_tokens_details")
+        if isinstance(details, dict) and isinstance(
+            details.get("thinking_tokens"), int
+        ):
+            self._usage["thinking"] = details["thinking_tokens"]
 
     @property
     def usage(self) -> dict[str, Any] | None:
@@ -612,7 +621,7 @@ class ClaudeTranslator:
             "completion_tokens": self._usage["output"],
             "total_tokens": prompt + self._usage["output"],
             "prompt_tokens_details": {"cached_tokens": self._usage["cache_read"]},
-            "completion_tokens_details": {"reasoning_tokens": 0},
+            "completion_tokens_details": {"reasoning_tokens": self._usage["thinking"]},
         }
         if self._usage["cache_creation"]:
             result["prompt_tokens_details"]["cache_write_tokens"] = self._usage[

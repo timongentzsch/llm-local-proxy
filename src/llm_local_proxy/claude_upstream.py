@@ -179,7 +179,13 @@ class ClaudeUpstream:
         self, body: dict[str, Any], betas: tuple[str, ...] = ()
     ) -> Iterator[dict[str, Any]]:
         betas_header = ",".join((CLAUDE_CODE_BETA, OAUTH_BETA, *betas))
-        response = self._open(body, betas_header, refresh=False)
+        try:
+            response = self._open(body, betas_header, refresh=False)
+        except ClaudeUpstreamError as error:
+            if not _thinking_rejected(error, body):
+                raise
+            body = {**body, "thinking": {"type": "adaptive"}}
+            response = self._open(body, betas_header, refresh=False)
         yield from self._tracked(self._events(response))
 
     @staticmethod
@@ -296,6 +302,14 @@ class ClaudeUpstream:
             raise _upstream_error(error) from error
         except urllib.error.URLError as error:
             raise ClaudeUpstreamError(502, str(error.reason)) from error
+
+
+def _thinking_rejected(error: ClaudeUpstreamError, body: dict[str, Any]) -> bool:
+    """True when a request was refused solely for its explicit thinking budget."""
+    thinking = body.get("thinking")
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return False
+    return error.status == 400 and "thinking" in str(error).casefold()
 
 
 def _supported(value: Any) -> bool:

@@ -134,12 +134,26 @@ class BuildMessagesRequestTest(unittest.TestCase):
         self.assertEqual(
             request["thinking"], {"type": "enabled", "budget_tokens": 4095}
         )
+        # An explicit effort outranks an adaptive-capable model, because
+        # adaptive silently discards the requested tier.
         request, _ = build_messages_request(
             {**BASE, "reasoning_effort": "xhigh", "max_tokens": 65537},
             "claude-fake-1",
             thinking="adaptive",
         )
+        self.assertEqual(
+            request["thinking"], {"type": "enabled", "budget_tokens": 32768}
+        )
+        # Without an effort, an adaptive model still gets adaptive thinking.
+        request, _ = build_messages_request(
+            {**BASE, "max_tokens": 65537}, "claude-fake-1", thinking="adaptive"
+        )
         self.assertEqual(request["thinking"], {"type": "adaptive"})
+        # No effort and no adaptive capability means no thinking at all.
+        request, _ = build_messages_request(
+            {**BASE, "max_tokens": 4096}, "claude-fake-1"
+        )
+        self.assertNotIn("thinking", request)
 
     def test_rejects_unsupported_parameters(self):
         with self.assertRaises(RequestError):
