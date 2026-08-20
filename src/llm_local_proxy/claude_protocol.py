@@ -578,7 +578,9 @@ class ClaudeTranslator:
         return [self.chunk({"tool_calls": [call]})]
 
     def _citation(self, value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, dict) or value.get("type") != "url_citation":
+        # Claude names web results web_search_result_location and document
+        # citations by their location kind; a url is what makes one citable.
+        if not isinstance(value, dict):
             return []
         url = value.get("url")
         if not isinstance(url, str) or not url:

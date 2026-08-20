@@ -271,6 +271,66 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(usage["total_tokens"], 22)
         self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], 3)
 
+    def test_web_search_citation_becomes_url_citation_annotation(self):
+        translator = ClaudeTranslator("claude-fake-1")
+        chunks = []
+        for event in [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "citations_delta",
+                    # Claude's own name for a web result, not OpenAI's.
+                    "citation": {
+                        "type": "web_search_result_location",
+                        "url": "https://python.org/downloads/",
+                        "title": "Downloads",
+                        "cited_text": "Python 3.14",
+                        "encrypted_index": "abc",
+                    },
+                },
+            },
+        ]:
+            chunks.extend(translator.feed(event))
+        annotations = [
+            annotation
+            for chunk in chunks
+            for annotation in chunk["choices"][0]["delta"].get("annotations", [])
+        ]
+        self.assertEqual(
+            annotations,
+            [
+                {
+                    "type": "url_citation",
+                    "url_citation": {
+                        "url": "https://python.org/downloads/",
+                        "title": "Downloads",
+                    },
+                }
+            ],
+        )
+        message = translator.result()["choices"][0]["message"]
+        self.assertEqual(message["annotations"], annotations)
+
+    def test_citation_without_url_is_ignored(self):
+        translator = ClaudeTranslator("claude-fake-1")
+        chunks = translator.feed(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": {"type": "char_location", "document_index": 0},
+                },
+            }
+        )
+        self.assertEqual(chunks, [])
+
     def test_tool_call_without_arguments_streams_empty_object(self):
         translator = ClaudeTranslator("claude-fake-1")
         chunks = []
