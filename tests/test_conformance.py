@@ -17,8 +17,9 @@ from llm_local_proxy.dialects.anthropic import ERROR_TYPES
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import CHOICES, parse
 from llm_local_proxy.dialects.openai.egress import FINISH_REASONS
-from llm_local_proxy.protocol import ReasoningCache, RequestError
+from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
+from llm_local_proxy.providers.reasoning import ReasoningCache
 
 SPEC = Path(__file__).resolve().parents[1] / "specs" / "anthropic-openapi.json"
 

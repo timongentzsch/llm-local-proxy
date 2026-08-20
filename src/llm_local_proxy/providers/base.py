@@ -60,6 +60,11 @@ class Provider:
     #: dispatch and always call auth.login_start()/auth.logout() instead of
     #: any handler registered here.
     routes: Mapping[str, Callable[[dict[str, Any]], Any]]
+    #: Counts the input tokens a request would cost, when the upstream can
+    #: answer exactly. None means it cannot, and callers get a 404 rather
+    #: than an estimate: a client that trusts a guessed count manages its
+    #: context wrongly, which is worse than no answer.
+    count_tokens: Callable[[str, ChatRequest], dict[str, Any]] | None = None
     #: Whether the provider's local machinery is running. Defaults suit any
     #: provider that is just an HTTPS client with nothing to keep alive.
     healthy: Callable[[], bool] = lambda: True

@@ -8,10 +8,11 @@ from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
+from ...errors import RequestError
 from ...ir import ChatRequest
-from ...protocol import ReasoningCache, RequestError
 from ...status import ProviderStatus
 from ..base import Provider, ProviderContext
+from ..reasoning import ReasoningCache
 from .auth import ClaudeAuth, ClaudeAuthError
 from .catalog import CLAUDE_MODELS, claude_model_name, model_info
 from .events import ClaudeDecoder
@@ -19,6 +20,16 @@ from .request import build
 from .upstream import ClaudeUpstream, ClaudeUpstreamError
 
 CATALOG_TTL_SECONDS = 60
+#: The request fields /v1/messages/count_tokens accepts, per the pinned spec.
+COUNTED_FIELDS = (
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "tool_choice",
+    "thinking",
+    "cache_control",
+)
 
 
 class Claude:
@@ -51,6 +62,23 @@ class Claude:
             reasoning_cache=self.cache,
         )
         return self.upstream.events(body, tuple(betas)), ClaudeDecoder(self.cache)
+
+    def count_tokens(self, canonical: str, request: ChatRequest) -> dict[str, Any]:
+        if not self.auth.signed_in():
+            raise ClaudeAuthError(
+                "not signed in to Claude; use the sign in button on the status page"
+            )
+        body, betas = build(
+            request,
+            canonical,
+            max_output=self._capability(canonical, "max_output_tokens"),
+            thinking=self._capability(canonical, "thinking"),
+            reasoning_cache=self.cache,
+        )
+        # count_tokens generates nothing, so its schema accepts only the
+        # fields that make up the prompt. Anything else is rejected upstream.
+        counted = {key: body[key] for key in COUNTED_FIELDS if key in body}
+        return self.upstream.count_tokens(counted, tuple(betas))
 
     def models(self) -> list[dict[str, Any]]:
         if self.auth.signed_in():
@@ -118,4 +146,5 @@ def create(context: ProviderContext) -> Provider:
         # Nothing local to keep alive: the transport is plain HTTPS, so the
         # default healthy/close suit it.
         routes={"code": claude.finish_login, "usage": claude.usage},
+        count_tokens=claude.count_tokens,
     )

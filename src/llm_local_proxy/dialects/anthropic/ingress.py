@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...errors import RequestError
 from ...ir import (
     Block,
     ChatRequest,
@@ -22,7 +23,6 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
-from ...protocol import RequestError
 
 #: Server tools the proxy can actually serve. Everything else in the tools
 #: union runs inside Anthropic's infrastructure and has no Codex equivalent,
@@ -159,6 +159,15 @@ def _system(value: Any) -> list[str]:
 
 
 def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
+    return _parse(body, session, generating=True)
+
+
+def parse_count(body: dict[str, Any], session: str = "") -> ChatRequest:
+    """Parse a count_tokens body, which has no max_tokens: nothing is generated."""
+    return _parse(body, session, generating=False)
+
+
+def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
     model = body.get("model")
     if not isinstance(model, str) or not model:
         raise RequestError("model is required")
@@ -166,12 +175,15 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
     if not isinstance(messages, list) or not messages:
         raise RequestError("messages must be a non-empty array")
     max_tokens = body.get("max_tokens")
-    # max_tokens is required, and zero is legal: it pre-warms the prompt
-    # cache without generating.
-    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
-        raise RequestError("max_tokens is required and must be an integer")
-    if max_tokens < 0:
-        raise RequestError("max_tokens must not be negative")
+    if generating:
+        # max_tokens is required, and zero is legal: it pre-warms the prompt
+        # cache without generating.
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
+            raise RequestError("max_tokens is required and must be an integer")
+        if max_tokens < 0:
+            raise RequestError("max_tokens must not be negative")
+    else:
+        max_tokens = None
     for name in REJECTED:
         if body.get(name) is not None:
             raise RequestError(f"unsupported parameter: {name}")

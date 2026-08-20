@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 from llm_local_proxy.http.handler import make_handler
 from llm_local_proxy.http.server import Server
-from llm_local_proxy.protocol import ReasoningCache
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
+from llm_local_proxy.providers.reasoning import ReasoningCache
 
 STREAM = [
     {
@@ -57,11 +57,18 @@ def _service():
             iter(STREAM),
             ClaudeDecoder(ReasoningCache()),
         ),
+        count_tokens=lambda canonical, request: {"input_tokens": 42},
+    )
+    # A provider whose upstream has no way to count, like Codex.
+    uncounted = SimpleNamespace(
+        name="codex", routes={}, auth=SimpleNamespace(), count_tokens=None
     )
     return SimpleNamespace(
         config=SimpleNamespace(api_key="", host="127.0.0.1"),
         app=SimpleNamespace(alive=lambda: True),
-        route=lambda model: (provider, model),
+        route=lambda model: (
+            (uncounted, model) if model.startswith("gpt") else (provider, model)
+        ),
         provider=lambda name: provider if name == "claude" else None,
         models=lambda: MODELS,
         status=lambda: {"providers": []},
@@ -172,6 +179,39 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["content"], [{"type": "text", "text": "Hello"}])
         self.assertEqual(body["stop_reason"], "end_turn")
         self.assertEqual(body["usage"]["input_tokens"], 11)
+
+    # -- token counting ---------------------------------------------------
+
+    def test_count_tokens(self):
+        status, text = self.request(
+            "POST",
+            "/anthropic/v1/messages/count_tokens",
+            # No max_tokens: nothing is generated, so its schema omits it.
+            {
+                "model": "claude-sonnet-5",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(text), {"input_tokens": 42})
+
+    def test_count_tokens_is_404_when_the_upstream_cannot_count(self):
+        # Better an honest 404 than a guess the client would trust.
+        status, text = self.request(
+            "POST",
+            "/anthropic/v1/messages/count_tokens",
+            {"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(text)["error"]["type"], "not_found_error")
+
+    def test_chat_completions_has_no_count_route(self):
+        status, _ = self.request(
+            "POST",
+            "/v1/messages/count_tokens",
+            {"model": "claude-sonnet-5", "messages": []},
+        )
+        self.assertEqual(status, 404)
 
     # -- catalog and errors -----------------------------------------------
 

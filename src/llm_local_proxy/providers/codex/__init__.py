@@ -7,9 +7,9 @@ from dataclasses import replace
 from typing import Any
 
 from ...ir import ChatRequest
-from ...protocol import ReasoningCache
 from ...status import ProviderStatus
 from ..base import Provider, ProviderContext
+from ..reasoning import ReasoningCache
 from .app_server import AppServer
 from .auth import CodexAuth
 from .catalog import model_info

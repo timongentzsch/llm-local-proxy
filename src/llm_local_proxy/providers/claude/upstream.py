@@ -21,6 +21,7 @@ from .auth import OAUTH_BETA, ClaudeAuth, ClaudeAuthError
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 MODELS_URL = "https://api.anthropic.com/v1/models"
 ANTHROPIC_VERSION = "2023-06-01"
 # Beta the subscription edge uses to recognize Claude Code traffic; requests
@@ -250,13 +251,43 @@ class ClaudeUpstream:
             response.close()
         return self.usage.get()
 
-    def _open(self, body: dict[str, Any], betas: str, refresh: bool):
+    def count_tokens(
+        self, body: dict[str, Any], betas: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
+        """Ask the edge how many input tokens a request would cost.
+
+        Generates nothing and is not billed, which is what makes it worth a
+        round trip: only the server knows the exact tokenisation of tool
+        schemas and system blocks.
+        """
+        betas_header = ",".join((CLAUDE_CODE_BETA, OAUTH_BETA, *betas))
+        response = self._open(body, betas_header, refresh=False, url=COUNT_TOKENS_URL)
+        try:
+            value = json.loads(response.read())
+        except (json.JSONDecodeError, OSError) as error:
+            raise ClaudeUpstreamError(
+                502, "Claude token count is unreadable"
+            ) from error
+        finally:
+            response.close()
+        tokens = value.get("input_tokens") if isinstance(value, dict) else None
+        if not isinstance(tokens, int) or isinstance(tokens, bool):
+            raise ClaudeUpstreamError(502, "Claude token count is malformed")
+        return {"input_tokens": tokens}
+
+    def _open(
+        self,
+        body: dict[str, Any],
+        betas: str,
+        refresh: bool,
+        url: str = MESSAGES_URL,
+    ):
         try:
             token = self.auth.access_token(force_refresh=refresh)
         except ClaudeAuthError as error:
             raise ClaudeUpstreamError(error.status, str(error)) from error
         request = urllib.request.Request(
-            MESSAGES_URL,
+            url,
             data=json.dumps(body, separators=(",", ":")).encode(),
             method="POST",
             headers={
@@ -278,7 +309,7 @@ class ClaudeUpstream:
             self.usage.update(error.headers)
             if error.code == 401 and not refresh:
                 error.close()
-                return self._open(body, betas, refresh=True)
+                return self._open(body, betas, refresh=True, url=url)
             raise _upstream_error(error) from error
         except urllib.error.URLError as error:
             raise ClaudeUpstreamError(502, str(error.reason)) from error

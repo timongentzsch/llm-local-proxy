@@ -12,11 +12,12 @@ import unittest
 from llm_local_proxy.dialects import ANTHROPIC, resolve
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse
+from llm_local_proxy.errors import RequestError
 from llm_local_proxy.http import security
 from llm_local_proxy.ir import Image, Text, Thinking, ToolResult, ToolUse
-from llm_local_proxy.protocol import ReasoningCache, RequestError
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
+from llm_local_proxy.providers.reasoning import ReasoningCache
 
 BASE = {
     "model": "claude-sonnet-5",

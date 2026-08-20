@@ -18,7 +18,7 @@ from ...ir import (
     ToolCallStart,
     Usage,
 )
-from ...protocol import ReasoningCache
+from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
 
 #: Stop reasons this decoder passes through; anything else means the turn

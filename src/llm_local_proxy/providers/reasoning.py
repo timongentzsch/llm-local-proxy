@@ -1,3 +1,13 @@
+"""Reasoning carried between a tool call and its result.
+
+Both upstreams refuse a tool result whose originating reasoning is missing,
+and neither downstream format has anywhere to put it: Codex returns an
+encrypted blob and Claude a signed thinking block, both opaque and both
+required verbatim on the next turn. So the proxy holds them here, keyed by
+the tool call ids they belong to, rather than asking clients to round-trip
+something they cannot read.
+"""
+
 from __future__ import annotations
 
 import threading
@@ -5,13 +15,7 @@ from collections import OrderedDict
 from typing import Any
 
 
-class RequestError(ValueError):
-    pass
-
-
 class ReasoningCache:
-    """Keeps encrypted reasoning between a tool call and its result."""
-
     def __init__(self, limit: int = 128):
         self._items: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._limit = limit
@@ -34,17 +38,3 @@ class ReasoningCache:
                 self._items.move_to_end(call_id)
             while len(self._items) > self._limit:
                 self._items.popitem(last=False)
-
-
-def _text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        raise RequestError("message content must be a string or array")
-    parts = []
-    for part in content:
-        if isinstance(part, dict) and part.get("type") == "text":
-            parts.append(str(part.get("text", "")))
-    return "\n".join(parts)

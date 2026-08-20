@@ -1,13 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
-from threading import Event, Lock
+from threading import Lock
 from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 from llm_local_proxy.config import load
-from llm_local_proxy.http.handler import api_path as _api_path
-from llm_local_proxy.http.sse import with_heartbeats as _with_heartbeats
 from llm_local_proxy.providers import Provider
 from llm_local_proxy.providers.claude.catalog import claude_model_name
 from llm_local_proxy.providers.claude.catalog import model_info as _claude_model_info
@@ -271,33 +269,6 @@ class ServerTest(unittest.TestCase):
         value = Service.models(service)
         ids = [model["id"] for model in value["data"]]
         self.assertEqual(ids, ["acme-gpt-1"])
-
-    def test_api_path_alias_branch(self):
-        self.assertEqual(_api_path("/api/v1/chat/completions"), "/v1/chat/completions")
-        self.assertEqual(_api_path("/api/status"), "/api/status")
-
-    def test_heartbeat_while_upstream_is_silent(self):
-        release = Event()
-
-        def delayed():
-            release.wait()
-            yield {"type": "response.completed"}
-
-        stream = _with_heartbeats(delayed(), interval=0.01)
-        self.assertIsNone(next(stream))
-        release.set()
-        self.assertEqual(next(stream), {"type": "response.completed"})
-        with self.assertRaises(StopIteration):
-            next(stream)
-
-    def test_upstream_exception_is_propagated(self):
-        def broken():
-            raise RuntimeError("upstream failed")
-            yield
-
-        stream = _with_heartbeats(broken(), interval=1)
-        with self.assertRaisesRegex(RuntimeError, "upstream failed"):
-            next(stream)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...errors import RequestError
 from ...ir import (
     Block,
     ChatRequest,
@@ -22,7 +23,6 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
-from ...protocol import RequestError, _text
 
 SYSTEM_ROLES = {"system", "developer"}
 PARAMS = (
@@ -38,6 +38,21 @@ PARAMS = (
     "logit_bias",
     "stop",
 )
+
+
+def _text(content: Any) -> str:
+    """Flatten a content field that may be a string or a list of parts."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        raise RequestError("message content must be a string or array")
+    return "\n".join(
+        str(part.get("text", ""))
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
 
 
 def _content(value: Any, role: str) -> list[Block]:

@@ -1,13 +1,16 @@
+"""The Codex provider: Responses requests out, Responses events back."""
+
 import unittest
 
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
-from llm_local_proxy.protocol import ReasoningCache, RequestError
+from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build
+from llm_local_proxy.providers.reasoning import ReasoningCache
 
 
-def build_request(body, cache, session=""):
+def codex_request(body, cache, session=""):
     """The whole path a Chat Completions request takes to Codex.
 
     Which layer rejects a bad body — the dialect's ingress or the provider's
@@ -20,12 +23,12 @@ class ProtocolTest(unittest.TestCase):
     def test_rejects_invalid_tools_and_multiple_choices(self):
         base = {"model": "acme-gpt-1", "messages": [{"role": "user", "content": "hi"}]}
         with self.assertRaises(RequestError):
-            build_request({**base, "tools": [None]}, ReasoningCache())
+            codex_request({**base, "tools": [None]}, ReasoningCache())
         with self.assertRaises(RequestError):
-            build_request({**base, "n": 2}, ReasoningCache())
+            codex_request({**base, "n": 2}, ReasoningCache())
         with self.assertRaises(RequestError):
-            build_request({**base, "temperature": 0}, ReasoningCache())
-        build_request(
+            codex_request({**base, "temperature": 0}, ReasoningCache())
+        codex_request(
             {
                 **base,
                 "temperature": 1,
@@ -38,14 +41,14 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_does_not_inject_default_instructions(self):
-        request, _ = build_request(
+        request, _ = codex_request(
             {"model": "acme-gpt-1", "messages": [{"role": "user", "content": "hi"}]},
             ReasoningCache(),
         )
         self.assertEqual(request["instructions"], "")
 
     def test_accepts_max_tokens_as_compatibility_hint(self):
-        request, _ = build_request(
+        request, _ = codex_request(
             {
                 "model": "acme-gpt-1",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -58,7 +61,7 @@ class ProtocolTest(unittest.TestCase):
     def test_chat_tools_become_responses_items(self):
         cache = ReasoningCache()
         cache.put(["call_1"], [{"type": "reasoning", "encrypted_content": "secret"}])
-        request, session = build_request(
+        request, session = codex_request(
             {
                 "model": "acme-gpt-1",
                 "messages": [
@@ -105,7 +108,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(request["tools"][0]["name"], "read_file")
 
     def test_openrouter_web_search_becomes_responses_tool(self):
-        request, _ = build_request(
+        request, _ = codex_request(
             {
                 "model": "acme-gpt-1",
                 "messages": [{"role": "user", "content": "search"}],

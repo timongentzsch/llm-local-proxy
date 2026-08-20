@@ -15,7 +15,7 @@ from typing import Any
 
 from ..base import Dialect
 from .egress import MessageEncoder
-from .ingress import parse
+from .ingress import parse, parse_count
 
 #: Anthropic's error types, every one of them from the ErrorType enum in
 #: specs/anthropic-openapi.json. Anything unmapped is api_error.
@@ -77,4 +77,6 @@ ANTHROPIC = Dialect(
     keepalive=b'event: ping\ndata: {"type":"ping"}\n\n',
     # The Messages stream has no [DONE] sentinel; message_stop ends it.
     terminator=None,
+    count_route="/v1/messages/count_tokens",
+    parse_count=parse_count,
 )

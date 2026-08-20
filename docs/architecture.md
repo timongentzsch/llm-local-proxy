@@ -12,10 +12,13 @@ aside — is the invariant that proves each one.
 
 ## Why replace rather than extend
 
-Today the system varies along one axis. `Provider` (`providers.py:21-45`)
-models the upstream subscription, and it models it well. Everything else
-assumes there is exactly one downstream wire format, Chat Completions, and that
-assumption is spread across seven sites:
+*Historical: this section describes the layout before the migration, and the
+line references point into commits before `4c9af23`.*
+
+The system varied along one axis. `Provider` (`providers.py:21-45`) modelled
+the upstream subscription, and modelled it well. Everything else assumed
+there was exactly one downstream wire format, Chat Completions, and that
+assumption was spread across seven sites:
 
 | Layer | Site | Assumption |
 | --- | --- | --- |
@@ -89,7 +92,7 @@ repo-wide refactor exists to remove. The response IR is therefore in scope —
 and it is the single highest-risk item in this document, which is why R0 exists
 before any of it.
 
-## Target tree
+## Layout
 
 ```
 src/llm_local_proxy/
@@ -97,49 +100,49 @@ src/llm_local_proxy/
   config.py  atomic.py  ledger.py  status.py     # carried across unchanged
   ir.py                                          # ChatRequest, blocks, StreamEvent
 
+  errors.py                                      # RequestError
+  service.py                                     # registry, catalog, status
+
   http/
-    server.py        # HTTPServer wiring, main()          ← server.py:630-665
-    handler.py       # (dialect, path) route table         ← server.py:379-533
-    sse.py           # framing driven by Dialect           ← server.py:496-531
-    security.py      # auth guard, host and origin checks  ← server.py:552-590
+    server.py        # HTTPServer wiring, main()
+    handler.py       # (dialect, path) route table
+    sse.py           # framing driven by Dialect
+    security.py      # auth guard, host and origin checks
 
   dialects/
-    base.py          # Dialect: parse, encode, errors, framing, auth, catalog
-    __init__.py      # DIALECTS registry
-    openai/
-      ingress.py     # body → ChatRequest                  ← protocol.py:66-140
-      egress.py      # StreamEvent → chat.completion.chunk ← protocol.py:246-435
-      catalog.py     # /v1/models shape                    ← server.py:44-95
-    anthropic/
-      ingress.py  egress.py  catalog.py                    # new
+    base.py          # Dialect: parse, encode, catalog, framing, auth, errors
+    __init__.py      # DIALECTS registry, prefix resolution
+    openai/          # __init__.py  ingress.py  egress.py
+    anthropic/       # __init__.py  ingress.py  egress.py
 
   providers/
-    base.py          # Provider, ProviderContext, ReasoningCache ← providers.py, protocol.py:39
-    auth.py          # Auth ABC                             ← auth.py
-    transport.py     # _NoRedirect + SSE reader             ← proven-identical only
-    __init__.py      # REGISTRY = [claude.build, codex.build]
-    codex/
-      app_server.py  ← app_server.py          auth.py     ← codex_auth.py
-      upstream.py    ← upstream.py            request.py  ← protocol.py:142-244
-      events.py      # Responses SSE → StreamEvent         ← protocol.py:291-409
-      catalog.py     ← server.py:256-267
-    claude/
-      auth.py        ← claude_auth.py         upstream.py ← claude_upstream.py
-      request.py     ← claude_protocol.py:72-228           events.py ← :407-652
-      catalog.py     ← server.py:329-355
-      subscription.py  # [empirical] marker, betas, user agent ← claude_protocol.py:14-20
+    base.py          # Provider, ProviderContext
+    __init__.py      # REGISTRY, in match-priority order
+    auth.py          # Auth ABC
+    reasoning.py     # ReasoningCache
+    transport.py     # no-redirect handler + SSE reader, nothing else
+    codex/           # __init__.py  app_server.py  auth.py  upstream.py
+                     # request.py  events.py  catalog.py
+    claude/          # __init__.py  auth.py  upstream.py
+                     # request.py  events.py  catalog.py
+                     # subscription.py  [empirical] marker, betas, user agent
   static/index.html
 ```
 
-Tests mirror `src/`, plus `tests/golden/` for transcripts and
-`tests/test_conformance.py` for the pinned specs.
+Each dialect's `__init__.py` is the `Dialect` value itself, so the package
+name and the registry entry are the whole of its public surface. Each
+provider's `__init__.py` is `create(ProviderContext) -> Provider`.
+
+Tests mirror `src/`: `test_openai.py`-shaped units per layer, `test_golden.py`
+for recorded transcripts, `test_endpoint.py` for real HTTP over both dialects,
+and `test_conformance.py` for the pinned specs.
 
 ### Carried across unchanged
 
-`config.py`, `atomic.py`, `ledger.py`, `status.py`, `auth.py` and
-`app_server.py` are already single-purpose and dialect-neutral. They move at
-most by path. Roughly a third of `src/` is not touched by this refactor, and
-`tests/test_config.py` and `tests/test_ledger.py` should not change at all.
+`config.py`, `atomic.py`, `ledger.py`, `status.py`, `providers/auth.py` and
+`codex/app_server.py` were already single-purpose and dialect-neutral. They
+moved by path at most. Roughly a third of `src/` was untouched, and
+`test_config.py` and `test_ledger.py` never changed.
 
 ## Evidence rules
 

@@ -1,8 +1,10 @@
+"""The Claude provider: Messages requests out, Messages events back."""
+
 import unittest
 
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
-from llm_local_proxy.protocol import ReasoningCache, RequestError
+from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.claude.catalog import claude_model_name
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import (
@@ -10,9 +12,10 @@ from llm_local_proxy.providers.claude.request import (
     build,
 )
 from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
+from llm_local_proxy.providers.reasoning import ReasoningCache
 
 
-def build_messages_request(body, model, **kwargs):
+def claude_request(body, model, **kwargs):
     """The whole path a Chat Completions request takes to Claude."""
     return build(parse(body), model, **kwargs)
 
@@ -30,7 +33,7 @@ class ClaudeRoutingTest(unittest.TestCase):
 
 class BuildMessagesRequestTest(unittest.TestCase):
     def test_system_split_and_defaults(self):
-        request, betas = build_messages_request(
+        request, betas = claude_request(
             {
                 "model": "claude-fake-1",
                 "messages": [
@@ -60,26 +63,26 @@ class BuildMessagesRequestTest(unittest.TestCase):
     def test_marker_system_always_present(self):
         # Without the Claude Code marker in `system` the subscription edge
         # 429s the call even with valid CLI headers and a fresh token.
-        request, _ = build_messages_request(BASE, "claude-fake-1")
+        request, _ = claude_request(BASE, "claude-fake-1")
         self.assertEqual(
             request["system"], [{"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER}]
         )
 
     def test_explicit_max_tokens_wins_over_live_default(self):
-        request, _ = build_messages_request(BASE, "claude-fake-1", max_output=128000)
+        request, _ = claude_request(BASE, "claude-fake-1", max_output=128000)
         self.assertEqual(request["max_tokens"], 128000)
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {**BASE, "max_tokens": 100}, "claude-fake-1", max_output=128000
         )
         self.assertEqual(request["max_tokens"], 100)
 
     def test_falls_back_to_default_for_unknown_model(self):
         # A model absent from the static catalog uses the protocol default.
-        request, _ = build_messages_request(BASE, "claude-fake-1")
+        request, _ = claude_request(BASE, "claude-fake-1")
         self.assertEqual(request["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS)
 
     def test_tools_and_web_search_beta(self):
-        request, betas = build_messages_request(
+        request, betas = claude_request(
             {
                 "model": "claude-fake-2",
                 "messages": [{"role": "user", "content": "search it"}],
@@ -111,7 +114,7 @@ class BuildMessagesRequestTest(unittest.TestCase):
         self.assertEqual(request["tool_choice"], {"type": "any"})
 
     def test_tool_choice_none_drops_tools(self):
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {
                 **BASE,
                 "tools": [
@@ -130,13 +133,13 @@ class BuildMessagesRequestTest(unittest.TestCase):
         self.assertNotIn("tools", request)
 
     def test_reasoning_effort_maps_to_thinking(self):
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {**BASE, "reasoning_effort": "high", "max_tokens": 32768}, "claude-fake-1"
         )
         self.assertEqual(
             request["thinking"], {"type": "enabled", "budget_tokens": 16384}
         )
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {**BASE, "reasoning_effort": "high", "max_tokens": 4096}, "claude-fake-1"
         )
         self.assertEqual(
@@ -144,7 +147,7 @@ class BuildMessagesRequestTest(unittest.TestCase):
         )
         # An explicit effort outranks an adaptive-capable model, because
         # adaptive silently discards the requested tier.
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {**BASE, "reasoning_effort": "xhigh", "max_tokens": 65537},
             "claude-fake-1",
             thinking="adaptive",
@@ -153,32 +156,26 @@ class BuildMessagesRequestTest(unittest.TestCase):
             request["thinking"], {"type": "enabled", "budget_tokens": 32768}
         )
         # Without an effort, an adaptive model still gets adaptive thinking.
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {**BASE, "max_tokens": 65537}, "claude-fake-1", thinking="adaptive"
         )
         self.assertEqual(request["thinking"], {"type": "adaptive"})
         # No effort and no adaptive capability means no thinking at all.
-        request, _ = build_messages_request(
-            {**BASE, "max_tokens": 4096}, "claude-fake-1"
-        )
+        request, _ = claude_request({**BASE, "max_tokens": 4096}, "claude-fake-1")
         self.assertNotIn("thinking", request)
 
     def test_rejects_unsupported_parameters(self):
         with self.assertRaises(RequestError):
-            build_messages_request({**BASE, "frequency_penalty": 0.2}, "claude-fake-1")
+            claude_request({**BASE, "frequency_penalty": 0.2}, "claude-fake-1")
         with self.assertRaises(RequestError):
-            build_messages_request(
-                {"model": "claude-fake-1", "messages": []}, "claude-fake-1"
-            )
+            claude_request({"model": "claude-fake-1", "messages": []}, "claude-fake-1")
         with self.assertRaises(RequestError):
-            build_messages_request({**BASE, "temperature": 1.5}, "claude-fake-1")
+            claude_request({**BASE, "temperature": 1.5}, "claude-fake-1")
         with self.assertRaises(RequestError):
-            build_messages_request(
-                {**BASE, "reasoning_effort": "ultra"}, "claude-fake-1"
-            )
+            claude_request({**BASE, "reasoning_effort": "ultra"}, "claude-fake-1")
 
     def test_tool_roundtrip_blocks(self):
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {
                 "model": "claude-fake-2",
                 "messages": [
@@ -588,7 +585,7 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
         self.assertEqual(cache.get(["toolu_absent"]), [])
 
     def test_replay_without_cached_blocks_sends_plain_tool_use(self):
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {
                 "model": "claude-fake-2",
                 "messages": [
@@ -624,7 +621,7 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
             ["toolu_1"],
             [{"type": "thinking", "thinking": "think", "signature": "SIG"}],
         )
-        request, _ = build_messages_request(
+        request, _ = claude_request(
             {
                 "model": "claude-fake-2",
                 "messages": [

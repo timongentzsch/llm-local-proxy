@@ -69,3 +69,8 @@ class Dialect:
     #: Written once after the final frame, when the format has such a
     #: sentinel. Anthropic's does not.
     terminator: bytes | None
+    #: Path, below the prefix, that counts a request's input tokens without
+    #: running it. None when the format has no such endpoint.
+    count_route: str | None = None
+    #: Parses a body for count_route, which omits the generation-only fields.
+    parse_count: Callable[[dict[str, Any], str], ChatRequest] | None = None

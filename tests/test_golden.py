@@ -23,11 +23,11 @@ from pathlib import Path
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
-from llm_local_proxy.protocol import ReasoningCache
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude_request
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build as build_codex_request
+from llm_local_proxy.providers.reasoning import ReasoningCache
 
 GOLDEN = Path(__file__).parent / "golden"
 RECORD = os.environ.get("LLM_PROXY_RECORD") == "1"

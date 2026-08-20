@@ -6,6 +6,7 @@ import json
 import uuid
 from typing import Any
 
+from ...errors import RequestError
 from ...ir import (
     ChatRequest,
     FunctionTool,
@@ -18,7 +19,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
-from ...protocol import ReasoningCache, RequestError
+from ..reasoning import ReasoningCache
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"

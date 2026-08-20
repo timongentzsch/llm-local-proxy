@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import io
 import unittest
+from threading import Event
 
 from llm_local_proxy.dialects import DIALECTS, OPENAI, Frame, resolve
 from llm_local_proxy.http import security
 from llm_local_proxy.http.handler import api_path
-from llm_local_proxy.http.sse import SseStream, render
+from llm_local_proxy.http.sse import SseStream, render, with_heartbeats
 
 
 class FramingTest(unittest.TestCase):
@@ -56,7 +57,35 @@ class ResolveTest(unittest.TestCase):
 
     def test_dashboard_alias_maps_onto_the_api_path(self):
         self.assertEqual(api_path("/api/v1/models"), "/v1/models")
+        self.assertEqual(api_path("/api/v1/chat/completions"), "/v1/chat/completions")
+        # Already-canonical paths and non-/v1 routes pass through untouched.
         self.assertEqual(api_path("/v1/models"), "/v1/models")
+        self.assertEqual(api_path("/api/status"), "/api/status")
+
+
+class HeartbeatTest(unittest.TestCase):
+    def test_heartbeat_while_upstream_is_silent(self):
+        release = Event()
+
+        def delayed():
+            release.wait()
+            yield {"type": "response.completed"}
+
+        stream = with_heartbeats(delayed(), interval=0.01)
+        self.assertIsNone(next(stream))
+        release.set()
+        self.assertEqual(next(stream), {"type": "response.completed"})
+        with self.assertRaises(StopIteration):
+            next(stream)
+
+    def test_upstream_exception_is_propagated(self):
+        def broken():
+            raise RuntimeError("upstream failed")
+            yield
+
+        stream = with_heartbeats(broken(), interval=1)
+        with self.assertRaisesRegex(RuntimeError, "upstream failed"):
+            next(stream)
 
 
 class AuthTest(unittest.TestCase):

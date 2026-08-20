@@ -14,7 +14,7 @@ from ...ir import (
     ToolCallStart,
     Usage,
 )
-from ...protocol import ReasoningCache
+from ..reasoning import ReasoningCache
 
 
 class CodexDecoder:

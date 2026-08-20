@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..dialects import Dialect, resolve
-from ..protocol import RequestError
+from ..errors import RequestError
 from ..providers import Provider
 from ..providers.claude.auth import ClaudeAuthError
 from ..providers.claude.upstream import ClaudeUpstreamError
@@ -113,6 +113,8 @@ def make_handler(service: Service):
                     return self._json(HTTPStatus.OK, handler(body))
                 if path == dialect.chat_route:
                     return self._chat(dialect, body)
+                if dialect.count_route and path == dialect.count_route:
+                    return self._count_tokens(dialect, body)
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except RequestError as error:
                 self._api_error(dialect, HTTPStatus.BAD_REQUEST, str(error))
@@ -135,12 +137,28 @@ def make_handler(service: Service):
                     return provider, parts[3]
             return None
 
+        def _count_tokens(self, dialect: Dialect, body: dict[str, Any]) -> None:
+            request = dialect.parse_count(body, self.headers.get("X-Session-Id", ""))
+            provider, canonical = self._route(request.model)
+            if provider.count_tokens is None:
+                # Truthful for a provider whose upstream cannot count: the
+                # client falls back to its own estimate knowing it is one.
+                return self._api_error(
+                    dialect,
+                    HTTPStatus.NOT_FOUND,
+                    f"{provider.name} cannot count tokens for {canonical}",
+                )
+            self._json(HTTPStatus.OK, provider.count_tokens(canonical, request))
+
+        def _route(self, model: str) -> tuple[Provider, str]:
+            routed = service.route(model)
+            if routed is None:
+                raise RequestError(f"no provider handles model: {model}")
+            return routed
+
         def _chat(self, dialect: Dialect, body: dict[str, Any]) -> None:
             request = dialect.parse(body, self.headers.get("X-Session-Id", ""))
-            routed = service.route(request.model)
-            if routed is None:
-                raise RequestError(f"no provider handles model: {request.model}")
-            provider, canonical = routed
+            provider, canonical = self._route(request.model)
             events, decoder = provider.chat(canonical, request)
             stream = dialect.encode(canonical, decoder)
             if not request.stream:

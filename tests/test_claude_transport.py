@@ -1,3 +1,5 @@
+"""The Claude subscription transport: usage capture and error mapping."""
+
 import io
 import pathlib
 import tempfile

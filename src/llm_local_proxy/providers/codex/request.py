@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from ...errors import RequestError
 from ...ir import (
     ChatRequest,
     FunctionTool,
@@ -15,7 +16,7 @@ from ...ir import (
     ToolResult,
     ToolUse,
 )
-from ...protocol import ReasoningCache, RequestError
+from ..reasoning import ReasoningCache
 
 #: Knobs Codex does not expose, and the value of each that means "unset".
 UNSUPPORTED = (
