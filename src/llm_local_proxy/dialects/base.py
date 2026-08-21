@@ -5,7 +5,7 @@ to a :class:`~llm_local_proxy.providers.base.Provider`, which is one upstream
 subscription the proxy speaks to. The two axes are independent: any dialect can
 be served by any provider.
 
-Everything here describes a published specification (see ``specs/PINNED.md``),
+Everything here describes a published specification (see ``docs/specs.md``),
 so a claim in this package is checkable. Undocumented, reverse-engineered
 behaviour belongs in a provider instead.
 

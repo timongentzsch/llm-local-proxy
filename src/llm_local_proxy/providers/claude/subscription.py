@@ -3,7 +3,7 @@
 Nothing here is published or supported. It was established by observing the
 real Claude Code client and may break without notice. Keep it out of the
 request and event modules, which implement the public Messages API and are
-checkable against specs/PINNED.md.
+checkable against docs/specs.md.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """The pinned specifications as an executable oracle.
 
 These tests read specs/ directly, so a spec refresh that changes the wire
-contract fails here rather than in a user's client. See specs/PINNED.md for
+contract fails here rather than in a user's client. See docs/specs.md for
 what each file is and what it does not cover — notably that Anthropic's SSE
 framing is documented in prose only and is pinned in tests/test_anthropic.py
 instead.

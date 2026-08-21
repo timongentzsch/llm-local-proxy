@@ -8,3 +8,5 @@ dist/
 .playwright-cli/
 .pytest_cache/
 .uagent/
+# Third-party wire specs; fetch with scripts/refresh-specs.sh
+specs/

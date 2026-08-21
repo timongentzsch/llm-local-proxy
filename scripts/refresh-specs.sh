@@ -5,7 +5,7 @@
 # discovered indirectly: their TypeScript SDK pins the generator input in
 # .stats.yml, so resolve that first rather than hardcoding a hash that rots.
 #
-# This script never edits specs/PINNED.md. A changed hash is a wire contract
+# This script never edits docs/specs.md. A changed hash is a wire contract
 # change and wants a human reading the diff.
 set -euo pipefail
 
@@ -52,7 +52,7 @@ fetch "$openai" "$specs/openai-openapi.yaml"
 
 if [ "$changed" = 1 ]; then
   echo
-  echo "A spec moved. Update the table and date in specs/PINNED.md, then run:"
+  echo "A spec moved. Update the table and date in docs/specs.md, then run:"
   echo "  uv run python -m unittest discover -s tests -v"
   echo "Conformance failures here are real downstream contract changes."
 fi

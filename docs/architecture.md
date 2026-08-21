@@ -149,7 +149,7 @@ moved by path at most. Roughly a third of `src/` was untouched, and
 Every wire claim in this document is labelled:
 
 - **[spec]** — verified against `specs/anthropic-openapi.json` or
-  `specs/openai-openapi.yaml`, pinned by hash in `specs/PINNED.md`.
+  `specs/openai-openapi.yaml`, pinned by hash in `docs/specs.md`.
 - **[docs]** — verified against `docs.anthropic.com/en/api/<page>.md`.
   Authoritative prose, not machine-checkable. Used where the schema is silent,
   chiefly SSE framing.

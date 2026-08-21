@@ -1,7 +1,7 @@
 """The Anthropic Messages dialect.
 
 Wire claims here are checked against specs/anthropic-openapi.json and the
-streaming prose; see specs/PINNED.md for what each source does and does not
+streaming prose; see docs/specs.md for what each source does and does not
 cover.
 """
 
