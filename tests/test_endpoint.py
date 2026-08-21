@@ -66,6 +66,7 @@ def _service():
     return SimpleNamespace(
         config=SimpleNamespace(api_key="", host="127.0.0.1"),
         app=SimpleNamespace(alive=lambda: True),
+        healthy=lambda: True,
         route=lambda model: (
             (uncounted, model) if model.startswith("gpt") else (provider, model)
         ),
@@ -223,12 +224,29 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(prefixed[0], 200)
         self.assertEqual(prefixed, normalised("/v1/chat/completions"))
 
-    def test_both_model_listings_are_reachable_either_way(self):
-        for path in ("/v1/models", "/openai/v1/models"):
-            with self.subTest(path=path):
-                status, text = self.request("GET", path)
-                self.assertEqual(status, 200)
-                self.assertEqual(json.loads(text)["object"], "list")
+    def test_legacy_paths_mirror_the_openai_mount(self):
+        """Every route reachable at /openai/... is reachable bare, identically.
+
+        Configs written before the prefixes existed point at /v1, so the two
+        must not drift apart.
+        """
+        chat = {
+            "model": "claude-sonnet-5",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        for method, path, body in (
+            ("GET", "/v1/models", None),
+            ("GET", "/v1/models/count", None),
+            ("GET", "/api/status", None),
+            ("GET", "/healthz", None),
+            ("POST", "/v1/chat/completions", chat),
+        ):
+            with self.subTest(route=f"{method} {path}"):
+                legacy = self.request(method, path, body)
+                prefixed = self.request(method, "/openai" + path, body)
+                self.assertEqual(legacy[0], 200)
+                self.assertEqual(legacy[0], prefixed[0])
+                self.assertEqual(len(legacy[1]), len(prefixed[1]))
 
     def test_prefixes_do_not_cross_dialects(self):
         # The Anthropic mount has no Chat Completions route, and vice versa.
