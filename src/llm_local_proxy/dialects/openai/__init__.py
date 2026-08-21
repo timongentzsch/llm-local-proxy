@@ -33,8 +33,6 @@ OPENAI = Dialect(
     catalog=_catalog,
     # Chat Completions streams anonymous data: frames.
     event_name=lambda data: None,
-    auth_header="Authorization",
-    auth_scheme="bearer",
     error=_error,
     # A comment frame: ignored by every SSE client, costs no tokens.
     keepalive=b": keepalive\n\n",

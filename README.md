@@ -102,7 +102,10 @@ Anthropic Messages, at `/anthropic`:
   `404` for Codex ones, whose upstream cannot count. A client that gets the
   404 falls back to its own estimate knowing it is one
 - `GET /anthropic/v1/models`
-- authenticates with `x-api-key` as well as `Authorization: Bearer`
+
+Every mount accepts the local API key in either `Authorization: Bearer <key>`
+or `x-api-key: <key>`, whichever the client already sends. It is the proxy's
+own key, not a vendor's.
 
 The unprefixed `/v1/...` paths are the Chat Completions mount as it was
 before the prefixes existed, and stay valid: `/v1/chat/completions` and

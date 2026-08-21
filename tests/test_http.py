@@ -104,19 +104,31 @@ class HeartbeatTest(unittest.TestCase):
 
 
 class AuthTest(unittest.TestCase):
-    def test_bearer_token_accepted(self):
-        headers = {"Authorization": "Bearer secret"}
-        self.assertTrue(security.authorized(headers, OPENAI, "secret"))
+    def test_every_credential_header_is_accepted(self):
+        # The key is the proxy's own, not a vendor's, so a mount must not
+        # refuse it merely for arriving in the other vendor's header.
+        for headers in (
+            {"Authorization": "Bearer secret"},
+            {"x-api-key": "secret"},
+        ):
+            with self.subTest(header=next(iter(headers))):
+                self.assertTrue(security.authorized(headers, "secret"))
 
     def test_wrong_token_rejected(self):
-        headers = {"Authorization": "Bearer nope"}
-        self.assertFalse(security.authorized(headers, OPENAI, "secret"))
+        self.assertFalse(
+            security.authorized({"Authorization": "Bearer nope"}, "secret")
+        )
+        self.assertFalse(security.authorized({"x-api-key": "nope"}, "secret"))
 
     def test_missing_scheme_rejected(self):
-        self.assertFalse(security.authorized({"Authorization": "secret"}, OPENAI, "s"))
+        self.assertFalse(security.authorized({"Authorization": "secret"}, "s"))
+
+    def test_a_valid_header_wins_over_a_stale_one(self):
+        headers = {"Authorization": "Bearer stale", "x-api-key": "secret"}
+        self.assertTrue(security.authorized(headers, "secret"))
 
     def test_no_configured_key_allows_everything(self):
-        self.assertTrue(security.authorized({}, OPENAI, ""))
+        self.assertTrue(security.authorized({}, ""))
 
     def test_loopback_hosts_accepted(self):
         self.assertTrue(security.valid_host({"Host": "127.0.0.1:8787"}, "127.0.0.1"))

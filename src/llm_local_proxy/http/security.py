@@ -11,9 +11,14 @@ import hmac
 from collections.abc import Mapping
 from urllib.parse import urlparse
 
-from ..dialects import Dialect
-
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+#: Header, and scheme within it, that may carry the proxy's local API key. An
+#: empty scheme means the header holds the bare key. Every mount accepts every
+#: one of these: this is the proxy's own key rather than an upstream vendor's,
+#: so refusing the header a client happens to send buys nothing and only
+#: produces a confusing 401.
+CREDENTIALS = (("Authorization", "bearer"), ("x-api-key", ""))
 
 
 def request_host(headers: Mapping[str, str]) -> tuple[str, int]:
@@ -46,17 +51,24 @@ def same_origin(headers: Mapping[str, str]) -> bool:
     return parsed.hostname in LOOPBACK and (parsed.port or 80) == port
 
 
-def authorized(headers: Mapping[str, str], dialect: Dialect, api_key: str) -> bool:
-    """Whether the request carries the proxy's local key.
+def authorized(headers: Mapping[str, str], api_key: str) -> bool:
+    """Whether the request carries the proxy's local key, in any accepted form.
 
-    Each dialect names the header its clients already send, so an Anthropic
-    SDK authenticating with x-api-key needs no proxy-specific configuration.
+    Every credential header is tried rather than stopping at the first one
+    present, so a client that sends both a stale and a valid header still
+    authenticates on the valid one.
     """
     if not api_key:
         return True
-    value = headers.get(dialect.auth_header, "")
-    if dialect.auth_scheme:
-        scheme, _, value = value.partition(" ")
-        if scheme.casefold() != dialect.auth_scheme:
-            return False
-    return hmac.compare_digest(value.encode("utf-8"), api_key.encode("utf-8"))
+    expected = api_key.encode("utf-8")
+    for header, scheme in CREDENTIALS:
+        value = headers.get(header, "")
+        if not value:
+            continue
+        if scheme:
+            sent, _, value = value.partition(" ")
+            if sent.casefold() != scheme:
+                continue
+        if hmac.compare_digest(value.encode("utf-8"), expected):
+            return True
+    return False

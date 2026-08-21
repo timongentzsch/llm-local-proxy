@@ -274,6 +274,32 @@ class EndpointTest(unittest.TestCase):
         )
         self.assertEqual(status, 404)
 
+    # -- auth -------------------------------------------------------------
+
+    def test_every_mount_accepts_every_credential_header(self):
+        keyed = _service()
+        keyed.config = SimpleNamespace(api_key="secret", host="127.0.0.1")
+        server = Server(("127.0.0.1", 0), make_handler(keyed))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            for path in ("/v1/models", "/openai/v1/models", "/anthropic/v1/models"):
+                for header in (
+                    {"Authorization": "Bearer secret"},
+                    {"x-api-key": "secret"},
+                ):
+                    with self.subTest(path=path, header=next(iter(header))):
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", port, timeout=10
+                        )
+                        connection.request("GET", path, headers=header)
+                        status = connection.getresponse().status
+                        connection.close()
+                        self.assertEqual(status, 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     # -- catalog and errors -----------------------------------------------
 
     def test_model_catalogs_differ_per_dialect(self):

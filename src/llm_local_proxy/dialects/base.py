@@ -62,10 +62,6 @@ class Dialect:
     catalog: Callable[[list[dict[str, Any]]], dict[str, Any]]
     #: Payload -> the SSE event name to write, or None for anonymous frames.
     event_name: Callable[[dict[str, Any]], str | None]
-    #: Header carrying the proxy's local API key, and the scheme within it.
-    #: An empty scheme means the header holds the bare key.
-    auth_header: str
-    auth_scheme: str
     #: (status, message) -> the dialect's error body.
     error: Callable[[int, str], dict[str, Any]]
     #: Sent when a stream has produced nothing for a while, to keep proxies

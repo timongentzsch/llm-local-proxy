@@ -73,8 +73,6 @@ ANTHROPIC = Dialect(
     catalog=_catalog,
     # Every frame is named after the type in its payload.
     event_name=lambda data: data.get("type"),
-    auth_header="x-api-key",
-    auth_scheme="",
     error=_error,
     keepalive=b'event: ping\ndata: {"type":"ping"}\n\n',
     # The Messages stream has no [DONE] sentinel; message_stop ends it.

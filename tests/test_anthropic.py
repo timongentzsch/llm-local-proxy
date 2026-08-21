@@ -339,9 +339,10 @@ class DialectTest(unittest.TestCase):
     def test_bare_paths_still_belong_to_chat_completions(self):
         self.assertEqual(resolve("/v1/models")[0].name, "openai")
 
-    def test_authenticates_with_x_api_key(self):
-        self.assertTrue(security.authorized({"x-api-key": "k"}, ANTHROPIC, "k"))
-        self.assertFalse(security.authorized({"x-api-key": "no"}, ANTHROPIC, "k"))
+    def test_authenticates_with_either_credential_header(self):
+        self.assertTrue(security.authorized({"x-api-key": "k"}, "k"))
+        self.assertTrue(security.authorized({"Authorization": "Bearer k"}, "k"))
+        self.assertFalse(security.authorized({"x-api-key": "no"}, "k"))
 
     def test_error_envelope(self):
         error = ANTHROPIC.error(400, "bad")

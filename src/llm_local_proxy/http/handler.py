@@ -63,7 +63,7 @@ def make_handler(service: Service):
                     HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE,
                     {"status": "ok" if healthy else "unhealthy"},
                 )
-            if not self._authorized(dialect):
+            if not self._authorized():
                 return self._unauthorized(dialect)
             try:
                 if path == "/api/status":
@@ -91,7 +91,7 @@ def make_handler(service: Service):
             if not self._valid_host():
                 return self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "bad host"})
             dialect, path = resolve(api_path(urlparse(self.path).path))
-            if not self._authorized(dialect):
+            if not self._authorized():
                 return self._unauthorized(dialect)
             if not self._same_origin():
                 return self._json(HTTPStatus.FORBIDDEN, {"error": "bad origin"})
@@ -216,10 +216,8 @@ def make_handler(service: Service):
                 raise RequestError("request body must be an object")
             return value
 
-        def _authorized(self, dialect: Dialect) -> bool:
-            return security.authorized(
-                self.headers, dialect, service.config.api_key or ""
-            )
+        def _authorized(self) -> bool:
+            return security.authorized(self.headers, service.config.api_key or "")
 
         def _valid_host(self) -> bool:
             return security.valid_host(self.headers, service.config.host)
