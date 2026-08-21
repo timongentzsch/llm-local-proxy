@@ -23,6 +23,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
+from ..base import block_text
 
 #: The only server tool the proxy can serve; the rest are refused.
 WEB_SEARCH_PREFIX = "web_search_"
@@ -39,13 +40,7 @@ def _text(value: Any) -> str:
     """Text of a content field that may be a string or a block list."""
     if isinstance(value, str):
         return value
-    if not isinstance(value, list):
-        return ""
-    return "\n".join(
-        str(part.get("text", ""))
-        for part in value
-        if isinstance(part, dict) and part.get("type") == "text"
-    )
+    return block_text(value) if isinstance(value, list) else ""
 
 
 def _image(source: Any) -> Image:

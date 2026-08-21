@@ -23,6 +23,15 @@ from typing import Any
 from ..ir import ChatRequest
 
 
+def block_text(parts: list[Any]) -> str:
+    """Join the text blocks of a content list, ignoring every other kind."""
+    return "\n".join(
+        str(part.get("text", ""))
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
 @dataclass(frozen=True, eq=False)
 class Frame:
     """One server-sent event; ``event`` is unset for anonymous frames."""

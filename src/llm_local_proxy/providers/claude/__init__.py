@@ -47,37 +47,33 @@ class Claude:
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._lock = threading.Lock()
 
+    def _request(
+        self, canonical: str, request: ChatRequest
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        if not self.auth.signed_in():
+            raise ClaudeAuthError(
+                "not signed in to Claude; use the sign in button on the status page"
+            )
+        body, betas = build(
+            request,
+            canonical,
+            max_output=self._capability(canonical, "max_output_tokens"),
+            thinking=self._capability(canonical, "thinking"),
+            reasoning_cache=self.cache,
+        )
+        return body, tuple(betas)
+
     def chat(
         self, canonical: str, request: ChatRequest
     ) -> tuple[Iterator[dict[str, Any]], ClaudeDecoder]:
-        if not self.auth.signed_in():
-            raise ClaudeAuthError(
-                "not signed in to Claude; use the sign in button on the status page"
-            )
-        body, betas = build(
-            request,
-            canonical,
-            max_output=self._capability(canonical, "max_output_tokens"),
-            thinking=self._capability(canonical, "thinking"),
-            reasoning_cache=self.cache,
-        )
-        return self.upstream.events(body, tuple(betas)), ClaudeDecoder(self.cache)
+        body, betas = self._request(canonical, request)
+        return self.upstream.events(body, betas), ClaudeDecoder(self.cache)
 
     def count_tokens(self, canonical: str, request: ChatRequest) -> dict[str, Any]:
-        if not self.auth.signed_in():
-            raise ClaudeAuthError(
-                "not signed in to Claude; use the sign in button on the status page"
-            )
-        body, betas = build(
-            request,
-            canonical,
-            max_output=self._capability(canonical, "max_output_tokens"),
-            thinking=self._capability(canonical, "thinking"),
-            reasoning_cache=self.cache,
-        )
+        body, betas = self._request(canonical, request)
         # Its schema accepts only prompt fields; the rest are rejected.
         counted = {key: body[key] for key in COUNTED_FIELDS if key in body}
-        return self.upstream.count_tokens(counted, tuple(betas))
+        return self.upstream.count_tokens(counted, betas)
 
     def models(self) -> list[dict[str, Any]]:
         if self.auth.signed_in():

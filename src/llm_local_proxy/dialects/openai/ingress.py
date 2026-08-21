@@ -23,6 +23,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
+from ..base import block_text
 
 SYSTEM_ROLES = {"system", "developer"}
 PARAMS = (
@@ -48,11 +49,7 @@ def _text(content: Any) -> str:
         return content
     if not isinstance(content, list):
         raise RequestError("message content must be a string or array")
-    return "\n".join(
-        str(part.get("text", ""))
-        for part in content
-        if isinstance(part, dict) and part.get("type") == "text"
-    )
+    return block_text(content)
 
 
 def _content(value: Any, role: str) -> list[Block]:
