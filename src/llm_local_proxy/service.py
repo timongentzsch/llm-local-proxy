@@ -20,8 +20,7 @@ from .status import ProviderStatus
 
 CATALOG_TTL_SECONDS = 60
 
-#: A provider that is merely unreachable should degrade to its own card or
-#: its own slice of the catalog, never take the healthy ones down with it.
+#: An unreachable provider degrades its own slice, not the whole response.
 DEGRADES = (RpcError, ClaudeUpstreamError, OSError, ValueError)
 
 
@@ -87,8 +86,6 @@ class Service:
                 }
             )
         return {
-            # Derived from the registry, so a new dialect appears on the
-            # dashboard without anything here changing.
             "dialects": [
                 {
                     "name": dialect.name,

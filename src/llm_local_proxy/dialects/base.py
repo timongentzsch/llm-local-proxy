@@ -25,12 +25,7 @@ from ..ir import ChatRequest
 
 @dataclass(frozen=True, eq=False)
 class Frame:
-    """One server-sent event.
-
-    ``event`` names the SSE event. Chat Completions leaves it unset, since
-    that format streams anonymous ``data:`` frames; the Anthropic Messages
-    format names every frame.
-    """
+    """One server-sent event; ``event`` is unset for anonymous frames."""
 
     data: dict[str, Any]
     event: str | None = None
@@ -40,23 +35,17 @@ class Frame:
 class Dialect:
     #: Registry key and mount name (e.g. "openai", "anthropic").
     name: str
-    #: URL mount point. Every dialect has one, so no two can collide over a
-    #: shared route name — notably /v1/models, whose response shape differs
-    #: per dialect. The dialect named by DEFAULT additionally answers on the
-    #: bare paths, for clients configured before the prefixes existed.
+    #: Mount point; every dialect has one so routes cannot collide.
     prefix: str
-    #: What a client should be configured with, below the origin. Not always
-    #: prefix + "/v1": an OpenAI client wants /v1 included in its base url
-    #: and appends "/chat/completions", while an Anthropic client appends
-    #: "/v1/messages" itself.
+    #: What a client is configured with. Not always prefix + "/v1": clients
+    #: differ in how much of the path they append themselves.
     base_path: str
     #: Path, below the prefix, that accepts a chat request.
     chat_route: str
     #: (body, session) -> the dialect-neutral request every provider reads.
     parse: Callable[[dict[str, Any], str], ChatRequest]
-    #: (model, provider decoder) -> the encoder that writes this dialect's
-    #: wire output. Pairing happens here so neither side names the other,
-    #: which is what keeps dialects and providers at N+M rather than N×M.
+    #: (model, provider decoder) -> encoder. Pairing here keeps neither side
+    #: naming the other.
     encode: Callable[[str, Any], Any]
     #: Merged provider catalogs -> this dialect's model listing.
     catalog: Callable[[list[dict[str, Any]]], dict[str, Any]]
@@ -64,14 +53,9 @@ class Dialect:
     event_name: Callable[[dict[str, Any]], str | None]
     #: (status, message) -> the dialect's error body.
     error: Callable[[int, str], dict[str, Any]]
-    #: Sent when a stream has produced nothing for a while, to keep proxies
-    #: and load balancers from closing an idle connection.
     keepalive: bytes
-    #: Written once after the final frame, when the format has such a
-    #: sentinel. Anthropic's does not.
+    #: Written after the final frame; Anthropic has no such sentinel.
     terminator: bytes | None
-    #: Path, below the prefix, that counts a request's input tokens without
-    #: running it. None when the format has no such endpoint.
+    #: Counts input tokens without running the request; None when unsupported.
     count_route: str | None = None
-    #: Parses a body for count_route, which omits the generation-only fields.
     parse_count: Callable[[dict[str, Any], str], ChatRequest] | None = None

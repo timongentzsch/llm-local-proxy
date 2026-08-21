@@ -24,13 +24,13 @@ from ...ir import (
     WebSearchTool,
 )
 
-#: Server tools the proxy can actually serve. Everything else in the tools
-#: union runs inside Anthropic's infrastructure and has no Codex equivalent,
-#: so it is refused rather than silently dropped.
+#: The only server tool the proxy can serve; the rest are refused.
 WEB_SEARCH_PREFIX = "web_search_"
-#: Top-level fields with no proxy implementation. Refusing loudly beats
-#: pretending they took effect.
-REJECTED = ("container", "mcp_servers", "service_tier", "output_config")
+#: No proxy implementation; refused rather than silently ignored.
+REJECTED = ("container", "mcp_servers", "service_tier")
+#: Accepted and dropped; refusing these would break real Claude Code
+#: requests for no benefit.
+IGNORED = ("context_management", "metadata")
 PARAMS = ("temperature", "top_p", "top_k")
 CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
 
@@ -84,7 +84,7 @@ def _block(part: Any) -> Block | None:
             is_error=bool(part.get("is_error")),
         )
     if kind == "thinking":
-        # Signed blocks must survive verbatim or the upstream refuses the turn.
+        # Must survive verbatim or the upstream refuses the turn.
         return Thinking(
             text=str(part.get("thinking", "")),
             signature=str(part.get("signature", "")),
@@ -98,8 +98,12 @@ def _turn(message: Any) -> Turn:
     if not isinstance(message, dict):
         raise RequestError("each message must be an object")
     role = message.get("role")
-    if role not in {"user", "assistant"}:
+    if role not in {"user", "assistant", "system"}:
         raise RequestError(f"unsupported message role: {role}")
+    # Spec allows a system role inside messages and Claude Code uses it;
+    # neither upstream has a third role, so keep the text in place.
+    if role == "system":
+        role = "user"
     content = message.get("content")
     if isinstance(content, str):
         blocks: list[Block] = [Text(content)] if content else []
@@ -139,7 +143,7 @@ def _tools(value: Any) -> list[Tool]:
 
 
 def _tool_choice(value: Any) -> tuple[ToolChoice | None, Any]:
-    """Returns the choice and whether parallel calls were disabled."""
+    """The choice, and whether parallel calls were disabled."""
     if value is None:
         return None, None
     if not isinstance(value, dict) or value.get("type") not in CHOICES:
@@ -151,11 +155,19 @@ def _tool_choice(value: Any) -> tuple[ToolChoice | None, Any]:
     return ToolChoice(kind, str(value.get("name") or "")), parallel
 
 
-def _system(value: Any) -> list[str]:
-    if value is None:
+def _system(value: Any) -> list[Text]:
+    """System blocks in order, preserving cache breakpoints."""
+    if isinstance(value, str):
+        return [Text(value)] if value else []
+    if not isinstance(value, list):
         return []
-    text = _text(value)
-    return [text] if text else []
+    blocks = []
+    for part in value:
+        if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
+            blocks.append(
+                Text(str(part["text"]), cache=bool(part.get("cache_control")))
+            )
+    return blocks
 
 
 def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
@@ -163,7 +175,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
 
 
 def parse_count(body: dict[str, Any], session: str = "") -> ChatRequest:
-    """Parse a count_tokens body, which has no max_tokens: nothing is generated."""
+    """Parse a count_tokens body, which has no max_tokens."""
     return _parse(body, session, generating=False)
 
 
@@ -176,8 +188,7 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
         raise RequestError("messages must be a non-empty array")
     max_tokens = body.get("max_tokens")
     if generating:
-        # max_tokens is required, and zero is legal: it pre-warms the prompt
-        # cache without generating.
+        # Zero is legal: it pre-warms the prompt cache without generating.
         if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
             raise RequestError("max_tokens is required and must be an integer")
         if max_tokens < 0:
@@ -191,9 +202,11 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
     turns = [_turn(message) for message in messages]
     choice, parallel = _tool_choice(body.get("tool_choice"))
     thinking = body.get("thinking")
-    budget = None
-    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
-        budget = thinking.get("budget_tokens")
+    mode = thinking.get("type") if isinstance(thinking, dict) else None
+    budget = thinking.get("budget_tokens") if mode == "enabled" else None
+    # Same low/medium/high/xhigh/max tiers as reasoning_effort.
+    output_config = body.get("output_config")
+    effort = output_config.get("effort") if isinstance(output_config, dict) else None
 
     return ChatRequest(
         model=model,
@@ -202,7 +215,9 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
         tools=_tools(body.get("tools")),
         tool_choice=choice,
         max_tokens=max_tokens,
+        reasoning_effort=effort,
         thinking_budget=budget if isinstance(budget, int) else None,
+        thinking_mode=mode if mode in {"adaptive", "disabled"} else "",
         parallel_tool_calls=parallel,
         stream=bool(body.get("stream", False)),
         session=session,

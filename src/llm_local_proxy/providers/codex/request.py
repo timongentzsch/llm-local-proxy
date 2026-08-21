@@ -87,7 +87,8 @@ def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], 
         raise RequestError("model is required")
     _reject_unsupported(request.params)
 
-    instructions = "\n\n".join(request.system)
+    # Codex caches prefixes implicitly, so breakpoints do not apply.
+    instructions = "\n\n".join(block.text for block in request.system)
     items: list[dict[str, Any]] = []
     first_user = ""
     for turn in request.turns:
@@ -100,8 +101,7 @@ def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], 
             items.append({"role": turn.role, "content": content})
         uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
         if uses:
-            # Codex will not accept a tool result unless the encrypted
-            # reasoning that produced the call is replayed with it.
+            # Codex needs the reasoning that produced the call replayed.
             items.extend(cache.get([use.id for use in uses if use.id]))
             items.extend(
                 {

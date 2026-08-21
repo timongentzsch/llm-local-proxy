@@ -75,8 +75,7 @@ class Claude:
             thinking=self._capability(canonical, "thinking"),
             reasoning_cache=self.cache,
         )
-        # count_tokens generates nothing, so its schema accepts only the
-        # fields that make up the prompt. Anything else is rejected upstream.
+        # Its schema accepts only prompt fields; the rest are rejected.
         counted = {key: body[key] for key in COUNTED_FIELDS if key in body}
         return self.upstream.count_tokens(counted, tuple(betas))
 
@@ -143,8 +142,6 @@ def create(context: ProviderContext) -> Provider:
         chat=claude.chat,
         models=claude.models,
         status=claude.status,
-        # Nothing local to keep alive: the transport is plain HTTPS, so the
-        # default healthy/close suit it.
         routes={"code": claude.finish_login, "usage": claude.usage},
         count_tokens=claude.count_tokens,
     )

@@ -35,9 +35,7 @@ FINISH_REASONS = {
 class ChunkEncoder:
     """Turns one provider's decoded stream into Chat Completions output.
 
-    Holds only wire shaping. Everything upstream-specific — which events a
-    given API produces, and what has to be cached to replay a tool call —
-    lives in the decoder it wraps.
+    Holds only wire shaping; upstream specifics live in the decoder.
     """
 
     def __init__(self, model: str, decoder: Any):
@@ -180,8 +178,7 @@ class ChunkEncoder:
         if isinstance(event, Finish):
             self._finish = FINISH_REASONS.get(event.reason, "stop")
             return None
-        # Signed and redacted thinking have no Chat Completions representation;
-        # the decoder keeps them for replay upstream.
+        # No Chat Completions representation; the decoder keeps them.
         if isinstance(event, (ThinkingSignature, RedactedThinkingDelta)):
             return None
         return None

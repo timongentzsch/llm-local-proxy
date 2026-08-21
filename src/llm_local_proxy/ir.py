@@ -19,21 +19,20 @@ from typing import Any, Literal
 @dataclass
 class Text:
     text: str
+    #: Prompt-cache breakpoint; honoured by Claude, ignored by Codex.
+    cache: bool = False
 
 
 @dataclass
 class Image:
-    #: A data: or http(s) URL as sent; providers encode it their own way.
     url: str
 
 
 @dataclass
 class ToolUse:
-    #: May be empty: Chat Completions allows a call without an id, and each
-    #: provider decides whether to synthesise one.
+    #: May be empty; Chat Completions allows a call without one.
     id: str
     name: str
-    #: JSON string or already-decoded object, as sent.
     arguments: Any
 
 
@@ -46,10 +45,7 @@ class ToolResult:
 
 @dataclass
 class Thinking:
-    """Signed reasoning replayed to the upstream that produced it.
-
-    Must round-trip byte-exactly or the upstream rejects the turn.
-    """
+    """Signed reasoning; must round-trip byte-exactly or upstream rejects it."""
 
     text: str
     signature: str = ""
@@ -87,10 +83,8 @@ class ToolChoice:
 
 
 # --- response side ---------------------------------------------------------
-#
-# What a provider decodes an upstream stream into, and what a dialect encodes
-# onto the wire. Finish reasons use Anthropic's vocabulary because it is the
-# richer of the two; narrowing to Chat Completions' four is the encoder's job.
+# Finish reasons use Anthropic's seven-value vocabulary; the Chat Completions
+# encoder narrows them to four.
 
 
 @dataclass
@@ -105,7 +99,7 @@ class ThinkingDelta:
 
 @dataclass
 class ThinkingSignature:
-    """Closes a thinking block. Chat Completions has nowhere to put it."""
+    """Closes a thinking block."""
 
     signature: str
 
@@ -117,13 +111,10 @@ class RedactedThinkingDelta:
 
 @dataclass
 class ToolCallStart:
-    #: Position the dialect should stream this call under. Providers choose
-    #: it differently — Codex by call ordinal, Claude by content block — and
-    #: clients only require that it be stable within one response.
+    #: Stable within one response; providers number calls differently.
     index: Any
     id: str
     name: str
-    #: Complete when the upstream sends a call whole, empty when it streams.
     arguments: str = ""
 
 
@@ -135,7 +126,7 @@ class ToolCallArgs:
 
 @dataclass
 class ToolCallEnd:
-    """The assembled call. Carries no new bytes; completes the accumulator."""
+    """The assembled call; carries no new bytes."""
 
     index: Any
     id: str
@@ -153,11 +144,9 @@ class Citation:
 
 @dataclass
 class Usage:
-    #: Total input including cache. Anthropic reports these apart and OpenAI
-    #: together, so each decoder normalises to the total here.
+    #: Total input including cache; Anthropic reports these apart.
     prompt: int = 0
     completion: int = 0
-    #: None when the upstream does not report one; encoders then add it up.
     total: int | None = None
     cache_read: int = 0
     cache_write: int = 0
@@ -186,22 +175,20 @@ StreamEvent = (
 
 @dataclass
 class ChatRequest:
-    #: Empty when the client named the model out of band; providers that
-    #: require it say so themselves.
     model: str = ""
-    system: list[str] = field(default_factory=list)
+    #: Blocks rather than one string so cache breakpoints survive.
+    system: list[Text] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
     tools: list[Tool] = field(default_factory=list)
     tool_choice: ToolChoice | None = None
     max_tokens: Any = None
     reasoning_effort: Any = None
-    #: An explicit thinking budget, when the client gave one instead of a
-    #: coarse effort tier. Preferred over reasoning_effort where supported.
+    #: Explicit budget; preferred over reasoning_effort where supported.
     thinking_budget: int | None = None
+    #: "adaptive" or "disabled" when named; neither maps to a budget.
+    thinking_mode: str = ""
     parallel_tool_calls: Any = None
     stream: bool = False
     session: str = ""
-    #: Sampling knobs exactly as sent, holding only the keys the client sent.
-    #: Whether a value is acceptable is the upstream's business, not the wire
-    #: format's: Claude honours a temperature that Codex refuses.
+    #: As sent; each provider validates what it can honour.
     params: dict[str, Any] = field(default_factory=dict)

@@ -17,6 +17,7 @@ from llm_local_proxy.http import security
 from llm_local_proxy.ir import Image, Text, Thinking, ToolResult, ToolUse
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
+from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 BASE = {
@@ -53,9 +54,22 @@ class IngressTest(unittest.TestCase):
             parse({**BASE, "max_tokens": -1})
 
     def test_system_accepts_string_or_blocks(self):
-        self.assertEqual(parse({**BASE, "system": "Be terse."}).system, ["Be terse."])
+        self.assertEqual(
+            parse({**BASE, "system": "Be terse."}).system, [Text("Be terse.")]
+        )
         blocks = [{"type": "text", "text": "Be terse."}]
-        self.assertEqual(parse({**BASE, "system": blocks}).system, ["Be terse."])
+        self.assertEqual(parse({**BASE, "system": blocks}).system, [Text("Be terse.")])
+
+    def test_system_cache_breakpoints_survive(self):
+        # Losing these would make every Claude Code turn re-pay full input.
+        blocks = [
+            {"type": "text", "text": "a"},
+            {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}},
+        ]
+        self.assertEqual(
+            parse({**BASE, "system": blocks}).system,
+            [Text("a"), Text("b", cache=True)],
+        )
 
     def test_assistant_prefill_is_preserved(self):
         # A trailing assistant turn continues the response; it must survive.
@@ -69,6 +83,20 @@ class IngressTest(unittest.TestCase):
         request = parse(body)
         self.assertEqual(request.turns[-1].role, "assistant")
         self.assertEqual(request.turns[-1].blocks, [Text("The best answer is (")])
+
+    def test_system_role_messages_are_kept_in_place(self):
+        # The Messages API allows a system role inside messages and real
+        # Claude Code uses it; neither upstream has a third role.
+        body = {
+            **BASE,
+            "messages": [
+                {"role": "user", "content": "a"},
+                {"role": "system", "content": "b"},
+            ],
+        }
+        request = parse(body)
+        self.assertEqual([turn.role for turn in request.turns], ["user", "user"])
+        self.assertEqual(request.turns[1].blocks, [Text("b")])
 
     def test_tool_use_and_result_blocks(self):
         body = {
@@ -172,9 +200,23 @@ class IngressTest(unittest.TestCase):
         self.assertEqual(parse(body).thinking_budget, 4096)
 
     def test_unsupported_top_level_parameters_are_refused(self):
-        for name in ("container", "mcp_servers", "service_tier", "output_config"):
+        for name in ("container", "mcp_servers", "service_tier"):
             with self.assertRaises(RequestError, msg=name):
                 parse({**BASE, name: {"any": "value"}})
+
+    def test_output_config_effort_becomes_reasoning_effort(self):
+        # Real Claude Code sends this on every request.
+        body = {**BASE, "output_config": {"effort": "high"}}
+        self.assertEqual(parse(body).reasoning_effort, "high")
+
+    def test_fields_the_proxy_cannot_act_on_are_accepted(self):
+        # Rejecting these would break a real client for no benefit.
+        body = {
+            **BASE,
+            "context_management": {"edits": [{"type": "clear_thinking_20251015"}]},
+            "metadata": {"user_id": "someone"},
+        }
+        self.assertEqual(parse(body).model, "claude-sonnet-5")
 
     def test_stop_sequences_and_sampling(self):
         request = parse({**BASE, "stop_sequences": ["END"], "top_k": 5})
@@ -218,6 +260,35 @@ class RoundTripTest(unittest.TestCase):
         self.assertIn(
             {"type": "thinking", "thinking": "hmm", "signature": "SIG"}, blocks
         )
+
+    def test_the_marker_is_not_duplicated(self):
+        # Real Claude Code already sends the marker as a system block; adding a
+        # second one would waste tokens on every request.
+        body = {
+            **BASE,
+            "system": [
+                {"type": "text", "text": "billing-header"},
+                {"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER},
+                {"type": "text", "text": "the prompt"},
+            ],
+        }
+        upstream, _ = build_claude(parse(body), "claude-sonnet-5")
+        texts = [block["text"] for block in upstream["system"]]
+        self.assertEqual(texts.count(CLAUDE_CODE_SYSTEM_MARKER), 1)
+
+    def test_the_marker_is_added_when_absent(self):
+        # Without it the request bills against the API pool and 429s.
+        upstream, _ = build_claude(parse(BASE), "claude-sonnet-5")
+        self.assertEqual(upstream["system"][0]["text"], CLAUDE_CODE_SYSTEM_MARKER)
+
+    def test_adaptive_thinking_is_forwarded_not_converted(self):
+        body = {
+            **BASE,
+            "thinking": {"type": "adaptive", "display": "omitted"},
+            "output_config": {"effort": "high"},
+        }
+        upstream, _ = build_claude(parse(body), "claude-sonnet-5")
+        self.assertEqual(upstream["thinking"], {"type": "adaptive"})
 
     def test_explicit_budget_beats_effort_tiers(self):
         body = {

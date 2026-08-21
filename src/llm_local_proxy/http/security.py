@@ -13,11 +13,8 @@ from urllib.parse import urlparse
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
-#: Header, and scheme within it, that may carry the proxy's local API key. An
-#: empty scheme means the header holds the bare key. Every mount accepts every
-#: one of these: this is the proxy's own key rather than an upstream vendor's,
-#: so refusing the header a client happens to send buys nothing and only
-#: produces a confusing 401.
+#: Headers that may carry the proxy's own key, with the scheme inside each.
+#: Every mount accepts all of them: refusing one only yields a confusing 401.
 CREDENTIALS = (("Authorization", "bearer"), ("x-api-key", ""))
 
 
@@ -52,12 +49,7 @@ def same_origin(headers: Mapping[str, str]) -> bool:
 
 
 def authorized(headers: Mapping[str, str], api_key: str) -> bool:
-    """Whether the request carries the proxy's local key, in any accepted form.
-
-    Every credential header is tried rather than stopping at the first one
-    present, so a client that sends both a stale and a valid header still
-    authenticates on the valid one.
-    """
+    """Whether the request carries the local key, in any accepted form."""
     if not api_key:
         return True
     expected = api_key.encode("utf-8")

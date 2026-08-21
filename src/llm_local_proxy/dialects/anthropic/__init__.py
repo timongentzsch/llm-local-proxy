@@ -17,10 +17,7 @@ from ..base import Dialect
 from .egress import MessageEncoder
 from .ingress import parse, parse_count
 
-#: Anthropic's error types, every one of them from the ErrorType enum in
-#: specs/anthropic-openapi.json. Anything unmapped is api_error.
-#: tests/test_conformance.py checks this against the spec, which is how the
-#: plausible-looking gateway_timeout_error and request_too_large were caught.
+#: From the ErrorType enum in specs/; anything unmapped is api_error.
 ERROR_TYPES = {
     400: "invalid_request_error",
     401: "authentication_error",
@@ -37,8 +34,7 @@ ERROR_TYPES = {
 def _error(status: int, message: str) -> dict[str, Any]:
     return {
         "type": "error",
-        # Required by the schema. The proxy issues no upstream request id of
-        # its own, so it names the local response instead of omitting it.
+        # Required by the schema even when the proxy has no id of its own.
         "request_id": None,
         "error": {"type": ERROR_TYPES.get(status, "api_error"), "message": message},
     }
@@ -71,11 +67,10 @@ ANTHROPIC = Dialect(
     parse=parse,
     encode=MessageEncoder,
     catalog=_catalog,
-    # Every frame is named after the type in its payload.
     event_name=lambda data: data.get("type"),
     error=_error,
     keepalive=b'event: ping\ndata: {"type":"ping"}\n\n',
-    # The Messages stream has no [DONE] sentinel; message_stop ends it.
+    # No [DONE] sentinel; message_stop ends the stream.
     terminator=None,
     count_route="/v1/messages/count_tokens",
     parse_count=parse_count,

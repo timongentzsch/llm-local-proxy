@@ -21,19 +21,15 @@ from ...ir import (
 from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
 
-#: Stop reasons this decoder passes through; anything else means the turn
-#: simply ended. Kept narrow on purpose — see specs/PINNED.md for the full
-#: seven-value enum, which the Anthropic dialect will need in full.
+#: Passed through; anything else means the turn simply ended.
 PASSTHROUGH_STOP = {"tool_use", "max_tokens"}
 
 
 class ClaudeDecoder:
     """Decodes one Claude response stream.
 
-    Claude streams a tool call in pieces, so a call announces itself with
-    empty arguments and fills in over later fragments. Signed thinking is
-    accumulated here rather than forwarded: it exists to be replayed to
-    Claude on the next turn, and only a signed block is replayable.
+    Tool calls arrive in pieces. Signed thinking is accumulated rather than
+    forwarded: it exists to be replayed upstream on the next turn.
     """
 
     def __init__(self, reasoning_cache: ReasoningCache | None = None):
@@ -98,8 +94,7 @@ class ClaudeDecoder:
                 "name": name,
                 "arguments": "",
             }
-            # Announce the call immediately so the client's time-to-first-token
-            # isn't stalled until the full JSON arguments assemble.
+            # Announced immediately so time-to-first-token is not stalled.
             return [ToolCallStart(index, call_id, name)]
         if kind == "thinking":
             self._open_thinking = {"type": "thinking", "thinking": "", "signature": ""}
@@ -165,8 +160,7 @@ class ClaudeDecoder:
         self.calls.append(call["id"])
         events: list[StreamEvent] = []
         if not streamed:
-            # A no-argument call streams no input_json_delta at all, so the
-            # client would be left with "" instead of parseable JSON.
+            # No input_json_delta arrives, so the client would see "".
             events.append(ToolCallArgs(call["index"], "{}"))
         events.append(
             ToolCallEnd(call["index"], call["id"], call["name"], streamed or "{}")
@@ -194,8 +188,7 @@ class ClaudeDecoder:
         if not any(self._usage.values()):
             return None
         return Usage(
-            # Anthropic reports cache tokens apart from input_tokens; the
-            # canonical prompt count is the sum.
+            # Anthropic reports cache tokens apart from input_tokens.
             prompt=self._usage["input"]
             + self._usage["cache_read"]
             + self._usage["cache_creation"],
@@ -219,8 +212,7 @@ class ClaudeDecoder:
 
 
 def _citation(value: Any) -> list[StreamEvent]:
-    # Claude names web results web_search_result_location and document
-    # citations by their location kind; a url is what makes one citable.
+    # A url is what makes a citation citable, whatever its location kind.
     if not isinstance(value, dict):
         return []
     url = value.get("url")

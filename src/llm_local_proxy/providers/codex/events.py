@@ -20,8 +20,7 @@ from ..reasoning import ReasoningCache
 class CodexDecoder:
     """Decodes one Codex response stream.
 
-    Codex delivers a tool call whole rather than in pieces, so each one
-    produces a start carrying its complete arguments and an immediate end.
+    Tool calls arrive whole, so each yields a start and an immediate end.
     """
 
     def __init__(self, cache: ReasoningCache):
@@ -80,8 +79,7 @@ class CodexDecoder:
                 for annotation in part.get("annotations", []):
                     events.extend(_citation(annotation))
         if item.get("type") == "reasoning" and item.get("encrypted_content"):
-            # Replayed with the next request; Codex refuses a tool result
-            # whose originating reasoning is missing.
+            # Codex refuses a tool result whose reasoning is missing.
             kept = {
                 key: item[key]
                 for key in ("type", "id", "summary", "encrypted_content")

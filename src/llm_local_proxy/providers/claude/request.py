@@ -123,7 +123,7 @@ def _user_blocks(turn: Turn) -> list[dict[str, Any]]:
 
 
 def _assistant_blocks(turn: Turn, cache: ReasoningCache | None) -> list[dict[str, Any]]:
-    # A present-but-empty text block is rejected upstream, so only keep real text.
+    # An empty text block is rejected upstream.
     blocks: list[dict[str, Any]] = [
         {"type": "text", "text": block.text}
         for block in turn.blocks
@@ -146,9 +146,7 @@ def _assistant_blocks(turn: Turn, cache: ReasoningCache | None) -> list[dict[str
                 "input": _arguments(use.arguments),
             }
         )
-    # Under manual thinking the assistant message of a tool-use turn must open
-    # with the signed thinking blocks from the prior response, or Anthropic
-    # rejects the request. Replay whatever was cached for those calls.
+    # A tool-use turn must open with the prior signed thinking blocks.
     if cache is not None and uses:
         blocks = cache.get([use.id for use in uses if use.id]) + blocks
     return blocks
@@ -204,9 +202,17 @@ def build(
     ):
         raise RequestError("max_tokens must be a positive integer")
 
-    system = [{"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER}]
-    if request.system:
-        system.append({"type": "text", "text": "\n\n".join(request.system)})
+    # Must be first to bill against the subscription pool; real clients
+    # already send it.
+    blocks = [block for block in request.system if block.text.strip()]
+    system: list[dict[str, Any]] = []
+    if not any(block.text.strip() == CLAUDE_CODE_SYSTEM_MARKER for block in blocks):
+        system.append({"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER})
+    for block in blocks:
+        item: dict[str, Any] = {"type": "text", "text": block.text}
+        if block.cache:
+            item["cache_control"] = {"type": "ephemeral"}
+        system.append(item)
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -244,6 +250,12 @@ def build(
         body["tool_choice"] = _tool_choice(choice)
 
     budget = request.thinking_budget
+    if request.thinking_mode == "disabled":
+        return body, betas
+    if request.thinking_mode == "adaptive":
+        # The client asked the model to size its own reasoning.
+        body["thinking"] = {"type": "adaptive"}
+        return body, betas
     if budget is None and request.reasoning_effort:
         budget = THINKING_BUDGETS.get(str(request.reasoning_effort).casefold())
         if not budget:
@@ -256,10 +268,7 @@ def build(
             raise RequestError(
                 "max_tokens is too small for the requested thinking budget"
             )
-        # An explicit budget is the only form that actually varies with
-        # effort; adaptive ignores the requested tier. Anthropic's catalog can
-        # report enabled as unsupported while still honouring it, so
-        # ClaudeUpstream falls back to adaptive on rejection.
+        # The catalog can report enabled as unsupported yet honour it.
         body["thinking"] = {"type": "enabled", "budget_tokens": budget}
     elif thinking == "adaptive":
         body["thinking"] = {"type": "adaptive"}

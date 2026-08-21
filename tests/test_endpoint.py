@@ -200,9 +200,8 @@ class EndpointTest(unittest.TestCase):
         # And a way back out again, deliberately and on rejection.
         self.assertIn("localStorage.removeItem(STORE", text)
         self.assertIn("status===401", text)
-        # Pasting the startup link into an open tab changes only the fragment,
-        # which is a same-document navigation and would otherwise not re-read
-        # the key. Verified in a browser; this guards the listener's removal.
+        # A fragment-only change is a same-document navigation; without the
+        # listener the key is never re-read. Verified in a browser.
         self.assertIn('addEventListener("hashchange"', text)
 
     # -- mounts -----------------------------------------------------------

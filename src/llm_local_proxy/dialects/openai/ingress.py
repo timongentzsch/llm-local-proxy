@@ -211,7 +211,9 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
 
     return ChatRequest(
         model=body["model"] if isinstance(body.get("model"), str) else "",
-        system=system,
+        # One block: Chat Completions has no cache breakpoints to preserve, and
+        # every system and developer turn is one prompt to the upstream.
+        system=[Text("\n\n".join(system))] if system else [],
         turns=turns,
         tools=_tools(body.get("tools")),
         tool_choice=_tool_choice(body.get("tool_choice")),

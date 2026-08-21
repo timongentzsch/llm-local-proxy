@@ -26,10 +26,9 @@ class ProviderContext:
     """What every provider needs from the host to construct itself."""
 
     config: Config
-    #: Where credentials and token ledgers are persisted, beside the config.
+    #: Where credentials and token ledgers are persisted.
     directory: Path
-    #: Ask the host to drop cached catalogs, e.g. after a login changes what
-    #: this provider can see.
+    #: Drops cached catalogs, e.g. after a login changes what is visible.
     invalidate: Callable[[], None]
 
 
@@ -39,34 +38,26 @@ class Provider:
     name: str
     #: OAuth access for the status page and the /api/<name>/login|logout endpoints.
     auth: Auth
-    #: How the dashboard finishes a login: "device_code" shows the code returned
-    #: by login_start, "paste_code" prompts for a code and POSTs it to the
-    #: provider's "code" route (which such a provider must register).
+    #: "device_code" shows login_start's code; "paste_code" POSTs one back to
+    #: the provider's "code" route, which such a provider must register.
     login_flow: str
     #: Maps a requested model id to a canonical name for this provider, or
     #: None when the model does not belong to it (used to route requests).
     match: Callable[[str], str | None]
-    #: (canonical model, parsed request) -> (upstream events, translator).
-    #: The request arrives dialect-neutral, so a provider serves every
-    #: downstream format without knowing which one asked.
+    #: (canonical model, parsed request) -> (upstream events, decoder).
     chat: Callable[[str, ChatRequest], tuple[Iterator[Any], Any]]
     #: Model catalog entries to merge into the /v1/models listing.
     models: Callable[[], list[dict[str, Any]]]
     #: The provider's card for /api/status, normalised so every provider
     #: renders through the same dashboard component.
     status: Callable[[], ProviderStatus]
-    #: Extra provider-specific POST handlers mounted at /api/<name>/<route>.
-    #: The names "login" and "logout" are reserved by the server's generic
-    #: dispatch and always call auth.login_start()/auth.logout() instead of
-    #: any handler registered here.
+    #: POST handlers at /api/<name>/<route>. "login" and "logout" are
+    #: reserved and always reach auth directly.
     routes: Mapping[str, Callable[[dict[str, Any]], Any]]
-    #: Counts the input tokens a request would cost, when the upstream can
-    #: answer exactly. None means it cannot, and callers get a 404 rather
-    #: than an estimate: a client that trusts a guessed count manages its
-    #: context wrongly, which is worse than no answer.
+    #: None when the upstream cannot count exactly; callers then get a 404
+    #: rather than an estimate they would wrongly trust.
     count_tokens: Callable[[str, ChatRequest], dict[str, Any]] | None = None
-    #: Whether the provider's local machinery is running. Defaults suit any
-    #: provider that is just an HTTPS client with nothing to keep alive.
+    #: Defaults suit a provider that is just an HTTPS client.
     healthy: Callable[[], bool] = lambda: True
     #: Release anything long-lived. Called once at shutdown.
     close: Callable[[], None] = lambda: None
