@@ -1,0 +1,28 @@
+{
+  "request": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello"
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+      }
+    ]
+  },
+  "betas": []
+}

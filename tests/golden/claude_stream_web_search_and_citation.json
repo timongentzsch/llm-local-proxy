@@ -1,0 +1,93 @@
+{
+  "stream": [
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "role": "assistant",
+            "content": ""
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "content": "Per the source"
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "annotations": [
+              {
+                "type": "url_citation",
+                "url_citation": {
+                  "url": "https://example.com/b",
+                  "title": "Example B"
+                }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {},
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-0000000000000000000000000000000f",
+      "object": "chat.completion.chunk",
+      "created": 1700000000,
+      "model": "claude-sonnet-5",
+      "choices": [],
+      "usage": {
+        "prompt_tokens": 130,
+        "completion_tokens": 42,
+        "total_tokens": 172,
+        "prompt_tokens_details": {
+          "cached_tokens": 30,
+          "cache_write_tokens": 10
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 15
+        },
+        "server_tool_use": {
+          "web_search_requests": 1
+        }
+      }
+    }
+  ]
+}
