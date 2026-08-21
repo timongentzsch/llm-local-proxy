@@ -24,7 +24,7 @@
   <div id="providers"></div>
   <h2>client</h2>
   <div id="clients"></div>
-  <div class="row"><span class="muted">api key</span><span><code id="key"></code> <button id="copy">copy</button></span></div>
+  <div class="row"><span class="muted">api key</span><span><code id="key"></code> <button id="copy">copy</button> <button id="forget">forget</button></span></div>
   <div class="row"><span class="muted">models</span><span id="models" class="remote">loading</span></div>
 </main>
 <template id="provider-card">
@@ -41,10 +41,22 @@
   </section>
 </template>
 <script>
-const authRequired=__AUTH_REQUIRED__,key=new URLSearchParams(location.hash.slice(1)).get("key")||"",q=s=>document.querySelector(s);if(key)history.replaceState(null,"",location.pathname+location.search);
-let active=0,providers=[];
+const authRequired=__AUTH_REQUIRED__,STORE="llm-local-proxy.key",q=s=>document.querySelector(s);
+// The key arrives once in the URL fragment, which never reaches the server.
+// Keep it in storage scoped to this origin so a refresh still works, and drop
+// it from the address bar so it cannot be bookmarked or shared by accident.
+function storedKey(){try{return localStorage.getItem(STORE)||""}catch{return""}}
+function rememberKey(v){try{localStorage.setItem(STORE,v)}catch{}}
+function forgetKey(){try{localStorage.removeItem(STORE)}catch{}key=""}
+function hashKey(){return new URLSearchParams(location.hash.slice(1)).get("key")||""}
+function takeKey(){const v=hashKey();if(!v)return storedKey();history.replaceState(null,"",location.pathname+location.search);rememberKey(v);return v}
+// Pasting the startup link into a tab that is already open changes only the
+// fragment, which the browser treats as a same-document navigation: without
+// this the page would keep running with the old key and look unresponsive.
+addEventListener("hashchange",()=>{if(hashKey())location.reload()});
+let key=takeKey(),active=0,providers=[];
 function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
-async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json();if(!r.ok)throw Error(j.error?.message||j.error||r.statusText);return j}finally{busy(-1)}}
+async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json();if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
 const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});
 function fmtTime(v){if(v==null||v==="")return"";const n=Number(v);let d=Number.isFinite(n)&&n>1e9?new Date(n>1e12?n:n*1000):new Date(v);return isNaN(d)?String(v):timeFmt.format(d)}
 function fmtTokens(n){if(!n)return"0";if(n>=1e9)return(n/1e9).toFixed(2)+"B";if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
@@ -82,12 +94,18 @@ async function load(){
     for(const p of providers)showProvider(p);
     const on=providers.filter(p=>p.signed_in).length;
     q("#dot").classList.toggle("on",on>0);q("#state").textContent=`${on}/${providers.length} signed in`;
+  }else if(status.reason?.status===401){
+    // A key that no longer works, e.g. after the proxy regenerated one.
+    // Drop it rather than retrying with it until the user clears storage.
+    forgetKey();showKey();q("#state").textContent="api key rejected · reopen the link printed at startup";
   }else q("#state").textContent=status.reason.message;
   document.body.classList.add("ready");
 }
 function poll(){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).map(p=>api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{}));Promise.all(pings).then(load)}
+function showKey(){q("#key").textContent=key||(authRequired?"open the link printed at startup":"disabled");for(const id of["#copy","#forget"])q(id).style.display=key?"":"none"}
 q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
-q("#key").textContent=key||(authRequired?"missing from URL":"disabled");q("#copy").style.display=key?"":"none";
+q("#forget").onclick=()=>{forgetKey();location.reload()};
+showKey();
 if(authRequired&&!key){q("#state").textContent="api key required";q("#models").textContent="unavailable";document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
 </script>
 </html>

@@ -180,6 +180,30 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["stop_reason"], "end_turn")
         self.assertEqual(body["usage"]["input_tokens"], 11)
 
+    # -- dashboard --------------------------------------------------------
+
+    def test_dashboard_is_served_with_the_auth_flag_substituted(self):
+        status, text = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertNotIn("__AUTH_REQUIRED__", text)
+        # This service fixture has no api key configured.
+        self.assertIn("authRequired=false", text)
+
+    def test_dashboard_persists_the_key_and_keeps_it_out_of_the_url(self):
+        _, text = self.request("GET", "/")
+        # Read once from the fragment, stored, then stripped from the address
+        # bar so a refresh works without re-pasting it.
+        self.assertIn("location.hash", text)
+        self.assertIn("localStorage.setItem(STORE", text)
+        self.assertIn("history.replaceState", text)
+        # And a way back out again, deliberately and on rejection.
+        self.assertIn("localStorage.removeItem(STORE", text)
+        self.assertIn("status===401", text)
+        # Pasting the startup link into an open tab changes only the fragment,
+        # which is a same-document navigation and would otherwise not re-read
+        # the key. Verified in a browser; this guards the listener's removal.
+        self.assertIn('addEventListener("hashchange"', text)
+
     # -- mounts -----------------------------------------------------------
 
     def test_openai_prefix_and_bare_path_are_byte_identical(self):
