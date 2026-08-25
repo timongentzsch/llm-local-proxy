@@ -68,3 +68,7 @@ class Dialect:
     #: Counts input tokens without running the request; None when unsupported.
     count_route: str | None = None
     parse_count: Callable[[dict[str, Any], str], ChatRequest] | None = None
+    #: Optional second OpenAI endpoint using Responses item semantics.
+    responses_route: str | None = None
+    parse_responses: Callable[[dict[str, Any], str], ChatRequest] | None = None
+    encode_responses: Callable[[str, Any, ChatRequest], Any] | None = None

@@ -10,11 +10,15 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    NativeResponseItem,
+    NativeTool,
+    Reasoning,
     Text,
     Tool,
     ToolChoice,
     ToolResult,
     ToolUse,
+    WebSearchTool,
 )
 from ..reasoning import ReasoningCache
 
@@ -63,6 +67,10 @@ def _content(turn_blocks: list[Any], role: str) -> list[dict[str, Any]]:
 
 
 def _tool(tool: Tool) -> dict[str, Any]:
+    if isinstance(tool, NativeTool):
+        return dict(tool.item)
+    if isinstance(tool, (FunctionTool, WebSearchTool)) and tool.native is not None:
+        return dict(tool.native)
     if isinstance(tool, FunctionTool):
         item = {"type": "function", "name": tool.name, "parameters": tool.parameters}
         if tool.description:
@@ -82,6 +90,51 @@ def _tool_choice(choice: ToolChoice | None) -> Any:
     return choice.kind
 
 
+def _flush_content(items: list[dict[str, Any]], pending: list[Any], role: str) -> None:
+    content = _content(pending, role)
+    if content:
+        items.append({"role": role, "content": content})
+    pending.clear()
+
+
+def _turn_items(turn: Any, cache: ReasoningCache) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    pending: list[Any] = []
+    uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
+    has_reasoning = any(isinstance(block, Reasoning) for block in turn.blocks)
+    cached = [] if has_reasoning else cache.get([use.id for use in uses if use.id])
+    cache_inserted = False
+    for block in turn.blocks:
+        if isinstance(block, (Text, Image)):
+            pending.append(block)
+            continue
+        _flush_content(items, pending, turn.role)
+        if isinstance(block, (Reasoning, NativeResponseItem)):
+            items.append(dict(block.item))
+        elif isinstance(block, ToolUse):
+            if not cache_inserted:
+                items.extend(cached)
+                cache_inserted = True
+            items.append(
+                {
+                    "type": "function_call",
+                    "call_id": block.id,
+                    "name": block.name,
+                    "arguments": str(block.arguments),
+                }
+            )
+        elif isinstance(block, ToolResult):
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": block.tool_use_id,
+                    "output": block.text,
+                }
+            )
+    _flush_content(items, pending, turn.role)
+    return items
+
+
 def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], str]:
     if not request.model:
         raise RequestError("model is required")
@@ -96,31 +149,7 @@ def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], 
             first_user = "\n".join(
                 block.text for block in turn.blocks if isinstance(block, Text)
             )
-        content = _content(turn.blocks, turn.role)
-        if content:
-            items.append({"role": turn.role, "content": content})
-        uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
-        if uses:
-            # Codex needs the reasoning that produced the call replayed.
-            items.extend(cache.get([use.id for use in uses if use.id]))
-            items.extend(
-                {
-                    "type": "function_call",
-                    "call_id": use.id,
-                    "name": use.name,
-                    "arguments": str(use.arguments),
-                }
-                for use in uses
-            )
-        items.extend(
-            {
-                "type": "function_call_output",
-                "call_id": block.tool_use_id,
-                "output": block.text,
-            }
-            for block in turn.blocks
-            if isinstance(block, ToolResult)
-        )
+        items.extend(_turn_items(turn, cache))
 
     session = request.session
     if not session:
@@ -141,7 +170,9 @@ def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], 
         body["tool_choice"] = _tool_choice(request.tool_choice)
         parallel = request.parallel_tool_calls
         body["parallel_tool_calls"] = bool(True if parallel is None else parallel)
+    # Always request the completed encrypted item: models can reason at their
+    # catalog default even when the client omits an explicit effort.
+    body["include"] = ["reasoning.encrypted_content"]
     if request.reasoning_effort:
         body["reasoning"] = {"effort": request.reasoning_effort, "summary": "auto"}
-        body["include"] = ["reasoning.encrypted_content"]
     return body, session

@@ -132,29 +132,23 @@ class BuildMessagesRequestTest(unittest.TestCase):
         )
         self.assertNotIn("tools", request)
 
-    def test_reasoning_effort_maps_to_thinking(self):
+    def test_reasoning_effort_uses_claudes_native_output_config(self):
         request, _ = claude_request(
-            {**BASE, "reasoning_effort": "high", "max_tokens": 32768}, "claude-fake-1"
+            {**BASE, "reasoning_effort": "high", "max_tokens": 32768},
+            "claude-fake-1",
         )
-        self.assertEqual(
-            request["thinking"], {"type": "enabled", "budget_tokens": 16384}
-        )
-        request, _ = claude_request(
-            {**BASE, "reasoning_effort": "high", "max_tokens": 4096}, "claude-fake-1"
-        )
-        self.assertEqual(
-            request["thinking"], {"type": "enabled", "budget_tokens": 4095}
-        )
-        # An explicit effort outranks an adaptive-capable model, because
-        # adaptive silently discards the requested tier.
+        self.assertEqual(request["output_config"], {"effort": "high"})
+        self.assertNotIn("thinking", request)
+        # Effort and thinking are independent native controls. An adaptive
+        # model keeps adaptive thinking instead of approximating effort with a
+        # made-up token budget.
         request, _ = claude_request(
             {**BASE, "reasoning_effort": "xhigh", "max_tokens": 65537},
             "claude-fake-1",
             thinking="adaptive",
         )
-        self.assertEqual(
-            request["thinking"], {"type": "enabled", "budget_tokens": 32768}
-        )
+        self.assertEqual(request["output_config"], {"effort": "xhigh"})
+        self.assertEqual(request["thinking"], {"type": "adaptive"})
         # Without an effort, an adaptive model still gets adaptive thinking.
         request, _ = claude_request(
             {**BASE, "max_tokens": 65537}, "claude-fake-1", thinking="adaptive"

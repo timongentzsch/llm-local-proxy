@@ -118,6 +118,28 @@ class EndpointTest(unittest.TestCase):
         first = json.loads(text.split("\n")[0][len("data: ") :])
         self.assertEqual(first["object"], "chat.completion.chunk")
 
+    def test_responses_stream(self):
+        status, text = self.request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "claude-sonnet-5",
+                "stream": True,
+                "store": False,
+                "input": "hi",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(text.endswith("data: [DONE]\n\n"))
+        payloads = [
+            json.loads(line[len("data: ") :])
+            for line in text.splitlines()
+            if line.startswith("data: {")
+        ]
+        self.assertEqual(payloads[0]["type"], "response.created")
+        self.assertEqual(payloads[-1]["type"], "response.completed")
+        self.assertIn("response.output_text.delta", [p["type"] for p in payloads])
+
     def test_messages_stream(self):
         status, text = self.request(
             "POST",
@@ -164,6 +186,18 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["object"], "chat.completion")
         self.assertEqual(body["choices"][0]["message"]["content"], "Hello")
 
+    def test_responses_body(self):
+        status, text = self.request(
+            "POST",
+            "/v1/responses",
+            {"model": "claude-sonnet-5", "store": False, "input": "hi"},
+        )
+        self.assertEqual(status, 200)
+        body = json.loads(text)
+        self.assertEqual(body["object"], "response")
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["output"][0]["content"][0]["text"], "Hello")
+
     def test_messages_body(self):
         status, text = self.request(
             "POST",
@@ -204,6 +238,13 @@ class EndpointTest(unittest.TestCase):
         # listener the key is never re-read. Verified in a browser.
         self.assertIn('addEventListener("hashchange"', text)
 
+    def test_dashboard_shows_copyable_login_url_without_opening_a_tab(self):
+        _, text = self.request("GET", "/")
+        self.assertIn('class="login-url"', text)
+        self.assertIn('class="copy-login"', text)
+        self.assertIn("navigator.clipboard.writeText(loginUrl.textContent)", text)
+        self.assertNotIn("window.open(", text)
+
     # -- mounts -----------------------------------------------------------
 
     def test_openai_prefix_and_bare_path_are_byte_identical(self):
@@ -239,6 +280,11 @@ class EndpointTest(unittest.TestCase):
             ("GET", "/api/status", None),
             ("GET", "/healthz", None),
             ("POST", "/v1/chat/completions", chat),
+            (
+                "POST",
+                "/v1/responses",
+                {"model": "claude-sonnet-5", "store": False, "input": "hi"},
+            ),
         ):
             with self.subTest(route=f"{method} {path}"):
                 legacy = self.request(method, path, body)

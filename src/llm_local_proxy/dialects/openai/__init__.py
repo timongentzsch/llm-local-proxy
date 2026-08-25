@@ -11,6 +11,8 @@ from typing import Any
 from ..base import Dialect
 from .egress import ChunkEncoder
 from .ingress import parse
+from .responses_egress import ResponseEncoder
+from .responses_ingress import parse as parse_responses
 
 
 def _error(status: int, message: str) -> dict[str, Any]:
@@ -37,4 +39,7 @@ OPENAI = Dialect(
     # A comment frame: ignored by every SSE client, costs no tokens.
     keepalive=b": keepalive\n\n",
     terminator=b"data: [DONE]\n\n",
+    responses_route="/v1/responses",
+    parse_responses=parse_responses,
+    encode_responses=ResponseEncoder,
 )

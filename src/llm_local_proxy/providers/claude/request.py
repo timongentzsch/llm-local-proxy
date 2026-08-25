@@ -11,6 +11,9 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    NativeResponseItem,
+    NativeTool,
+    Reasoning,
     Text,
     Thinking,
     ToolChoice,
@@ -37,14 +40,7 @@ UNSUPPORTED = (
     "logit_bias",
 )
 
-THINKING_BUDGETS = {
-    "minimal": 1024,
-    "low": 2048,
-    "medium": 8192,
-    "high": 16384,
-    "xhigh": 32768,
-    "max": 65536,
-}
+EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
 def _reject_unsupported(params: dict[str, Any]) -> None:
@@ -136,6 +132,11 @@ def _assistant_blocks(turn: Turn, cache: ReasoningCache | None) -> list[dict[str
         for block in turn.blocks
         if isinstance(block, Thinking)
     )
+    blocks.extend(
+        _responses_reasoning(block.item)
+        for block in turn.blocks
+        if isinstance(block, Reasoning)
+    )
     uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
     for use in uses:
         blocks.append(
@@ -146,10 +147,29 @@ def _assistant_blocks(turn: Turn, cache: ReasoningCache | None) -> list[dict[str
                 "input": _arguments(use.arguments),
             }
         )
-    # A tool-use turn must open with the prior signed thinking blocks.
-    if cache is not None and uses:
+    has_carried_reasoning = any(
+        isinstance(block, (Thinking, Reasoning)) for block in turn.blocks
+    )
+    # Compatibility cache is only for dialects that cannot carry reasoning.
+    if cache is not None and uses and not has_carried_reasoning:
         blocks = cache.get([use.id for use in uses if use.id]) + blocks
     return blocks
+
+
+def _responses_reasoning(item: dict[str, Any]) -> dict[str, Any]:
+    """Recover a Claude thinking block from a stateless Responses item."""
+    encrypted = item.get("encrypted_content")
+    if not isinstance(encrypted, str) or not encrypted:
+        raise RequestError("Claude reasoning replay requires encrypted_content")
+    summary = item.get("summary")
+    text = (
+        "".join(str(part.get("text", "")) for part in summary if isinstance(part, dict))
+        if isinstance(summary, list)
+        else ""
+    )
+    if text:
+        return {"type": "thinking", "thinking": text, "signature": encrypted}
+    return {"type": "redacted_thinking", "data": encrypted}
 
 
 def _tool_choice(choice: ToolChoice | None) -> dict[str, Any]:
@@ -179,6 +199,18 @@ def build(
 ) -> tuple[dict[str, Any], list[str]]:
     _check(request.params)
 
+    native_items = [
+        block.item
+        for turn in request.turns
+        for block in turn.blocks
+        if isinstance(block, NativeResponseItem)
+    ]
+    if native_items:
+        kinds = sorted({str(item.get("type", "unknown")) for item in native_items})
+        raise RequestError(
+            "Claude upstream cannot faithfully represent Responses items: "
+            + ", ".join(kinds)
+        )
     messages = []
     for turn in request.turns:
         blocks = (
@@ -232,22 +264,62 @@ def build(
         body["stop_sequences"] = sequences
 
     betas: list[str] = []
+    native = [tool for tool in request.tools if isinstance(tool, NativeTool)]
+    if native:
+        kinds = sorted({str(tool.item.get("type", "unknown")) for tool in native})
+        raise RequestError(
+            "Claude upstream cannot faithfully represent Responses tools: "
+            + ", ".join(kinds)
+        )
+    function_tools = [tool for tool in request.tools if isinstance(tool, FunctionTool)]
+    for tool in function_tools:
+        if tool.native is not None:
+            unsupported = sorted(
+                set(tool.native)
+                - {"type", "name", "parameters", "description", "strict"}
+            )
+            if unsupported:
+                raise RequestError(
+                    "Claude upstream cannot faithfully represent function tool fields: "
+                    + ", ".join(unsupported)
+                )
+    web_tools = [tool for tool in request.tools if isinstance(tool, WebSearchTool)]
+    for tool in web_tools:
+        if tool.native is not None and set(tool.native) - {"type"}:
+            raise RequestError(
+                "Claude upstream cannot faithfully represent Responses web_search options"
+            )
     tools = [
         {
             "name": tool.name,
             "input_schema": tool.parameters,
             **({"description": tool.description} if tool.description else {}),
+            **(
+                {"strict": tool.native["strict"]}
+                if tool.native is not None and "strict" in tool.native
+                else {}
+            ),
         }
-        for tool in request.tools
-        if isinstance(tool, FunctionTool)
+        for tool in function_tools
     ]
-    if any(isinstance(tool, WebSearchTool) for tool in request.tools):
+    if web_tools:
         tools.append({"type": WEB_SEARCH_TOOL, "name": "web_search"})
         betas.append(WEB_SEARCH_BETA)
     choice = request.tool_choice
     if tools and not (choice and choice.kind == "none"):
         body["tools"] = tools
         body["tool_choice"] = _tool_choice(choice)
+
+    effort = None
+    if request.reasoning_effort:
+        effort = str(request.reasoning_effort).casefold()
+        if effort not in EFFORTS:
+            raise RequestError(
+                f"unsupported reasoning_effort: {request.reasoning_effort}"
+            )
+        # Claude's native effort control is independent of its thinking mode.
+        # Do not approximate named effort tiers with fabricated token budgets.
+        body["output_config"] = {"effort": effort}
 
     budget = request.thinking_budget
     if request.thinking_mode == "disabled":
@@ -256,12 +328,6 @@ def build(
         # The client asked the model to size its own reasoning.
         body["thinking"] = {"type": "adaptive"}
         return body, betas
-    if budget is None and request.reasoning_effort:
-        budget = THINKING_BUDGETS.get(str(request.reasoning_effort).casefold())
-        if not budget:
-            raise RequestError(
-                f"unsupported reasoning_effort: {request.reasoning_effort}"
-            )
     if budget is not None:
         budget = min(budget, max_tokens - 1)
         if budget < 1024:

@@ -113,6 +113,8 @@ def make_handler(service: Service):
                     return self._json(HTTPStatus.OK, handler(body))
                 if path == dialect.chat_route:
                     return self._chat(dialect, body)
+                if dialect.responses_route and path == dialect.responses_route:
+                    return self._responses(dialect, body)
                 if dialect.count_route and path == dialect.count_route:
                     return self._count_tokens(dialect, body)
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -156,11 +158,28 @@ def make_handler(service: Service):
                 raise RequestError(f"no provider handles model: {model}")
             return routed
 
+        def _responses(self, dialect: Dialect, body: dict[str, Any]) -> None:
+            if dialect.parse_responses is None or dialect.encode_responses is None:
+                raise RequestError("Responses API is not supported by this dialect")
+            request = dialect.parse_responses(
+                body, self.headers.get("X-Session-Id", "")
+            )
+            return self._generate(
+                dialect,
+                request,
+                lambda model, decoder: dialect.encode_responses(
+                    model, decoder, request
+                ),
+            )
+
         def _chat(self, dialect: Dialect, body: dict[str, Any]) -> None:
             request = dialect.parse(body, self.headers.get("X-Session-Id", ""))
+            return self._generate(dialect, request, dialect.encode)
+
+        def _generate(self, dialect: Dialect, request: Any, encode: Any) -> None:
             provider, canonical = self._route(request.model)
             events, decoder = provider.chat(canonical, request)
-            stream = dialect.encode(canonical, decoder)
+            stream = encode(canonical, decoder)
             if not request.stream:
                 for event in events:
                     stream.feed(event)
@@ -188,7 +207,10 @@ def make_handler(service: Service):
                 return
             except (RuntimeError, OSError, ValueError) as error:
                 try:
-                    failure = dialect.error(HTTPStatus.BAD_GATEWAY, str(error))
+                    if hasattr(stream, "error"):
+                        failure = stream.error(str(error))
+                    else:
+                        failure = dialect.error(HTTPStatus.BAD_GATEWAY, str(error))
                     sse.send(failure, dialect.event_name(failure))
                 except (BrokenPipeError, ConnectionResetError):
                     return

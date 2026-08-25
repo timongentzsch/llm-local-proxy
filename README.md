@@ -43,13 +43,17 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai/v1 OPENAI_API_KEY=$KEY
 
 | Mount | Routes |
 | --- | --- |
-| `/openai/v1` | `chat/completions`, `models` (`?q=` search), `models/count` |
+| `/openai/v1` | `responses` (stateless), `chat/completions`, `models` (`?q=` search), `models/count` |
 | `/anthropic` | `v1/messages`, `v1/messages/count_tokens`, `v1/models` |
 | `/v1` | alias of `/openai/v1` |
 
 Streaming, images, function tools, web search, parallel calls, reasoning effort
-and token usage work on both. The key is accepted as `Authorization: Bearer` or
-`x-api-key` on every mount — it is the proxy's own key, not a vendor's.
+and token usage work on both. The Responses route carries encrypted Codex
+reasoning and signed/redacted Claude thinking as opaque reasoning items, so a
+client that resends its complete `input` can continue tool loops without proxy
+state. It rejects `store: true` and `previous_response_id`; use `store: false`.
+The key is accepted as `Authorization: Bearer` or `x-api-key` on every mount —
+it is the proxy's own key, not a vendor's.
 
 The dashboard also serves `GET /api/status` and the `POST /api/<provider>/login`
 family it uses to sign in and out.

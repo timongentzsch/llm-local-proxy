@@ -15,7 +15,10 @@
     ],
     "store": false,
     "stream": true,
-    "prompt_cache_key": "proxy-90b626dbb1e994c962942db2"
+    "prompt_cache_key": "proxy-90b626dbb1e994c962942db2",
+    "include": [
+      "reasoning.encrypted_content"
+    ]
   },
   "session": "proxy-90b626dbb1e994c962942db2"
 }

@@ -26,7 +26,7 @@ class Upstream:
     def __init__(self, app: AppServer, timeout: int, tokens_path: Path | None = None):
         self.app = app
         self.timeout = timeout
-        self.ledger = TokenLedger(tokens_path)
+        self.ledger = TokenLedger(tokens_path, input_includes_cache=True)
         self._opener = transport.opener()
 
     def events(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:

@@ -79,6 +79,7 @@ class ServerTest(unittest.TestCase):
         self.assertNotIn("context_length", model)
         model = _model_info({"model": "acme-gpt-1"}, {"acme-gpt-1": 272000})
         self.assertEqual(model["context_length"], 272000)
+        self.assertEqual(model["supported_reasoning_efforts"], [])
 
     def test_claude_model_info_matches_openrouter_shape(self):
         model = _claude_model_info(
@@ -100,6 +101,8 @@ class ServerTest(unittest.TestCase):
             model["supported_reasoning_efforts"],
             ["low", "medium", "high", "xhigh", "max"],
         )
+        model = _claude_model_info({"id": "claude-fake-1", "name": "Claude Fake 1"})
+        self.assertEqual(model["supported_reasoning_efforts"], [])
 
     @staticmethod
     def _service():

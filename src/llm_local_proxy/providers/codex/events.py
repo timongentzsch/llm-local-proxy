@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ...ir import (
     Citation,
     Finish,
+    NativeItem,
+    ReasoningItem,
     StreamEvent,
     TextDelta,
     ThinkingDelta,
@@ -28,6 +31,7 @@ class CodexDecoder:
         self.calls: list[str] = []
         self.reasoning_items: list[dict[str, Any]] = []
         self.web_searches: set[str] = set()
+        self._native_seen: set[str] = set()
         self._usage: Usage | None = None
 
     def decode(self, event: dict[str, Any]) -> list[StreamEvent]:
@@ -87,17 +91,25 @@ class CodexDecoder:
             }
             if kept not in self.reasoning_items:
                 self.reasoning_items.append(kept)
-        if item.get("type") != "function_call":
+                events.append(ReasoningItem(dict(kept)))
+        if item.get("type") == "function_call":
+            call_id = str(item.get("call_id") or item.get("id") or "")
+            if not call_id or call_id in self.calls:
+                return events
+            name = str(item.get("name", ""))
+            arguments = str(item.get("arguments", "{}"))
+            index = len(self.calls)
+            self.calls.append(call_id)
+            events.append(ToolCallStart(index, call_id, name, arguments))
+            events.append(ToolCallEnd(index, call_id, name, arguments))
             return events
-        call_id = str(item.get("call_id") or item.get("id") or "")
-        if not call_id or call_id in self.calls:
+        if item.get("type") in {"reasoning", "message", "web_search_call"}:
             return events
-        name = str(item.get("name", ""))
-        arguments = str(item.get("arguments", "{}"))
-        index = len(self.calls)
-        self.calls.append(call_id)
-        events.append(ToolCallStart(index, call_id, name, arguments))
-        events.append(ToolCallEnd(index, call_id, name, arguments))
+        key = str(item.get("id") or item.get("call_id") or "")
+        key = key or json.dumps(item, sort_keys=True, separators=(",", ":"))
+        if key not in self._native_seen:
+            self._native_seen.add(key)
+            events.append(NativeItem(dict(item)))
         return events
 
     def _web_search(self, item: Any) -> None:

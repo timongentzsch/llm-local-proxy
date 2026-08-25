@@ -13,7 +13,6 @@ PARAMETERS = (
     "reasoning_effort",
     "web_search",
 )
-EFFORTS = ("low", "medium", "high")
 
 
 def model_info(
@@ -46,7 +45,7 @@ def model_info(
         "default_parameters": default_parameters,
         "per_request_limits": None,
         "is_default": is_default,
-        "supported_reasoning_efforts": reasoning_efforts or list(EFFORTS),
+        "supported_reasoning_efforts": reasoning_efforts or [],
     }
     if context_length > 0:
         value["context_length"] = context_length

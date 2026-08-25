@@ -52,7 +52,21 @@ class Thinking:
     redacted: str = ""
 
 
-Block = Text | Image | ToolUse | ToolResult | Thinking
+@dataclass
+class Reasoning:
+    """Opaque Responses reasoning item carried verbatim between turns."""
+
+    item: dict[str, Any]
+
+
+@dataclass
+class NativeResponseItem:
+    """A Responses input/output item with no lossless cross-dialect mapping."""
+
+    item: dict[str, Any]
+
+
+Block = Text | Image | ToolUse | ToolResult | Thinking | Reasoning | NativeResponseItem
 
 
 @dataclass
@@ -66,14 +80,23 @@ class FunctionTool:
     name: str
     parameters: dict[str, Any]
     description: str = ""
+    native: dict[str, Any] | None = None
 
 
 @dataclass
 class WebSearchTool:
     context_size: str = ""
+    native: dict[str, Any] | None = None
 
 
-Tool = FunctionTool | WebSearchTool
+@dataclass
+class NativeTool:
+    """A Responses tool definition retained without schema conversion."""
+
+    item: dict[str, Any]
+
+
+Tool = FunctionTool | WebSearchTool | NativeTool
 
 
 @dataclass
@@ -107,6 +130,20 @@ class ThinkingSignature:
 @dataclass
 class RedactedThinkingDelta:
     data: str
+
+
+@dataclass
+class ReasoningItem:
+    """A complete opaque reasoning item for stateless Responses replay."""
+
+    item: dict[str, Any]
+
+
+@dataclass
+class NativeItem:
+    """A complete native Responses output item."""
+
+    item: dict[str, Any]
 
 
 @dataclass
@@ -164,6 +201,8 @@ StreamEvent = (
     | ThinkingDelta
     | ThinkingSignature
     | RedactedThinkingDelta
+    | ReasoningItem
+    | NativeItem
     | ToolCallStart
     | ToolCallArgs
     | ToolCallEnd
