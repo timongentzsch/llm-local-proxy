@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import io
+import json
 import unittest
 
 from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
@@ -10,6 +14,12 @@ from llm_local_proxy.errors import RequestError
 from llm_local_proxy.ir import NativeItem
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
+from llm_local_proxy.providers.claude.thinking import (
+    ENVELOPE_PREFIX,
+    Outcome,
+    pack,
+    unpack,
+)
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build as build_codex
 from llm_local_proxy.providers.reasoning import ReasoningCache
@@ -131,12 +141,20 @@ class ResponsesIngressTest(unittest.TestCase):
             build_claude(request, "claude-test")
 
     def test_claude_recovers_signed_thinking_from_responses_history(self):
+        # Stateless: the client carries the block back, this process need not
+        # remember it, and no cache is supplied here.
+        signed = {"type": "thinking", "thinking": "Checked.", "signature": "SIG"}
         request = parse(
             {
                 "model": "claude-test",
                 "input": [
                     {"type": "message", "role": "user", "content": "read it"},
-                    REASONING,
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [{"type": "summary_text", "text": "Checked."}],
+                        "encrypted_content": pack(signed, 0),
+                    },
                     {
                         "type": "function_call",
                         "call_id": "call_1",
@@ -152,28 +170,10 @@ class ResponsesIngressTest(unittest.TestCase):
                 "reasoning": {"effort": "low"},
             }
         )
-        cache = ReasoningCache()
-        cache.put(
-            ["call_1"],
-            [
-                {
-                    "type": "thinking",
-                    "thinking": "Checked.",
-                    "signature": "opaque-secret",
-                }
-            ],
-        )
-        upstream, _ = build_claude(request, "claude-test", reasoning_cache=cache)
+        upstream, _ = build_claude(request, "claude-test")
         self.assertEqual(upstream["output_config"], {"effort": "low"})
         assistant = upstream["messages"][1]["content"]
-        self.assertEqual(
-            assistant[0],
-            {
-                "type": "thinking",
-                "thinking": "Checked.",
-                "signature": "opaque-secret",
-            },
-        )
+        self.assertEqual(assistant[0], signed)
         self.assertEqual(assistant[1]["type"], "tool_use")
         self.assertEqual(
             len([block for block in assistant if block["type"] == "thinking"]), 1
@@ -293,7 +293,343 @@ class ResponsesEgressTest(unittest.TestCase):
             encoder.feed(event)
         result = encoder.result()
         self.assertEqual(result["output"][0]["summary"][0]["text"], "Checked.")
-        self.assertEqual(result["output"][0]["encrypted_content"], "signature")
+        recovered = unpack(result["output"][0]["encrypted_content"])
+        self.assertIs(recovered.outcome, Outcome.OK)
+        self.assertEqual(
+            recovered.block,
+            {"type": "thinking", "thinking": "Checked.", "signature": "signature"},
+        )
+
+
+def _claude_stream(blocks: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The Claude SSE events that produce these content blocks."""
+    events: list[dict[str, object]] = []
+    for index, block in enumerate(blocks):
+        kind = block["type"]
+        if kind == "thinking":
+            events.append(
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                }
+            )
+            if block["thinking"]:
+                events.append(
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "thinking_delta",
+                            "thinking": block["thinking"],
+                        },
+                    }
+                )
+            events.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {
+                        "type": "signature_delta",
+                        "signature": block["signature"],
+                    },
+                }
+            )
+        elif kind == "redacted_thinking":
+            events.append(
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": block,
+                }
+            )
+        else:
+            events.append(
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "tool_use", "id": "toolu_1", "name": "f"},
+                }
+            )
+            events.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": "{}"},
+                }
+            )
+        events.append({"type": "content_block_stop", "index": index})
+    events.append({"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    return events
+
+
+class ClaudeThinkingRoundTripTest(unittest.TestCase):
+    """What Claude signed must come back byte for byte, or not at all."""
+
+    def _round_trip(self, blocks, cache=None):
+        encoder = ResponseEncoder("claude-test", ClaudeDecoder(cache))
+        for event in _claude_stream(blocks):
+            encoder.feed(event)
+        output = encoder.result()["output"]
+        request = parse(
+            {
+                "model": "claude-test",
+                "store": False,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "go"}],
+                    },
+                    *output,
+                    {
+                        "type": "function_call_output",
+                        "call_id": "toolu_1",
+                        "output": "done",
+                    },
+                ],
+            }
+        )
+        upstream, _ = build_claude(request, "claude-test", reasoning_cache=cache)
+        return upstream["messages"][1]["content"]
+
+    def test_signed_thinking_survives_a_stateless_client(self):
+        block = {"type": "thinking", "thinking": "Checked.", "signature": "SIG"}
+        replayed = self._round_trip([block, {"type": "tool_use"}])
+        self.assertEqual(replayed[0], block)
+        self.assertEqual(replayed[1]["type"], "tool_use")
+
+    def test_thinking_withheld_by_the_upstream_replays_as_thinking(self):
+        # Claude may sign a block whose text it never streams. Rebuilding that
+        # as redacted_thinking is what upstream rejects as modified.
+        block = {"type": "thinking", "thinking": "", "signature": "SIG"}
+        replayed = self._round_trip([block, {"type": "tool_use"}])
+        self.assertEqual(replayed[0], block)
+
+    def test_redacted_thinking_stays_redacted(self):
+        block = {"type": "redacted_thinking", "data": "OPAQUE"}
+        replayed = self._round_trip([block, {"type": "tool_use"}])
+        self.assertEqual(replayed[0], block)
+
+    def test_thinking_between_tool_calls_keeps_its_place(self):
+        # Claude interleaves thinking with the calls it precedes; grouping the
+        # blocks by kind would hand back a turn it never produced.
+        blocks = [
+            {"type": "thinking", "thinking": "first", "signature": "S1"},
+            {"type": "tool_use"},
+            {"type": "thinking", "thinking": "second", "signature": "S2"},
+        ]
+        replayed = self._round_trip(blocks)
+        self.assertEqual(
+            [block["type"] for block in replayed],
+            ["thinking", "tool_use", "thinking"],
+        )
+        self.assertEqual(replayed[0]["thinking"], "first")
+        self.assertEqual(replayed[2]["thinking"], "second")
+
+    def test_dropped_or_reordered_signed_blocks_are_refused(self):
+        signed = [
+            {"type": "thinking", "thinking": "first", "signature": "S1"},
+            {"type": "thinking", "thinking": "second", "signature": "S2"},
+        ]
+
+        def history(items):
+            return parse(
+                {
+                    "model": "claude-test",
+                    "store": False,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "go"}],
+                        },
+                        *items,
+                        {
+                            "type": "function_call",
+                            "call_id": "toolu_1",
+                            "name": "f",
+                            "arguments": "{}",
+                        },
+                        {
+                            "type": "function_call_output",
+                            "call_id": "toolu_1",
+                            "output": "done",
+                        },
+                    ],
+                }
+            )
+
+        def item(block, ordinal):
+            return {
+                "type": "reasoning",
+                "id": f"rs_{ordinal}",
+                "summary": [],
+                "encrypted_content": pack(block, ordinal),
+            }
+
+        items = [item(block, n) for n, block in enumerate(signed)]
+        # The client kept only the second of two signed blocks.
+        with self.assertRaisesRegex(RequestError, "out of order or incomplete"):
+            build_claude(history([items[1]]), "claude-test")
+        # The client swapped them.
+        with self.assertRaisesRegex(RequestError, "out of order or incomplete"):
+            build_claude(history(list(reversed(items))), "claude-test")
+        # An intact pair replays untouched.
+        upstream, _ = build_claude(history(items), "claude-test")
+        self.assertEqual(upstream["messages"][1]["content"][:2], signed)
+        # A complete cached group is preferred over refusing outright.
+        cache = ReasoningCache()
+        cache.put(["toolu_1"], signed)
+        upstream, _ = build_claude(
+            history([items[1]]), "claude-test", reasoning_cache=cache
+        )
+        self.assertEqual(upstream["messages"][1]["content"][:2], signed)
+
+    def test_unreadable_envelope_is_dropped_rather_than_stranding_the_client(self):
+        # A client keeps its history append-only: refusing an item it cannot
+        # repair would fail every later turn of that session the same way.
+        # Claude accepts a turn with no thinking, so dropping is a recovery.
+        def history(encrypted):
+            return parse(
+                {
+                    "model": "claude-test",
+                    "store": False,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "go"}],
+                        },
+                        {
+                            "type": "reasoning",
+                            "id": "rs_1",
+                            "summary": [],
+                            "encrypted_content": encrypted,
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "toolu_1",
+                            "name": "f",
+                            "arguments": "{}",
+                        },
+                    ],
+                }
+            )
+
+        good = pack({"type": "thinking", "thinking": "t", "signature": "S"}, 0)
+        # A signed block missing the field that signs it is not a block.
+        blocks = {
+            "whose envelope arrived damaged": (
+                good[:-4],
+                pack({"type": "thinking", "thinking": "t"}, 0),
+            ),
+            "whose envelope an unsupported version wrote": (
+                "llpv9-claude-thinking:whatever",
+                # v1 packed the bare block, without its ordinal.
+                ENVELOPE_PREFIX.replace("v2", "v1")
+                + base64.urlsafe_b64encode(
+                    json.dumps(
+                        {"type": "thinking", "thinking": "", "signature": "S"}
+                    ).encode()
+                ).decode(),
+            ),
+            "this proxy did not write and cannot replay": ("", None),
+        }
+        for reason, encrypted in blocks.items():
+            for value in encrypted:
+                with self.subTest(reason=reason, encrypted=value):
+                    warnings = io.StringIO()
+                    with contextlib.redirect_stderr(warnings):
+                        upstream, _ = build_claude(history(value), "claude-test")
+                    self.assertEqual(
+                        [b["type"] for b in upstream["messages"][1]["content"]],
+                        ["tool_use"],
+                    )
+                    self.assertIn(
+                        f"dropped 1 reasoning item {reason}", warnings.getvalue()
+                    )
+
+    def test_losing_one_signed_block_of_a_turn_is_still_refused(self):
+        # Dropping what cannot be read is only safe wholesale: a turn Claude
+        # signed, minus one of its blocks, is not the turn Claude signed.
+        signed = [
+            {"type": "thinking", "thinking": "first", "signature": "S1"},
+            {"type": "thinking", "thinking": "second", "signature": "S2"},
+        ]
+        items = [
+            {
+                "type": "reasoning",
+                "id": f"rs_{n}",
+                "summary": [],
+                "encrypted_content": pack(block, n),
+            }
+            for n, block in enumerate(signed)
+        ]
+        items[0]["encrypted_content"] = items[0]["encrypted_content"][:-4]
+        request = parse(
+            {
+                "model": "claude-test",
+                "store": False,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "go"}],
+                    },
+                    *items,
+                ],
+            }
+        )
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaisesRegex(RequestError, "out of order or incomplete"),
+        ):
+            build_claude(request, "claude-test")
+
+    def test_foreign_reasoning_blob_is_dropped_not_reshaped(self):
+        request = parse(
+            {
+                "model": "claude-test",
+                "store": False,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "go"}],
+                    },
+                    {
+                        "type": "reasoning",
+                        "id": "rs_old",
+                        "summary": [{"type": "summary_text", "text": ""}],
+                        "encrypted_content": "a-signature-from-another-proxy",
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "toolu_1",
+                        "name": "f",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "toolu_1",
+                        "output": "done",
+                    },
+                ],
+            }
+        )
+        upstream, _ = build_claude(request, "claude-test")
+        self.assertEqual(
+            [block["type"] for block in upstream["messages"][1]["content"]],
+            ["tool_use"],
+        )
+        # The originals are still known by tool call id when this process saw
+        # them, and are preferred over dropping.
+        cache = ReasoningCache()
+        original = {"type": "thinking", "thinking": "Checked.", "signature": "SIG"}
+        cache.put(["toolu_1"], [original])
+        upstream, _ = build_claude(request, "claude-test", reasoning_cache=cache)
+        self.assertEqual(upstream["messages"][1]["content"][0], original)
 
 
 if __name__ == "__main__":

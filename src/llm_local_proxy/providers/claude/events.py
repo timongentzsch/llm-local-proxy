@@ -21,6 +21,7 @@ from ...ir import (
 )
 from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
+from .thinking import pack
 
 #: Passed through; anything else means the turn simply ended.
 PASSTHROUGH_STOP = {"tool_use", "max_tokens"}
@@ -117,11 +118,20 @@ class ClaudeDecoder:
         if self._open_thinking is not None:
             signature = self._open_thinking.get("signature")
             if signature:
-                # Responses has one opaque encrypted_content slot. For Claude
-                # it carries the native signature and the summary carries the
-                # exact thinking text, allowing a stateless reverse mapping.
-                block = self._open_thinking
+                # Responses has one opaque encrypted_content slot, and Claude
+                # verifies the whole block on replay: the packed envelope keeps
+                # kind, text and signature together. The summary stays readable
+                # but is never what the block is rebuilt from -- Claude may
+                # withhold the thinking text entirely, and an empty summary must
+                # replay as the empty thinking block it was.
+                block = dict(self._open_thinking)
+                ordinal = len(self.reasoning_blocks)
                 self.reasoning_blocks.append(block)
+                # Claude may withhold the plaintext entirely. An empty summary
+                # list says so; one empty summary_text would read as thinking
+                # that happened and said nothing.
+                text = str(block.get("thinking", ""))
+                summary = [{"type": "summary_text", "text": text}] if text else []
                 events.extend(
                     [
                         ThinkingSignature(signature),
@@ -129,20 +139,16 @@ class ClaudeDecoder:
                             {
                                 "type": "reasoning",
                                 "id": "rs_" + uuid.uuid4().hex,
-                                "summary": [
-                                    {
-                                        "type": "summary_text",
-                                        "text": str(block.get("thinking", "")),
-                                    }
-                                ],
-                                "encrypted_content": signature,
+                                "summary": summary,
+                                "encrypted_content": pack(block, ordinal),
                             }
                         ),
                     ]
                 )
             self._open_thinking = None
         if self._open_redacted is not None:
-            block = self._open_redacted
+            block = dict(self._open_redacted)
+            ordinal = len(self.reasoning_blocks)
             self.reasoning_blocks.append(block)
             events.append(
                 ReasoningItem(
@@ -150,7 +156,7 @@ class ClaudeDecoder:
                         "type": "reasoning",
                         "id": "rs_" + uuid.uuid4().hex,
                         "summary": [],
-                        "encrypted_content": str(block.get("data", "")),
+                        "encrypted_content": pack(block, ordinal),
                     }
                 )
             )

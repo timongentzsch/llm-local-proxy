@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from typing import Any
 
@@ -24,6 +25,7 @@ from ...ir import (
 )
 from ..reasoning import ReasoningCache
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
+from .thinking import Outcome, Unpacked, unpack
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
 WEB_SEARCH_TOOL = "web_search_20250305"
@@ -118,58 +120,94 @@ def _user_blocks(turn: Turn) -> list[dict[str, Any]]:
     return blocks
 
 
-def _assistant_blocks(turn: Turn, cache: ReasoningCache | None) -> list[dict[str, Any]]:
-    # An empty text block is rejected upstream.
-    blocks: list[dict[str, Any]] = [
-        {"type": "text", "text": block.text}
-        for block in turn.blocks
-        if isinstance(block, Text) and block.text.strip()
-    ]
-    blocks.extend(
-        {"type": "thinking", "thinking": block.text, "signature": block.signature}
-        if not block.redacted
-        else {"type": "redacted_thinking", "data": block.redacted}
-        for block in turn.blocks
-        if isinstance(block, Thinking)
-    )
-    blocks.extend(
-        _responses_reasoning(block.item)
-        for block in turn.blocks
-        if isinstance(block, Reasoning)
-    )
-    uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
-    for use in uses:
-        blocks.append(
-            {
-                "type": "tool_use",
-                "id": use.id or "toolu_" + uuid.uuid4().hex[:24],
-                "name": use.name,
-                "input": _arguments(use.arguments),
-            }
-        )
-    has_carried_reasoning = any(
-        isinstance(block, (Thinking, Reasoning)) for block in turn.blocks
-    )
-    # Compatibility cache is only for dialects that cannot carry reasoning.
-    if cache is not None and uses and not has_carried_reasoning:
-        blocks = cache.get([use.id for use in uses if use.id]) + blocks
+def _assistant_blocks(
+    turn: Turn, cache: ReasoningCache | None, dropped: list[Outcome] | None = None
+) -> list[dict[str, Any]]:
+    """One assistant turn, in the order its blocks actually occurred.
+
+    Claude interleaves thinking with the tool calls it precedes, and verifies
+    what it gets back, so position is part of the payload: grouping blocks by
+    kind would rewrite a turn Claude signed.
+    """
+    blocks: list[dict[str, Any]] = []
+    ordinals: list[int] = []
+    for block in turn.blocks:
+        if isinstance(block, Thinking):
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": block.text,
+                    "signature": block.signature,
+                }
+                if not block.redacted
+                else {"type": "redacted_thinking", "data": block.redacted}
+            )
+        elif isinstance(block, Reasoning):
+            recovered = _responses_reasoning(block.item)
+            if recovered.outcome is Outcome.OK:
+                assert recovered.block is not None
+                blocks.append(recovered.block)
+                ordinals.append(recovered.ordinal)
+            elif dropped is not None:
+                dropped.append(recovered.outcome)
+        elif isinstance(block, Text) and block.text.strip():
+            # An empty text block is rejected upstream.
+            blocks.append({"type": "text", "text": block.text})
+        elif isinstance(block, ToolUse):
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": block.id or "toolu_" + uuid.uuid4().hex[:24],
+                    "name": block.name,
+                    "input": _arguments(block.arguments),
+                }
+            )
+    if ordinals and ordinals != list(range(len(ordinals))):
+        # Reordered, or missing one from the middle. Either way what is left is
+        # not the turn Claude signed, and the cache is the only honest source.
+        uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
+        replay = cache.get([use for use in uses if use]) if cache else []
+        if not replay:
+            raise RequestError(
+                "cannot replay Claude reasoning: the assistant turn's signed "
+                "blocks arrived out of order or incomplete"
+            )
+        return replay + [b for b in blocks if b["type"] not in _SIGNED]
+    if not ordinals:
+        # A dialect that cannot carry reasoning at all, or a history written
+        # before the envelope existed. Claude accepts a turn with no thinking;
+        # it rejects one whose thinking was altered.
+        uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
+        replay = cache.get([use for use in uses if use]) if cache and uses else []
+        blocks = replay + blocks
     return blocks
 
 
-def _responses_reasoning(item: dict[str, Any]) -> dict[str, Any]:
-    """Recover a Claude thinking block from a stateless Responses item."""
-    encrypted = item.get("encrypted_content")
-    if not isinstance(encrypted, str) or not encrypted:
-        raise RequestError("Claude reasoning replay requires encrypted_content")
-    summary = item.get("summary")
-    text = (
-        "".join(str(part.get("text", "")) for part in summary if isinstance(part, dict))
-        if isinstance(summary, list)
-        else ""
-    )
-    if text:
-        return {"type": "thinking", "thinking": text, "signature": encrypted}
-    return {"type": "redacted_thinking", "data": encrypted}
+#: Block kinds Claude signs, and therefore will not accept rebuilt.
+_SIGNED = frozenset({"thinking", "redacted_thinking"})
+
+#: Why a reasoning item could not be replayed, as the operator reads it.
+DROP_REASONS = {
+    Outcome.FOREIGN: "this proxy did not write and cannot replay",
+    Outcome.MALFORMED: "whose envelope arrived damaged",
+    Outcome.BAD_VERSION: "whose envelope an unsupported version wrote",
+}
+
+
+def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
+    """Classify the Claude thinking block a Responses reasoning item carries.
+
+    Nothing here refuses the request. A block this build cannot recover -- one
+    another upstream wrote, one damaged in transit, one an envelope version
+    this build does not know -- has no faithful Claude translation, and a
+    client cannot repair it: histories are append-only, so rejecting the item
+    would fail every later turn of that session the same way, for good. What is
+    dropped is announced, and Claude accepts a turn carrying no thinking at
+    all; what it rejects is thinking that came back altered. Losing one block
+    out of several is a different thing, and _assistant_blocks still catches
+    it by ordinal.
+    """
+    return unpack(item.get("encrypted_content"))
 
 
 def _tool_choice(choice: ToolChoice | None) -> dict[str, Any]:
@@ -212,14 +250,25 @@ def build(
             + ", ".join(kinds)
         )
     messages = []
+    dropped: list[Outcome] = []
     for turn in request.turns:
         blocks = (
             _user_blocks(turn)
             if turn.role == "user"
-            else _assistant_blocks(turn, reasoning_cache)
+            else _assistant_blocks(turn, reasoning_cache, dropped)
         )
         if blocks:
             messages.append({"role": turn.role, "content": blocks})
+    # Visible rather than silent: the turn still runs, but Claude is no longer
+    # seeing reasoning it signed, and each reason is a different operator
+    # problem -- a foreign history, a damaged blob, a version skew.
+    for outcome, reason in DROP_REASONS.items():
+        count = dropped.count(outcome)
+        if count:
+            sys.stderr.write(
+                f"claude: dropped {count} reasoning item"
+                f"{'' if count == 1 else 's'} {reason}\n"
+            )
     if not messages or messages[0]["role"] != "user":
         raise RequestError("first message must be a user message")
 
