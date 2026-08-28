@@ -1,5 +1,6 @@
 """The Claude subscription transport: usage capture and error mapping."""
 
+import contextlib
 import io
 import pathlib
 import tempfile
@@ -10,6 +11,7 @@ from email.message import Message
 from llm_local_proxy.providers.claude.upstream import (
     ClaudeUpstreamError,
     UsageStore,
+    _report_block_shape,
     _thinking_rejected,
     _upstream_error,
 )
@@ -44,6 +46,57 @@ class UpstreamErrorTest(unittest.TestCase):
             )
         )
         self.assertEqual(str(error), "max_tokens too large")
+
+
+class BlockShapeReportTest(unittest.TestCase):
+    """The diagnostic runs inside an error path and must not raise there."""
+
+    def _report(self, error, body):
+        stream = io.StringIO()
+        with contextlib.redirect_stderr(stream):
+            _report_block_shape(error, body)
+        return stream.getvalue()
+
+    def test_names_each_turn_without_quoting_the_conversation(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "secret"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "abcd", "signature": "xy"},
+                        {"type": "redacted_thinking", "data": "zzz"},
+                        {"type": "tool_use"},
+                    ],
+                },
+            ]
+        }
+        report = self._report(ClaudeUpstreamError(400, "thinking blocks"), body)
+        self.assertIn("[0] user: text", report)
+        self.assertIn("thinking(text=4,sig=2)", report)
+        self.assertIn("redacted(data=3)", report)
+        self.assertNotIn("secret", report)
+        self.assertNotIn("abcd", report)
+
+    def test_stays_silent_unless_upstream_faulted_the_thinking(self):
+        body = {"messages": [{"role": "user", "content": [{"type": "text"}]}]}
+        self.assertEqual(self._report(ClaudeUpstreamError(429, "slow down"), body), "")
+        self.assertEqual(
+            self._report(ClaudeUpstreamError(400, "max_tokens too large"), body), ""
+        )
+
+    def test_survives_a_body_it_did_not_expect(self):
+        # It reports on the way out of a failure; raising here would replace
+        # the upstream error with its own.
+        error = ClaudeUpstreamError(400, "thinking blocks")
+        for body in (
+            {},
+            {"messages": "not a list"},
+            {"messages": [None, 7, {"role": "user", "content": "flat"}]},
+            {"messages": [{"role": "assistant", "content": [None, {"type": None}]}]},
+            {"messages": [{"content": [{"type": "thinking", "thinking": 5}]}]},
+        ):
+            self._report(error, body)
 
 
 def _headers(**values):

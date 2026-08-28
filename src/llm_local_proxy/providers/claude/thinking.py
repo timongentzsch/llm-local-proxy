@@ -5,28 +5,24 @@ exactly as it produced them: the block kind, its text and its signature are all
 part of what it verifies. A Responses item has one opaque slot for that, so the
 whole block is packed into `encrypted_content` and unpacked on replay.
 
-Nothing is ever rebuilt from the readable `summary`, which a client may shorten
-or drop. Rebuilding a `redacted_thinking` block out of a signature is what
-upstream rejects as "blocks must remain as they were in the original response",
-and only sometimes, which makes that corruption silent until it is not.
+Nothing is rebuilt from the readable `summary`, which a client may shorten or
+drop: reconstructing a block from its signature is what upstream rejects as
+"blocks must remain as they were in the original response".
 
-Each envelope also records where its block sat among the signed blocks of its
-assistant turn, so a client that reorders them, or drops one from the middle,
-is caught here rather than upstream. A dropped trailing block leaves ordinals
-that still read 0..n-1: the total is not known until the turn ends, and
-stamping it would mean holding every reasoning item back until then, so that
-one is caught by the reasoning cache's count instead.
+Each envelope records where its block sat in the turn, so a client that
+reorders them or drops one from the middle is caught here rather than
+upstream. A dropped trailing block still leaves ordinals reading 0..n-1 --
+the total is not known until the turn ends -- so the reasoning cache's count
+catches that one instead.
 
-A block is packed only when it can actually be replayed. The subscription
-edge signs reasoning whose text it never streams, and that signature covers
-what Claude wrote rather than the empty string that arrives here, so sending
-it back is itself the modification upstream refuses.
+Only a replayable block is packed [empirical]: the subscription edge signs
+reasoning whose text it never streams, and a signature covering text that
+never arrived cannot be sent back.
 
-The version tag is part of the payload contract: any change to the shape below
-must bump it, so blobs an older build wrote are reported as a version this one
-cannot read instead of being misread as damage -- or, worse, as the shape they
-are not. Clients keep append-only histories, so a build that rejects what an
-earlier build wrote strands every later turn of those sessions.
+The version tag is part of the payload contract. Any change to the shape below
+must bump it, so an older build's blobs are reported as an unreadable version
+rather than misread. Clients keep append-only histories, so a build that
+rejects what an earlier one wrote strands every later turn of those sessions.
 """
 
 from __future__ import annotations

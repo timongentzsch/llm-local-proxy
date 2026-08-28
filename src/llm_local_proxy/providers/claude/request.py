@@ -170,33 +170,21 @@ def _assistant_blocks(
     uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
     replay = cache.get([use for use in uses if use]) if cache and uses else []
     if ordinals:
-        # Some of this turn's reasoning survived and some did not: a history
-        # holding both envelope versions, or one carrying another upstream's
-        # blobs beside ours. What is left is a fraction of what Claude signed,
-        # and a fraction is altered where nothing at all is merely thinner --
-        # so the rest goes too. Keeping the survivors is what makes a mixed
-        # history a session that can never continue.
-        #
-        # The cache is consulted for how many blocks the turn had, never for
-        # the blocks themselves: it holds them without their positions, and
-        # Claude interleaves thinking with the calls it precedes. Replaying
-        # from it would group them by kind and hand back a turn it never
-        # produced. Counting is what catches a client that dropped the last
-        # block, whose ordinals still read 0..n-1.
+        # A fraction of a signed turn is altered, where none of it is merely
+        # thinner, so a turn that lost any block sends none. The cache gives
+        # the count -- never the blocks, which it holds without their
+        # positions -- and that is what catches a dropped trailing block,
+        # whose ordinals still read 0..n-1.
         if lost or (replay and len(ordinals) < len(replay)):
             return [b for b in blocks if b["type"] not in _SIGNED]
-        # Reordered, or missing one from the middle. What is left is not the
-        # turn Claude signed, and the cache cannot rebuild its order.
         if ordinals != list(range(len(ordinals))):
             raise RequestError(
                 "cannot replay Claude reasoning: the assistant turn's signed "
                 "blocks arrived out of order or incomplete"
             )
-        # Complete, and each block still sits where the client had it.
         return blocks
-    # No envelopes: a dialect that cannot carry reasoning at all, or a history
-    # written before the envelope existed. Claude accepts a turn with no
-    # thinking; it rejects one whose thinking was altered.
+    # No envelopes: a dialect that cannot carry reasoning, or a history older
+    # than the envelope. Claude accepts a turn with no thinking.
     return replay + blocks
 
 
@@ -215,11 +203,9 @@ DROP_REASONS = {
 def _replayable(block: dict[str, Any] | None) -> bool:
     """False for a signed block Claude will not take back.
 
-    A thinking block whose text never arrived is one: the subscription edge
-    signs reasoning it does not stream, and the signature covers what Claude
-    wrote rather than the empty string left here. Histories already hold these
-    by the hundred, so they are refused on the way out as well as on the way
-    in -- a session written before that was understood still has to continue.
+    A thinking block whose text never arrived is one. Histories written before
+    that was understood hold them by the hundred, so they are refused on the
+    way in as well as on the way out.
     """
     if not isinstance(block, dict):
         return False
@@ -231,15 +217,11 @@ def _replayable(block: dict[str, Any] | None) -> bool:
 def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
     """Classify the Claude thinking block a Responses reasoning item carries.
 
-    Nothing here refuses the request. A block this build cannot recover -- one
-    another upstream wrote, one damaged in transit, one an envelope version
-    this build does not know -- has no faithful Claude translation, and a
-    client cannot repair it: histories are append-only, so rejecting the item
-    would fail every later turn of that session the same way, for good. What is
-    dropped is announced, and Claude accepts a turn carrying no thinking at
-    all; what it rejects is thinking that came back altered. Losing one block
-    of several is the same kind of alteration, so _assistant_blocks drops that
-    turn's thinking entirely rather than sending up the part that survived.
+    Nothing here refuses the request. A block this build cannot recover has no
+    faithful translation and a client cannot repair it: histories are
+    append-only, so rejecting the item would fail every later turn of that
+    session the same way. Drops are announced, and Claude accepts a turn with
+    no thinking; what it rejects is thinking that came back altered.
     """
     return unpack(item.get("encrypted_content"))
 

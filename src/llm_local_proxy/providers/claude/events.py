@@ -117,18 +117,12 @@ class ClaudeDecoder:
         events: list[StreamEvent] = []
         if self._open_thinking is not None:
             signature = self._open_thinking.get("signature")
-            # Responses has one opaque encrypted_content slot, and Claude
-            # verifies the whole block on replay: the packed envelope keeps
-            # kind, text and signature together.
-            #
-            # A signature without text cannot be replayed at all. The
-            # subscription edge signs the reasoning it generated but streams
-            # no `thinking_delta` for it, and the signature covers the text
-            # Claude actually wrote, not the empty string that arrived here.
-            # Sending it back is what upstream refuses as "blocks must remain
-            # as they were in the original response". Packing one only stores
-            # a turn that can never be replayed, so it is not packed: the turn
-            # goes back without thinking, which Claude accepts.
+            # Claude verifies kind, text and signature together on replay, so
+            # the envelope keeps all three in the one opaque Responses slot.
+            # A signature without text is unreplayable -- the subscription
+            # edge signs reasoning it never streams, and the signature covers
+            # what Claude wrote, not the empty string left here -- so packing
+            # one would only store a turn that can never be sent back.
             if signature and str(self._open_thinking.get("thinking", "")):
                 block = dict(self._open_thinking)
                 ordinal = len(self.reasoning_blocks)

@@ -319,13 +319,11 @@ class ClaudeUpstream:
 
 
 def _report_block_shape(error: ClaudeUpstreamError, body: dict[str, Any]) -> None:
-    """Name the turn a rejected signed block sits in, without its content.
+    """Log the block shape of every turn when upstream refuses a signed one.
 
-    A complaint about thinking blocks points at a message and a position, and
-    nothing else in the logs says what the proxy actually put there. Kinds and
-    sizes answer that: whether a block went up as thinking or redacted, where
-    it sat among the calls it was interleaved with, and whether its signature
-    travelled. The text itself is the conversation, so it stays out.
+    The rejection names a message and a position; this says what the proxy put
+    there. Kinds and sizes are enough to place the fault, so the text -- which
+    is the conversation -- stays out of the log.
     """
     if error.status != 400 or "thinking" not in str(error).casefold():
         return
@@ -342,11 +340,11 @@ def _report_block_shape(error: ClaudeUpstreamError, body: dict[str, Any]) -> Non
             kind = block.get("type") if isinstance(block, dict) else "?"
             if kind == "thinking":
                 shapes.append(
-                    f"thinking(text={len(block.get('thinking', ''))},"
-                    f"sig={len(block.get('signature', ''))})"
+                    f"thinking(text={len(str(block.get('thinking', '')))},"
+                    f"sig={len(str(block.get('signature', '')))})"
                 )
             elif kind == "redacted_thinking":
-                shapes.append(f"redacted(data={len(block.get('data', ''))})")
+                shapes.append(f"redacted(data={len(str(block.get('data', '')))})")
             else:
                 shapes.append(str(kind))
         lines.append(f"  [{index}] {message.get('role')}: {', '.join(shapes)}")
