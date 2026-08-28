@@ -27,11 +27,10 @@ from ..base import block_text
 
 #: The only server tool the proxy can serve; the rest are refused.
 WEB_SEARCH_PREFIX = "web_search_"
-#: No proxy implementation; refused rather than silently ignored.
+#: No proxy implementation; refused rather than silently ignored. Fields the
+#: proxy cannot act on but real clients send -- context_management, metadata --
+#: are deliberately absent: they are accepted and dropped.
 REJECTED = ("container", "mcp_servers", "service_tier")
-#: Accepted and dropped; refusing these would break real Claude Code
-#: requests for no benefit.
-IGNORED = ("context_management", "metadata")
 PARAMS = ("temperature", "top_p", "top_k")
 CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
 
@@ -199,7 +198,10 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
     thinking = body.get("thinking")
     mode = thinking.get("type") if isinstance(thinking, dict) else None
     budget = thinking.get("budget_tokens") if mode == "enabled" else None
-    # Same low/medium/high/xhigh/max tiers as reasoning_effort.
+    display = thinking.get("display") if isinstance(thinking, dict) else None
+    if display is not None and display not in {"summarized", "omitted"}:
+        raise RequestError("thinking.display must be summarized or omitted")
+    # The provider validates this against the selected model's live catalog.
     output_config = body.get("output_config")
     effort = output_config.get("effort") if isinstance(output_config, dict) else None
 
@@ -213,6 +215,7 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
         reasoning_effort=effort,
         thinking_budget=budget if isinstance(budget, int) else None,
         thinking_mode=mode if mode in {"adaptive", "disabled"} else "",
+        thinking_display=str(display or ""),
         parallel_tool_calls=parallel,
         stream=bool(body.get("stream", False)),
         session=session,

@@ -8,6 +8,7 @@ from typing import Any
 from ...ir import (
     Citation,
     Finish,
+    ReasoningItem,
     RedactedThinkingDelta,
     StreamEvent,
     TextDelta,
@@ -20,6 +21,7 @@ from ...ir import (
 )
 from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
+from .thinking import pack
 
 #: Passed through; anything else means the turn simply ended.
 PASSTHROUGH_STOP = {"tool_use", "max_tokens"}
@@ -39,6 +41,7 @@ class ClaudeDecoder:
         self.web_searches: set[Any] = set()
         self._open_call: dict[str, Any] | None = None
         self._open_thinking: dict[str, Any] | None = None
+        self._open_redacted: dict[str, Any] | None = None
         self._stop: str | None = None
         self._usage = {
             "input": 0,
@@ -100,8 +103,11 @@ class ClaudeDecoder:
             self._open_thinking = {"type": "thinking", "thinking": "", "signature": ""}
         elif kind == "redacted_thinking":
             # Opaque, safety-flagged portion; replay verbatim on round-trip.
-            data = block.get("data") or ""
-            self.reasoning_blocks.append({"type": "redacted_thinking", "data": data})
+            self._open_redacted = {
+                "type": "redacted_thinking",
+                "data": str(block.get("data") or ""),
+            }
+            data = self._open_redacted["data"]
             return [RedactedThinkingDelta(data)] if data else []
         elif kind in {WEB_SEARCH_TOOL, "web_search_tool_result"}:
             self.web_searches.add(index)
@@ -111,11 +117,47 @@ class ClaudeDecoder:
         events: list[StreamEvent] = []
         if self._open_thinking is not None:
             signature = self._open_thinking.get("signature")
-            if signature:
-                # Only a signed block can be replayed upstream.
-                self.reasoning_blocks.append(self._open_thinking)
-                events.append(ThinkingSignature(signature))
+            # Claude verifies kind, text and signature together on replay, so
+            # the envelope keeps all three in the one opaque Responses slot.
+            # A signature without text is unreplayable -- the subscription
+            # edge signs reasoning it never streams, and the signature covers
+            # what Claude wrote, not the empty string left here -- so packing
+            # one would only store a turn that can never be sent back.
+            if signature and str(self._open_thinking.get("thinking", "")):
+                block = dict(self._open_thinking)
+                ordinal = len(self.reasoning_blocks)
+                self.reasoning_blocks.append(block)
+                text = str(block.get("thinking", ""))
+                summary = [{"type": "summary_text", "text": text}]
+                events.extend(
+                    [
+                        ThinkingSignature(signature),
+                        ReasoningItem(
+                            {
+                                "type": "reasoning",
+                                "id": "rs_" + uuid.uuid4().hex,
+                                "summary": summary,
+                                "encrypted_content": pack(block, ordinal),
+                            }
+                        ),
+                    ]
+                )
             self._open_thinking = None
+        if self._open_redacted is not None:
+            block = dict(self._open_redacted)
+            ordinal = len(self.reasoning_blocks)
+            self.reasoning_blocks.append(block)
+            events.append(
+                ReasoningItem(
+                    {
+                        "type": "reasoning",
+                        "id": "rs_" + uuid.uuid4().hex,
+                        "summary": [],
+                        "encrypted_content": pack(block, ordinal),
+                    }
+                )
+            )
+            self._open_redacted = None
         return events + self._close_call()
 
     def _delta(self, delta: Any) -> list[StreamEvent]:
@@ -137,9 +179,8 @@ class ClaudeDecoder:
             return []
         if kind == "redacted_thinking_delta":
             data = str(delta.get("data", ""))
-            last = self.reasoning_blocks[-1] if self.reasoning_blocks else None
-            if data and last and last.get("type") == "redacted_thinking":
-                last["data"] += data
+            if data and self._open_redacted is not None:
+                self._open_redacted["data"] += data
             return [RedactedThinkingDelta(data)] if data else []
         if kind == "input_json_delta":
             piece = str(delta.get("partial_json", ""))

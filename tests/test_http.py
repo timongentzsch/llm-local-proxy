@@ -95,8 +95,8 @@ class HeartbeatTest(unittest.TestCase):
 
     def test_upstream_exception_is_propagated(self):
         def broken():
+            yield from ()
             raise RuntimeError("upstream failed")
-            yield
 
         stream = with_heartbeats(broken(), interval=1)
         with self.assertRaisesRegex(RuntimeError, "upstream failed"):

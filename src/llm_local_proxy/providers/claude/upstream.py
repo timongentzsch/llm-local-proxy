@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 import urllib.error
@@ -35,6 +36,30 @@ class ClaudeUpstreamError(RuntimeError):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
+
+
+def _message_events(response: Any) -> Iterator[dict[str, Any]]:
+    """Turn a zero-token non-streaming Message into the normal event lifecycle."""
+    try:
+        raw = response.read().decode("utf-8", "replace")
+    finally:
+        response.close()
+    try:
+        message = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ClaudeUpstreamError(
+            502, "Claude prewarm response is not valid JSON"
+        ) from error
+    if not isinstance(message, dict) or message.get("type") != "message":
+        raise ClaudeUpstreamError(502, "Claude prewarm response is malformed")
+    usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+    yield {"type": "message_start", "message": message}
+    yield {
+        "type": "message_delta",
+        "delta": {"stop_reason": message.get("stop_reason") or "max_tokens"},
+        "usage": usage,
+    }
+    yield {"type": "message_stop"}
 
 
 class UsageStore:
@@ -176,14 +201,33 @@ class ClaudeUpstream:
         self, body: dict[str, Any], betas: tuple[str, ...] = ()
     ) -> Iterator[dict[str, Any]]:
         betas_header = ",".join((CLAUDE_CODE_BETA, OAUTH_BETA, *betas))
+        prewarm = body.get("max_tokens") == 0
+        outgoing = {**body, "stream": False} if prewarm else body
         try:
-            response = self._open(body, betas_header, refresh=False)
+            response = self._open(outgoing, betas_header, refresh=False)
         except ClaudeUpstreamError as error:
-            if not _thinking_rejected(error, body):
+            # Reported only once the failure is final: the budget retry below
+            # recovers on its own, and dumping the turn for it would name a
+            # fault that never reached the caller.
+            if not _thinking_rejected(error, outgoing):
+                _report_block_shape(error, outgoing)
                 raise
-            body = {**body, "thinking": {"type": "adaptive"}}
-            response = self._open(body, betas_header, refresh=False)
-        yield from self._tracked(transport.read_events(response))
+            previous = outgoing["thinking"]
+            display = previous.get("display")
+            adaptive = {
+                "type": "adaptive",
+                **({"display": display} if display is not None else {}),
+            }
+            outgoing = {**outgoing, "thinking": adaptive}
+            try:
+                response = self._open(outgoing, betas_header, refresh=False)
+            except ClaudeUpstreamError as retried:
+                _report_block_shape(retried, outgoing)
+                raise
+        events = (
+            _message_events(response) if prewarm else transport.read_events(response)
+        )
+        yield from self._tracked(events)
 
     @staticmethod
     def _token_usage(event: dict[str, Any]) -> dict[str, int] | None:
@@ -235,10 +279,10 @@ class ClaudeUpstream:
             for key, value in usage.items():
                 pending[key] = max(pending[key], value)
 
-    def ping_usage(self) -> dict[str, Any] | None:
+    def ping_usage(self, model: str) -> dict[str, Any] | None:
         """A 1-token call whose only job is to make the edge report usage."""
         body = {
-            "model": "claude-haiku-4-5",
+            "model": model,
             "max_tokens": 1,
             "system": [{"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER}],
             "messages": [{"role": "user", "content": "usage check"}],
@@ -315,6 +359,39 @@ class ClaudeUpstream:
             raise ClaudeUpstreamError(502, str(error.reason)) from error
 
 
+def _report_block_shape(error: ClaudeUpstreamError, body: dict[str, Any]) -> None:
+    """Log the block shape of every turn when upstream refuses a signed one.
+
+    The rejection names a message and a position; this says what the proxy put
+    there. Kinds and sizes are enough to place the fault, so the text -- which
+    is the conversation -- stays out of the log.
+    """
+    if error.status != 400 or "thinking" not in str(error).casefold():
+        return
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    lines = [f"claude: upstream rejected a signed turn: {error}"]
+    for index, message in enumerate(messages):
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        shapes = []
+        for block in content:
+            kind = block.get("type") if isinstance(block, dict) else "?"
+            if kind == "thinking":
+                shapes.append(
+                    f"thinking(text={len(str(block.get('thinking', '')))},"
+                    f"sig={len(str(block.get('signature', '')))})"
+                )
+            elif kind == "redacted_thinking":
+                shapes.append(f"redacted(data={len(str(block.get('data', '')))})")
+            else:
+                shapes.append(str(kind))
+        lines.append(f"  [{index}] {message.get('role')}: {', '.join(shapes)}")
+    sys.stderr.write("\n".join(lines) + "\n")
+
+
 def _thinking_rejected(error: ClaudeUpstreamError, body: dict[str, Any]) -> bool:
     """True when a request was refused solely for its explicit thinking budget."""
     thinking = body.get("thinking")
@@ -350,14 +427,19 @@ def _normalize_model(item: Any) -> dict[str, Any] | None:
         and max_tokens > 0
     ):
         value["max_output_tokens"] = max_tokens
+    max_input = item.get("max_input_tokens")
+    if isinstance(max_input, int) and not isinstance(max_input, bool) and max_input > 0:
+        value["context_length"] = max_input
     capabilities = item.get("capabilities")
     if isinstance(capabilities, dict):
+        value["modalities"] = [
+            "text",
+            *(["image"] if _supported(capabilities.get("image_input")) else []),
+        ]
         efforts = capabilities.get("effort")
         if isinstance(efforts, dict):
             supported = [
-                name
-                for name in ("low", "medium", "high", "xhigh", "max")
-                if _supported(efforts.get(name))
+                str(name) for name, support in efforts.items() if _supported(support)
             ]
             if supported:
                 value["reasoning_efforts"] = supported

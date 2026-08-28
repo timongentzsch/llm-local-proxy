@@ -20,7 +20,7 @@ from typing import Any
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     """A subscription endpoint that redirects is a failure, not a hop."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(self, _req, _fp, code, _msg, headers, _newurl):
         return None
 
 

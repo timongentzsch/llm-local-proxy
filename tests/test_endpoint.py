@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from llm_local_proxy.http.handler import make_handler
 from llm_local_proxy.http.server import Server
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
+from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 STREAM = [
@@ -48,15 +49,21 @@ MODELS = {
 }
 
 
+def _chat(canonical, request):
+    """The canned stream, or the failure the model name asks for."""
+    if canonical.startswith("claude-fail-"):
+        raise ClaudeUpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
+    if canonical == "claude-burst":
+        raise OSError("disk fell over")
+    return iter(STREAM), ClaudeDecoder(ReasoningCache())
+
+
 def _service():
     provider = SimpleNamespace(
         name="claude",
         routes={},
         auth=SimpleNamespace(),
-        chat=lambda canonical, request: (
-            iter(STREAM),
-            ClaudeDecoder(ReasoningCache()),
-        ),
+        chat=_chat,
         count_tokens=lambda canonical, request: {"input_tokens": 42},
     )
     # A provider whose upstream has no way to count, like Codex.
@@ -118,6 +125,28 @@ class EndpointTest(unittest.TestCase):
         first = json.loads(text.split("\n")[0][len("data: ") :])
         self.assertEqual(first["object"], "chat.completion.chunk")
 
+    def test_responses_stream(self):
+        status, text = self.request(
+            "POST",
+            "/v1/responses",
+            {
+                "model": "claude-sonnet-5",
+                "stream": True,
+                "store": False,
+                "input": "hi",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(text.endswith("data: [DONE]\n\n"))
+        payloads = [
+            json.loads(line[len("data: ") :])
+            for line in text.splitlines()
+            if line.startswith("data: {")
+        ]
+        self.assertEqual(payloads[0]["type"], "response.created")
+        self.assertEqual(payloads[-1]["type"], "response.completed")
+        self.assertIn("response.output_text.delta", [p["type"] for p in payloads])
+
     def test_messages_stream(self):
         status, text = self.request(
             "POST",
@@ -164,6 +193,18 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["object"], "chat.completion")
         self.assertEqual(body["choices"][0]["message"]["content"], "Hello")
 
+    def test_responses_body(self):
+        status, text = self.request(
+            "POST",
+            "/v1/responses",
+            {"model": "claude-sonnet-5", "store": False, "input": "hi"},
+        )
+        self.assertEqual(status, 200)
+        body = json.loads(text)
+        self.assertEqual(body["object"], "response")
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["output"][0]["content"][0]["text"], "Hello")
+
     def test_messages_body(self):
         status, text = self.request(
             "POST",
@@ -204,6 +245,13 @@ class EndpointTest(unittest.TestCase):
         # listener the key is never re-read. Verified in a browser.
         self.assertIn('addEventListener("hashchange"', text)
 
+    def test_dashboard_shows_copyable_login_url_without_opening_a_tab(self):
+        _, text = self.request("GET", "/")
+        self.assertIn('class="login-url"', text)
+        self.assertIn('class="copy-login"', text)
+        self.assertIn("navigator.clipboard.writeText(loginUrl.textContent)", text)
+        self.assertNotIn("window.open(", text)
+
     # -- mounts -----------------------------------------------------------
 
     def test_openai_prefix_and_bare_path_are_byte_identical(self):
@@ -239,6 +287,11 @@ class EndpointTest(unittest.TestCase):
             ("GET", "/api/status", None),
             ("GET", "/healthz", None),
             ("POST", "/v1/chat/completions", chat),
+            (
+                "POST",
+                "/v1/responses",
+                {"model": "claude-sonnet-5", "store": False, "input": "hi"},
+            ),
         ):
             with self.subTest(route=f"{method} {path}"):
                 legacy = self.request(method, path, body)
@@ -341,6 +394,56 @@ class EndpointTest(unittest.TestCase):
         body = json.loads(text)
         self.assertEqual(body["type"], "error")
         self.assertEqual(body["error"]["type"], "invalid_request_error")
+
+    def test_an_upstream_failure_keeps_its_status(self):
+        # What the upstream said is what the client is told: a rate limit must
+        # not reach a client as a generic gateway error, or it will retry into
+        # the same wall instead of backing off.
+        for status in (429, 401, 529):
+            with self.subTest(status=status):
+                code, text = self.request(
+                    "POST",
+                    "/v1/chat/completions",
+                    {
+                        "model": f"claude-fail-{status}",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                self.assertEqual(code, status)
+                self.assertIn("upstream said", json.loads(text)["error"]["message"])
+
+    def test_an_unexpected_failure_becomes_a_gateway_error(self):
+        # An exception the proxy does not model is still not a 500 with a
+        # stack trace: the client gets a bad gateway and the reason.
+        code, text = self.request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "claude-burst",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(code, 502)
+        self.assertIn("disk fell over", json.loads(text)["error"]["message"])
+
+    def test_unknown_routes_and_methods_are_refused(self):
+        self.assertEqual(self.request("GET", "/v1/nope")[0], 404)
+        self.assertEqual(self.request("POST", "/v1/nope", {})[0], 404)
+        self.assertEqual(self.request("GET", "/api/claude/nope")[0], 404)
+        self.assertEqual(self.request("POST", "/api/claude/nope", {})[0], 404)
+
+    def test_malformed_json_is_a_client_error(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        connection.request(
+            "POST",
+            "/v1/chat/completions",
+            "{not json",
+            {"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        self.assertEqual(response.status, 400)
 
 
 if __name__ == "__main__":

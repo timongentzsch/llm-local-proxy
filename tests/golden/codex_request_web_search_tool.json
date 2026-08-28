@@ -23,7 +23,10 @@
       }
     ],
     "tool_choice": "auto",
-    "parallel_tool_calls": true
+    "parallel_tool_calls": true,
+    "include": [
+      "reasoning.encrypted_content"
+    ]
   },
   "session": "proxy-923b4426fe2cdfc428c12b66"
 }

@@ -12,9 +12,10 @@ from ...errors import RequestError
 from ...ir import ChatRequest
 from ...status import ProviderStatus
 from ..base import Provider, ProviderContext
+from ..catalog import match_model
 from ..reasoning import ReasoningCache
 from .auth import ClaudeAuth, ClaudeAuthError
-from .catalog import CLAUDE_MODELS, claude_model_name, model_info
+from .catalog import model_info
 from .events import ClaudeDecoder
 from .request import build
 from .upstream import ClaudeUpstream, ClaudeUpstreamError
@@ -54,11 +55,13 @@ class Claude:
             raise ClaudeAuthError(
                 "not signed in to Claude; use the sign in button on the status page"
             )
+        efforts = self._capability(canonical, "reasoning_efforts")
         body, betas = build(
             request,
             canonical,
             max_output=self._capability(canonical, "max_output_tokens"),
             thinking=self._capability(canonical, "thinking"),
+            reasoning_efforts=efforts if isinstance(efforts, list) else None,
             reasoning_cache=self.cache,
         )
         return body, tuple(betas)
@@ -69,6 +72,11 @@ class Claude:
         body, betas = self._request(canonical, request)
         return self.upstream.events(body, betas), ClaudeDecoder(self.cache)
 
+    def match(self, model: str) -> str | None:
+        return (
+            match_model(model, self._live_catalog()) if self.auth.signed_in() else None
+        )
+
     def count_tokens(self, canonical: str, request: ChatRequest) -> dict[str, Any]:
         body, betas = self._request(canonical, request)
         # Its schema accepts only prompt fields; the rest are rejected.
@@ -76,11 +84,11 @@ class Claude:
         return self.upstream.count_tokens(counted, betas)
 
     def models(self) -> list[dict[str, Any]]:
-        if self.auth.signed_in():
-            live = self._live_catalog()
-            if live:
-                return [model_info(item) for item in live]
-        return [model_info(item) for item in CLAUDE_MODELS]
+        return (
+            [model_info(item) for item in self._live_catalog()]
+            if self.auth.signed_in()
+            else []
+        )
 
     def status(self) -> ProviderStatus:
         return replace(
@@ -100,7 +108,11 @@ class Claude:
         return result
 
     def usage(self, body: dict[str, Any]) -> dict[str, Any]:
-        return {"usage": self.upstream.ping_usage()}
+        models = self._live_catalog()
+        if not models:
+            raise ClaudeUpstreamError(502, "Claude model catalog is empty")
+        model = min(models, key=lambda item: int(item.get("max_output_tokens") or 0))
+        return {"usage": self.upstream.ping_usage(str(model["id"]))}
 
     def forget(self) -> None:
         with self._lock:
@@ -134,7 +146,7 @@ def create(context: ProviderContext) -> Provider:
         name="claude",
         auth=claude.auth,
         login_flow="paste_code",
-        match=claude_model_name,
+        match=claude.match,
         chat=claude.chat,
         models=claude.models,
         status=claude.status,

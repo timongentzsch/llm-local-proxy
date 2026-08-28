@@ -30,8 +30,13 @@ class TokenLedger:
     records older than ``MAX_AGE`` are pruned on write and on read.
     """
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, *, input_includes_cache: bool = False):
         self.path = path
+        # OpenAI reports cached tokens as a subset of input_tokens, while
+        # Anthropic reports plain input, cache reads, and cache writes apart.
+        # Keep persisted records in each provider's native shape and normalize
+        # window totals to plain (uncached) input for the dashboard.
+        self.input_includes_cache = input_includes_cache
         self._lock = threading.Lock()
         self._records = self._load()
 
@@ -80,7 +85,15 @@ class TokenLedger:
             window = [r for r in records if r.get("ts", 0) > since]
             totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
             for record in window:
-                totals["input"] += record.get("input", 0)
+                input_tokens = record.get("input", 0)
+                if self.input_includes_cache:
+                    input_tokens = max(
+                        input_tokens
+                        - record.get("cache_read", 0)
+                        - record.get("cache_write", 0),
+                        0,
+                    )
+                totals["input"] += input_tokens
                 totals["output"] += record.get("output", 0)
                 totals["cache_read"] += record.get("cache_read", 0)
                 totals["cache_write"] += record.get("cache_write", 0)

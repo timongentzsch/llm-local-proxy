@@ -13,7 +13,14 @@ PARAMETERS = (
     "reasoning_effort",
     "web_search",
 )
-EFFORTS = ("low", "medium", "high")
+
+
+def match_model(value: Any, models: list[dict[str, Any]]) -> str | None:
+    """Resolve an optionally provider-prefixed id against a live catalog."""
+    if not isinstance(value, str) or not value:
+        return None
+    model = value.split("/", 1)[1] if "/" in value else value
+    return model if any(item.get("id") == model for item in models) else None
 
 
 def model_info(
@@ -29,7 +36,8 @@ def model_info(
     created: int = 0,
     is_default: bool = False,
 ) -> dict[str, Any]:
-    modalities = modalities or ["text", "image"]
+    # Missing capability metadata is unknown, not evidence of image support.
+    modalities = modalities or ["text"]
     value = {
         "id": model,
         "canonical_slug": model,
@@ -46,7 +54,7 @@ def model_info(
         "default_parameters": default_parameters,
         "per_request_limits": None,
         "is_default": is_default,
-        "supported_reasoning_efforts": reasoning_efforts or list(EFFORTS),
+        "supported_reasoning_efforts": reasoning_efforts or [],
     }
     if context_length > 0:
         value["context_length"] = context_length

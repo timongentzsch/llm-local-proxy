@@ -55,6 +55,14 @@ class TokenLedgerTest(unittest.TestCase):
         self.assertEqual(reloaded.windows()["7d"]["input"], 7)
         self.assertEqual(reloaded.windows()["7d"]["output"], 3)
 
+    def test_normalizes_input_when_provider_total_includes_cache(self):
+        ledger = TokenLedger(input_includes_cache=True)
+        ledger.add(input_tokens=100, cache_read=60, cache_write=10)
+        window = ledger.windows()["7d"]
+        self.assertEqual(window["input"], 30)
+        self.assertEqual(window["cache_read"], 60)
+        self.assertEqual(window["cache_write"], 10)
+
     def test_prunes_expired_records(self):
         path = pathlib.Path(tempfile.mkdtemp()) / "tokens.json"
         ledger = TokenLedger(path)
@@ -185,7 +193,9 @@ class TokenCaptureTest(unittest.TestCase):
         out = list(upstream._tracked(iter(events)))
         self.assertEqual(len(out), 2)
         window = upstream.ledger.windows()["7d"]
-        self.assertEqual(window["input"], 11)
+        # OpenAI input_tokens already includes both cache detail fields; the
+        # dashboard contract keeps only uncached input in this bucket.
+        self.assertEqual(window["input"], 5)
         self.assertEqual(window["output"], 5)
         self.assertEqual(window["cache_read"], 4)
         self.assertEqual(window["cache_write"], 2)
@@ -193,7 +203,7 @@ class TokenCaptureTest(unittest.TestCase):
 
 def _upstream_with_ledger():
     upstream = Upstream.__new__(Upstream)
-    upstream.ledger = TokenLedger()
+    upstream.ledger = TokenLedger(input_includes_cache=True)
     return upstream
 
 

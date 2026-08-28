@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from ...errors import RequestError
@@ -11,6 +13,9 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    NativeResponseItem,
+    NativeTool,
+    Reasoning,
     Text,
     Thinking,
     ToolChoice,
@@ -21,10 +26,10 @@ from ...ir import (
 )
 from ..reasoning import ReasoningCache
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
+from .thinking import Outcome, Unpacked, unpack
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
 WEB_SEARCH_TOOL = "web_search_20250305"
-DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 #: Chat Completions knobs the Messages API has no equivalent for.
 UNSUPPORTED = (
@@ -36,15 +41,6 @@ UNSUPPORTED = (
     "response_format",
     "logit_bias",
 )
-
-THINKING_BUDGETS = {
-    "minimal": 1024,
-    "low": 2048,
-    "medium": 8192,
-    "high": 16384,
-    "xhigh": 32768,
-    "max": 65536,
-}
 
 
 def _reject_unsupported(params: dict[str, Any]) -> None:
@@ -122,34 +118,124 @@ def _user_blocks(turn: Turn) -> list[dict[str, Any]]:
     return blocks
 
 
-def _assistant_blocks(turn: Turn, cache: ReasoningCache | None) -> list[dict[str, Any]]:
-    # An empty text block is rejected upstream.
-    blocks: list[dict[str, Any]] = [
-        {"type": "text", "text": block.text}
-        for block in turn.blocks
-        if isinstance(block, Text) and block.text.strip()
-    ]
-    blocks.extend(
-        {"type": "thinking", "thinking": block.text, "signature": block.signature}
-        if not block.redacted
-        else {"type": "redacted_thinking", "data": block.redacted}
-        for block in turn.blocks
-        if isinstance(block, Thinking)
-    )
-    uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
-    for use in uses:
-        blocks.append(
-            {
-                "type": "tool_use",
-                "id": use.id or "toolu_" + uuid.uuid4().hex[:24],
-                "name": use.name,
-                "input": _arguments(use.arguments),
-            }
-        )
-    # A tool-use turn must open with the prior signed thinking blocks.
-    if cache is not None and uses:
-        blocks = cache.get([use.id for use in uses if use.id]) + blocks
-    return blocks
+def _native_thinking(block: Thinking) -> dict[str, Any]:
+    if block.redacted:
+        return {"type": "redacted_thinking", "data": block.redacted}
+    return {"type": "thinking", "thinking": block.text, "signature": block.signature}
+
+
+def _assistant_blocks(
+    turn: Turn, cache: ReasoningCache | None, dropped: list[Outcome] | None = None
+) -> list[dict[str, Any]]:
+    """One assistant turn, in the order its blocks actually occurred.
+
+    Claude interleaves thinking with the tool calls it precedes, and verifies
+    what it gets back, so position is part of the payload: grouping blocks by
+    kind would rewrite a turn Claude signed.
+    """
+    blocks: list[dict[str, Any]] = []
+    ordinals: list[int] = []
+    lost = 0
+    native_thinking = False
+    for block in turn.blocks:
+        if isinstance(block, Thinking):
+            native_thinking = True
+            # A client can hand back a block it was given, including one this
+            # upstream signed without ever streaming its text.
+            native = _native_thinking(block)
+            if _replayable(native):
+                blocks.append(native)
+            else:
+                lost += 1
+                if dropped is not None:
+                    dropped.append(Outcome.WITHHELD)
+        elif isinstance(block, Reasoning):
+            recovered = _responses_reasoning(block.item)
+            if recovered.outcome is Outcome.OK and not _replayable(recovered.block):
+                recovered = Unpacked(Outcome.WITHHELD)
+            if recovered.outcome is Outcome.OK:
+                assert recovered.block is not None
+                blocks.append(recovered.block)
+                ordinals.append(recovered.ordinal)
+            else:
+                lost += 1
+                if dropped is not None:
+                    dropped.append(recovered.outcome)
+        elif isinstance(block, Text) and block.text.strip():
+            # An empty text block is rejected upstream.
+            blocks.append({"type": "text", "text": block.text})
+        elif isinstance(block, ToolUse):
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": block.id or "toolu_" + uuid.uuid4().hex[:24],
+                    "name": block.name,
+                    "input": _arguments(block.arguments),
+                }
+            )
+    uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
+    replay = cache.get([use for use in uses if use]) if cache and uses else []
+    if native_thinking:
+        # Anthropic clients return native thinking blocks themselves. The
+        # cache exists for dialects such as Chat Completions that cannot carry
+        # those blocks; prepending it here would duplicate a signed block and
+        # Claude rejects the modified assistant turn.
+        return blocks
+    if ordinals:
+        # A fraction of a signed turn is altered, where none of it is merely
+        # thinner, so a turn that lost any block sends none. The cache gives
+        # the count -- never the blocks, which it holds without their
+        # positions -- and that is what catches a dropped trailing block,
+        # whose ordinals still read 0..n-1.
+        if lost or (replay and len(ordinals) < len(replay)):
+            return [b for b in blocks if b["type"] not in _SIGNED]
+        if ordinals != list(range(len(ordinals))):
+            raise RequestError(
+                "cannot replay Claude reasoning: the assistant turn's signed "
+                "blocks arrived out of order or incomplete"
+            )
+        return blocks
+    # No envelopes: a dialect that cannot carry reasoning, or a history older
+    # than the envelope. Claude accepts a turn with no thinking.
+    return replay + blocks
+
+
+#: Block kinds Claude signs, and therefore will not accept rebuilt.
+_SIGNED = frozenset({"thinking", "redacted_thinking"})
+
+#: Why a reasoning item could not be replayed, as the operator reads it.
+DROP_REASONS = {
+    Outcome.FOREIGN: "this proxy did not write and cannot replay",
+    Outcome.MALFORMED: "whose envelope arrived damaged",
+    Outcome.BAD_VERSION: "whose envelope an unsupported version wrote",
+    Outcome.WITHHELD: "whose thinking text the upstream never streamed",
+}
+
+
+def _replayable(block: dict[str, Any] | None) -> bool:
+    """False for a signed block Claude will not take back.
+
+    A thinking block whose text never arrived is one. Histories written before
+    that was understood hold them by the hundred, so they are refused on the
+    way in as well as on the way out.
+    """
+    if not isinstance(block, dict):
+        return False
+    if block.get("type") != "thinking":
+        return True
+    return bool(str(block.get("thinking", "")) and str(block.get("signature", "")))
+
+
+def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
+    """Classify the Claude thinking block a Responses reasoning item carries.
+
+    Nothing here refuses the request. A block this build cannot recover has no
+    faithful translation and a client cannot repair it: histories are
+    append-only, so rejecting the item would fail every later turn of that
+    session the same way. Drops are announced, and Claude accepts a turn with
+    no thinking; what it rejects is thinking that came back altered.
+    """
+    return unpack(item.get("encrypted_content"))
 
 
 def _tool_choice(choice: ToolChoice | None) -> dict[str, Any]:
@@ -175,32 +261,63 @@ def build(
     model: str,
     max_output: int | None = None,
     thinking: str | None = None,
+    reasoning_efforts: Collection[str] | None = None,
     reasoning_cache: ReasoningCache | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     _check(request.params)
 
+    native_items = [
+        block.item
+        for turn in request.turns
+        for block in turn.blocks
+        if isinstance(block, NativeResponseItem)
+    ]
+    if native_items:
+        kinds = sorted({str(item.get("type", "unknown")) for item in native_items})
+        raise RequestError(
+            "Claude upstream cannot faithfully represent Responses items: "
+            + ", ".join(kinds)
+        )
     messages = []
+    dropped: list[Outcome] = []
     for turn in request.turns:
         blocks = (
             _user_blocks(turn)
             if turn.role == "user"
-            else _assistant_blocks(turn, reasoning_cache)
+            else _assistant_blocks(turn, reasoning_cache, dropped)
         )
         if blocks:
             messages.append({"role": turn.role, "content": blocks})
+    # Visible rather than silent: the turn still runs, but Claude is no longer
+    # seeing reasoning it signed, and each reason is a different operator
+    # problem -- a foreign history, a damaged blob, a version skew.
+    for outcome, reason in DROP_REASONS.items():
+        count = dropped.count(outcome)
+        if count:
+            sys.stderr.write(
+                f"claude: dropped {count} reasoning item"
+                f"{'' if count == 1 else 's'} {reason}\n"
+            )
     if not messages or messages[0]["role"] != "user":
         raise RequestError("first message must be a user message")
 
     max_tokens = request.max_tokens
     if max_tokens is None:
-        max_tokens = max_output if isinstance(max_output, int) and max_output > 0 else 0
-        max_tokens = max_tokens or DEFAULT_MAX_OUTPUT_TOKENS
+        if (
+            not isinstance(max_output, int)
+            or isinstance(max_output, bool)
+            or max_output <= 0
+        ):
+            raise RequestError(
+                "model catalog did not report max output tokens; provide max_tokens"
+            )
+        max_tokens = max_output
     if (
         not isinstance(max_tokens, int)
         or isinstance(max_tokens, bool)
-        or max_tokens <= 0
+        or max_tokens < 0
     ):
-        raise RequestError("max_tokens must be a positive integer")
+        raise RequestError("max_tokens must not be negative")
 
     # Must be first to bill against the subscription pool; real clients
     # already send it.
@@ -232,16 +349,45 @@ def build(
         body["stop_sequences"] = sequences
 
     betas: list[str] = []
+    native = [tool for tool in request.tools if isinstance(tool, NativeTool)]
+    if native:
+        kinds = sorted({str(tool.item.get("type", "unknown")) for tool in native})
+        raise RequestError(
+            "Claude upstream cannot faithfully represent Responses tools: "
+            + ", ".join(kinds)
+        )
+    function_tools = [tool for tool in request.tools if isinstance(tool, FunctionTool)]
+    for tool in function_tools:
+        if tool.native is not None:
+            unsupported = sorted(
+                set(tool.native)
+                - {"type", "name", "parameters", "description", "strict"}
+            )
+            if unsupported:
+                raise RequestError(
+                    "Claude upstream cannot faithfully represent function tool fields: "
+                    + ", ".join(unsupported)
+                )
+    web_tools = [tool for tool in request.tools if isinstance(tool, WebSearchTool)]
+    for tool in web_tools:
+        if tool.native is not None and set(tool.native) - {"type"}:
+            raise RequestError(
+                "Claude upstream cannot faithfully represent Responses web_search options"
+            )
     tools = [
         {
             "name": tool.name,
             "input_schema": tool.parameters,
             **({"description": tool.description} if tool.description else {}),
+            **(
+                {"strict": tool.native["strict"]}
+                if tool.native is not None and "strict" in tool.native
+                else {}
+            ),
         }
-        for tool in request.tools
-        if isinstance(tool, FunctionTool)
+        for tool in function_tools
     ]
-    if any(isinstance(tool, WebSearchTool) for tool in request.tools):
+    if web_tools:
         tools.append({"type": WEB_SEARCH_TOOL, "name": "web_search"})
         betas.append(WEB_SEARCH_BETA)
     choice = request.tool_choice
@@ -249,19 +395,32 @@ def build(
         body["tools"] = tools
         body["tool_choice"] = _tool_choice(choice)
 
+    # Anthropic's zero-token prewarm generates nothing. The transport switches
+    # just this request to non-streaming and synthesizes the ordinary event
+    # lifecycle, so generation-only controls have no work to do here.
+    if max_tokens == 0:
+        return body, betas
+
+    effort = None
+    if request.reasoning_effort:
+        effort = str(request.reasoning_effort).casefold()
+        supported = {str(item).casefold() for item in reasoning_efforts or ()}
+        if supported and effort not in supported:
+            raise RequestError(
+                f"unsupported reasoning_effort: {request.reasoning_effort}"
+            )
+        # Claude's native effort control is independent of its thinking mode.
+        # Do not approximate named effort tiers with fabricated token budgets.
+        body["output_config"] = {"effort": effort}
+
     budget = request.thinking_budget
+    display = request.thinking_display or "summarized"
     if request.thinking_mode == "disabled":
         return body, betas
     if request.thinking_mode == "adaptive":
         # The client asked the model to size its own reasoning.
-        body["thinking"] = {"type": "adaptive"}
+        body["thinking"] = {"type": "adaptive", "display": display}
         return body, betas
-    if budget is None and request.reasoning_effort:
-        budget = THINKING_BUDGETS.get(str(request.reasoning_effort).casefold())
-        if not budget:
-            raise RequestError(
-                f"unsupported reasoning_effort: {request.reasoning_effort}"
-            )
     if budget is not None:
         budget = min(budget, max_tokens - 1)
         if budget < 1024:
@@ -269,7 +428,15 @@ def build(
                 "max_tokens is too small for the requested thinking budget"
             )
         # The catalog can report enabled as unsupported yet honour it.
-        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    elif thinking == "adaptive":
-        body["thinking"] = {"type": "adaptive"}
+        body["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": budget,
+            "display": display,
+        }
+    elif thinking == "adaptive" or effort is not None or request.thinking_display:
+        # Some live catalog entries advertise effort but omit their thinking
+        # capability even though the model accepts adaptive thinking. An
+        # explicit OpenAI-shaped reasoning request must therefore activate it
+        # without relying solely on catalog metadata.
+        body["thinking"] = {"type": "adaptive", "display": display}
     return body, betas
