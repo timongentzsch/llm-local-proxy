@@ -27,11 +27,10 @@ from ..base import block_text
 
 #: The only server tool the proxy can serve; the rest are refused.
 WEB_SEARCH_PREFIX = "web_search_"
-#: No proxy implementation; refused rather than silently ignored.
+#: No proxy implementation; refused rather than silently ignored. Fields the
+#: proxy cannot act on but real clients send -- context_management, metadata --
+#: are deliberately absent: they are accepted and dropped.
 REJECTED = ("container", "mcp_servers", "service_tier")
-#: Accepted and dropped; refusing these would break real Claude Code
-#: requests for no benefit.
-IGNORED = ("context_management", "metadata")
 PARAMS = ("temperature", "top_p", "top_k")
 CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
 
