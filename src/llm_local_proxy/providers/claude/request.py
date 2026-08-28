@@ -168,29 +168,29 @@ def _assistant_blocks(
     uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
     replay = cache.get([use for use in uses if use]) if cache and uses else []
     if ordinals:
-        # Envelopes came back, and the cache outranks them: it holds the turn
-        # whole and in the order Claude signed, which the ordinals cannot
-        # establish by themselves. A client that drops the trailing block
-        # leaves 0..n-1 behind, indistinguishable from a complete turn, and
-        # forwarding that partial set is exactly the alteration Claude
-        # rejects -- where sending no signed block at all would have passed.
-        if replay:
-            return replay + [b for b in blocks if b["type"] not in _SIGNED]
         # Some of this turn's reasoning survived and some did not: a history
         # holding both envelope versions, or one carrying another upstream's
         # blobs beside ours. What is left is a fraction of what Claude signed,
         # and a fraction is altered where nothing at all is merely thinner --
         # so the rest goes too. Keeping the survivors is what makes a mixed
         # history a session that can never continue.
-        if lost:
+        #
+        # The cache is consulted for how many blocks the turn had, never for
+        # the blocks themselves: it holds them without their positions, and
+        # Claude interleaves thinking with the calls it precedes. Replaying
+        # from it would group them by kind and hand back a turn it never
+        # produced. Counting is what catches a client that dropped the last
+        # block, whose ordinals still read 0..n-1.
+        if lost or (replay and len(ordinals) < len(replay)):
             return [b for b in blocks if b["type"] not in _SIGNED]
-        # Reordered, or missing one from the middle, with nothing to fall back
-        # on. What is left is not the turn Claude signed.
+        # Reordered, or missing one from the middle. What is left is not the
+        # turn Claude signed, and the cache cannot rebuild its order.
         if ordinals != list(range(len(ordinals))):
             raise RequestError(
                 "cannot replay Claude reasoning: the assistant turn's signed "
                 "blocks arrived out of order or incomplete"
             )
+        # Complete, and each block still sits where the client had it.
         return blocks
     # No envelopes: a dialect that cannot carry reasoning at all, or a history
     # written before the envelope existed. Claude accepts a turn with no

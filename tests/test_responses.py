@@ -427,6 +427,29 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
         self.assertEqual(replayed[0]["thinking"], "first")
         self.assertEqual(replayed[2]["thinking"], "second")
 
+    def test_interleaved_thinking_is_not_regrouped_by_a_cache_hit(self):
+        # The decoder fills the cache as it streams the turn, so a hit is the
+        # ordinary case rather than the exception. The cache keeps the signed
+        # blocks without their positions, so answering from it would lift both
+        # ahead of the call they surround -- a turn Claude never produced, and
+        # one it rejects as modified. The client's own order is authoritative
+        # whenever its envelopes are complete.
+        cache = ReasoningCache()
+        replayed = self._round_trip(
+            [
+                {"type": "thinking", "thinking": "first", "signature": "S1"},
+                {"type": "tool_use"},
+                {"type": "thinking", "thinking": "second", "signature": "S2"},
+            ],
+            cache=cache,
+        )
+        self.assertEqual(
+            [block["type"] for block in replayed],
+            ["thinking", "tool_use", "thinking"],
+        )
+        self.assertEqual(replayed[0]["thinking"], "first")
+        self.assertEqual(replayed[2]["thinking"], "second")
+
     def test_dropped_or_reordered_signed_blocks_are_refused(self):
         signed = [
             {"type": "thinking", "thinking": "first", "signature": "S1"},
@@ -478,13 +501,19 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
         # An intact pair replays untouched.
         upstream, _ = build_claude(history(items), "claude-test")
         self.assertEqual(upstream["messages"][1]["content"][:2], signed)
-        # A complete cached group is preferred over refusing outright.
+        # The cache says how many blocks the turn had, never what order they
+        # sat in: it holds them without positions, and replaying from it would
+        # group thinking ahead of the calls it was interleaved with. So a turn
+        # it shows to be short loses its thinking rather than being rebuilt.
         cache = ReasoningCache()
         cache.put(["toolu_1"], signed)
         upstream, _ = build_claude(
             history([items[1]]), "claude-test", reasoning_cache=cache
         )
-        self.assertEqual(upstream["messages"][1]["content"][:2], signed)
+        self.assertEqual(
+            [block["type"] for block in upstream["messages"][1]["content"]],
+            ["tool_use"],
+        )
         # A history holding one envelope this build reads and one it does not
         # -- an older version, or another upstream's blob -- must not send the
         # half that survived: a fraction of a signed turn is altered, while a
@@ -496,14 +525,16 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
             ["tool_use"],
         )
         # Dropping the *trailing* block leaves ordinals that still read 0..n-1,
-        # so nothing about the envelopes says the turn is short. Forwarding the
-        # one that survived would send Claude a turn it did not sign, which it
-        # rejects where it would have accepted no thinking at all. The cache
-        # knows the whole turn, so it decides what gets replayed.
+        # so nothing in the envelopes says the turn is short. Only the cache's
+        # count does, and it is what keeps the survivor from going up as a turn
+        # Claude never signed.
         upstream, _ = build_claude(
             history([items[0]]), "claude-test", reasoning_cache=cache
         )
-        self.assertEqual(upstream["messages"][1]["content"][:2], signed)
+        self.assertEqual(
+            [block["type"] for block in upstream["messages"][1]["content"]],
+            ["tool_use"],
+        )
 
     def test_unreadable_envelope_is_dropped_rather_than_stranding_the_client(self):
         # A client keeps its history append-only: refusing an item it cannot
