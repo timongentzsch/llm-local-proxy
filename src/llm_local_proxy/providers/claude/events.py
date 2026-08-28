@@ -117,21 +117,24 @@ class ClaudeDecoder:
         events: list[StreamEvent] = []
         if self._open_thinking is not None:
             signature = self._open_thinking.get("signature")
-            if signature:
-                # Responses has one opaque encrypted_content slot, and Claude
-                # verifies the whole block on replay: the packed envelope keeps
-                # kind, text and signature together. The summary stays readable
-                # but is never what the block is rebuilt from -- Claude may
-                # withhold the thinking text entirely, and an empty summary must
-                # replay as the empty thinking block it was.
+            # Responses has one opaque encrypted_content slot, and Claude
+            # verifies the whole block on replay: the packed envelope keeps
+            # kind, text and signature together.
+            #
+            # A signature without text cannot be replayed at all. The
+            # subscription edge signs the reasoning it generated but streams
+            # no `thinking_delta` for it, and the signature covers the text
+            # Claude actually wrote, not the empty string that arrived here.
+            # Sending it back is what upstream refuses as "blocks must remain
+            # as they were in the original response". Packing one only stores
+            # a turn that can never be replayed, so it is not packed: the turn
+            # goes back without thinking, which Claude accepts.
+            if signature and str(self._open_thinking.get("thinking", "")):
                 block = dict(self._open_thinking)
                 ordinal = len(self.reasoning_blocks)
                 self.reasoning_blocks.append(block)
-                # Claude may withhold the plaintext entirely. An empty summary
-                # list says so; one empty summary_text would read as thinking
-                # that happened and said nothing.
                 text = str(block.get("thinking", ""))
-                summary = [{"type": "summary_text", "text": text}] if text else []
+                summary = [{"type": "summary_text", "text": text}]
                 events.extend(
                     [
                         ThinkingSignature(signature),

@@ -145,7 +145,7 @@ def _assistant_blocks(
             )
         elif isinstance(block, Reasoning):
             recovered = _responses_reasoning(block.item)
-            if recovered.outcome is Outcome.OK:
+            if recovered.outcome is Outcome.OK and _replayable(recovered.block):
                 assert recovered.block is not None
                 blocks.append(recovered.block)
                 ordinals.append(recovered.ordinal)
@@ -207,6 +207,22 @@ DROP_REASONS = {
     Outcome.MALFORMED: "whose envelope arrived damaged",
     Outcome.BAD_VERSION: "whose envelope an unsupported version wrote",
 }
+
+
+def _replayable(block: dict[str, Any] | None) -> bool:
+    """False for a signed block Claude will not take back.
+
+    A thinking block whose text never arrived is one: the subscription edge
+    signs reasoning it does not stream, and the signature covers what Claude
+    wrote rather than the empty string left here. Histories already hold these
+    by the hundred, so they are refused on the way out as well as on the way
+    in -- a session written before that was understood still has to continue.
+    """
+    if not isinstance(block, dict):
+        return False
+    if block.get("type") != "thinking":
+        return True
+    return bool(str(block.get("thinking", "")))
 
 
 def _responses_reasoning(item: dict[str, Any]) -> Unpacked:

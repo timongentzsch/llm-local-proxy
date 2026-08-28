@@ -399,12 +399,16 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
         self.assertEqual(replayed[0], block)
         self.assertEqual(replayed[1]["type"], "tool_use")
 
-    def test_thinking_withheld_by_the_upstream_replays_as_thinking(self):
-        # Claude may sign a block whose text it never streams. Rebuilding that
-        # as redacted_thinking is what upstream rejects as modified.
+    def test_thinking_withheld_by_the_upstream_is_not_replayed(self):
+        # The subscription edge signs reasoning it never streams: the block
+        # arrives with a signature and no text. The signature covers what
+        # Claude wrote, so sending the empty string back is the alteration
+        # upstream refuses -- every stored envelope in a real history was one
+        # of these. It carries nothing replayable, so the turn goes back
+        # without thinking, which Claude accepts.
         block = {"type": "thinking", "thinking": "", "signature": "SIG"}
         replayed = self._round_trip([block, {"type": "tool_use"}])
-        self.assertEqual(replayed[0], block)
+        self.assertEqual([b["type"] for b in replayed], ["tool_use"])
 
     def test_redacted_thinking_stays_redacted(self):
         block = {"type": "redacted_thinking", "data": "OPAQUE"}
@@ -426,6 +430,44 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
         )
         self.assertEqual(replayed[0]["thinking"], "first")
         self.assertEqual(replayed[2]["thinking"], "second")
+
+    def test_stored_signature_only_envelope_does_not_wedge_a_history(self):
+        # Histories written before the withheld text was understood hold these
+        # by the hundred: a valid envelope whose block can never be accepted.
+        # Refusing them on the way out is what lets such a session continue,
+        # since an append-only client cannot go back and remove them.
+        withheld = pack({"type": "thinking", "thinking": "", "signature": "S"}, 0)
+        request = parse(
+            {
+                "model": "claude-test",
+                "store": False,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "go"}],
+                    },
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [],
+                        "encrypted_content": withheld,
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "toolu_1",
+                        "name": "f",
+                        "arguments": "{}",
+                    },
+                ],
+            }
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            upstream, _ = build_claude(request, "claude-test")
+        self.assertEqual(
+            [block["type"] for block in upstream["messages"][1]["content"]],
+            ["tool_use"],
+        )
 
     def test_interleaved_thinking_is_not_regrouped_by_a_cache_hit(self):
         # The decoder fills the cache as it streams the turn, so a hit is the

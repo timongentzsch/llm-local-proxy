@@ -569,6 +569,11 @@ class ClaudeReasoningCaptureTest(unittest.TestCase):
             {
                 "type": "content_block_delta",
                 "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "ponder"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
                 "delta": {"type": "signature_delta", "signature": "SIG"},
             },
             {"type": "content_block_stop", "index": 0},
