@@ -180,10 +180,18 @@ class ClaudeUpstream:
         try:
             response = self._open(body, betas_header, refresh=False)
         except ClaudeUpstreamError as error:
+            # Reported only once the failure is final: the budget retry below
+            # recovers on its own, and dumping the turn for it would name a
+            # fault that never reached the caller.
             if not _thinking_rejected(error, body):
+                _report_block_shape(error, body)
                 raise
             body = {**body, "thinking": {"type": "adaptive"}}
-            response = self._open(body, betas_header, refresh=False)
+            try:
+                response = self._open(body, betas_header, refresh=False)
+            except ClaudeUpstreamError as retried:
+                _report_block_shape(retried, body)
+                raise
         yield from self._tracked(transport.read_events(response))
 
     @staticmethod
@@ -311,9 +319,7 @@ class ClaudeUpstream:
             if error.code == 401 and not refresh:
                 error.close()
                 return self._open(body, betas, refresh=True, url=url)
-            failed = _upstream_error(error)
-            _report_block_shape(failed, body)
-            raise failed from error
+            raise _upstream_error(error) from error
         except urllib.error.URLError as error:
             raise ClaudeUpstreamError(502, str(error.reason)) from error
 

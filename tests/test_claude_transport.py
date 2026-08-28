@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import pathlib
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ import urllib.error
 from email.message import Message
 
 from llm_local_proxy.providers.claude.upstream import (
+    ClaudeUpstream,
     ClaudeUpstreamError,
     UsageStore,
     _report_block_shape,
@@ -179,6 +181,171 @@ class UsageStoreTest(unittest.TestCase):
     def test_limits_are_empty_without_usage(self):
         self.assertEqual(UsageStore().limits(), ())
         self.assertIsNone(UsageStore().updated_at())
+
+
+class _FakeAuth:
+    def __init__(self, tokens=("tok",)):
+        self.tokens = list(tokens)
+        self.forced = []
+
+    def access_token(self, force_refresh: bool = False) -> str:
+        self.forced.append(force_refresh)
+        return self.tokens[min(len(self.forced) - 1, len(self.tokens) - 1)]
+
+
+class _FakeOpener:
+    """Answers each open() with the next queued response or error."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append(request)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+class _SseResponse(io.BytesIO):
+    """An SSE body that also carries headers, as a real response does."""
+
+    def __init__(self, payload: bytes, headers=None):
+        super().__init__(payload)
+        self.headers = headers if headers is not None else Message()
+
+
+def _sse(*events: str, headers=None) -> _SseResponse:
+    body = "".join(f"data: {event}\n\n" for event in events)
+    return _SseResponse(body.encode(), headers)
+
+
+def _upstream(*answers, tokens=("tok",), tmp: pathlib.Path | None = None):
+    upstream = ClaudeUpstream(
+        _FakeAuth(tokens),
+        timeout=5,
+        tokens_path=(tmp / "tokens.json") if tmp else None,
+    )
+    upstream._opener = _FakeOpener(*answers)
+    return upstream
+
+
+class UpstreamRequestTest(unittest.TestCase):
+    """The paths a live subscription takes: refresh, retry, usage, interruption."""
+
+    def test_expired_token_is_refreshed_once_and_the_call_repeats(self):
+        upstream = _upstream(_http_error(401, "{}"), _sse('{"type":"message_stop"}'))
+        events = list(upstream.events({"model": "m", "messages": []}))
+        self.assertEqual([event["type"] for event in events], ["message_stop"])
+        self.assertEqual(upstream.auth.forced, [False, True])
+
+    def test_a_second_401_is_reported_rather_than_retried_forever(self):
+        upstream = _upstream(_http_error(401, "{}"), _http_error(401, "{}"))
+        with self.assertRaises(ClaudeUpstreamError) as caught:
+            list(upstream.events({"model": "m", "messages": []}))
+        self.assertEqual(caught.exception.status, 401)
+        self.assertEqual(upstream.auth.forced, [False, True])
+
+    def test_a_refused_thinking_budget_is_retried_as_adaptive(self):
+        # The model accepts thinking but not the explicit budget: rather than
+        # failing the turn, the request repeats with the native adaptive mode.
+        refusal = _http_error(
+            400,
+            '{"error":{"message":"thinking.budget_tokens is too large"}}',
+        )
+        upstream = _upstream(refusal, _sse('{"type":"message_stop"}'))
+        body = {
+            "model": "m",
+            "messages": [],
+            "thinking": {"type": "enabled", "budget_tokens": 99},
+        }
+        stream = io.StringIO()
+        with contextlib.redirect_stderr(stream):
+            list(upstream.events(body))
+        retried = json.loads(upstream._opener.requests[1].data)
+        self.assertEqual(retried["thinking"], {"type": "adaptive"})
+        self.assertEqual(body["thinking"]["type"], "enabled", "caller's body intact")
+        # The retry succeeded, so nothing was worth reporting to the operator.
+        self.assertEqual(stream.getvalue(), "")
+
+    def test_an_unrelated_400_is_not_retried(self):
+        upstream = _upstream(
+            _http_error(400, '{"error":{"message":"max_tokens too large"}}')
+        )
+        with self.assertRaises(ClaudeUpstreamError):
+            list(upstream.events({"model": "m", "messages": []}))
+        self.assertEqual(len(upstream._opener.requests), 1)
+
+    def test_a_final_thinking_rejection_reports_the_turn(self):
+        refusal = _http_error(
+            400, '{"error":{"message":"thinking blocks cannot be modified"}}'
+        )
+        upstream = _upstream(refusal)
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "", "signature": "S"},
+                        {"type": "tool_use"},
+                    ],
+                }
+            ],
+        }
+        stream = io.StringIO()
+        with contextlib.redirect_stderr(stream), self.assertRaises(ClaudeUpstreamError):
+            list(upstream.events(body))
+        self.assertIn("thinking(text=0,sig=1)", stream.getvalue())
+
+    def test_usage_is_recorded_once_the_message_completes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = pathlib.Path(directory)
+            upstream = _upstream(
+                _sse(
+                    '{"type":"message_start","message":{"usage":'
+                    '{"input_tokens":10,"cache_read_input_tokens":4,'
+                    '"cache_creation_input_tokens":2}}}',
+                    '{"type":"message_delta","usage":{"output_tokens":3}}',
+                    '{"type":"message_delta","usage":{"output_tokens":7}}',
+                    '{"type":"message_stop"}',
+                ),
+                tmp=tmp,
+            )
+            list(upstream.events({"model": "m", "messages": []}))
+            totals = upstream.ledger.windows()["5h"]
+            # Output is cumulative per delta, so the last value is the total.
+            self.assertEqual(totals["output"], 7)
+            self.assertEqual(totals["input"], 10)
+            self.assertEqual(totals["cache_read"], 4)
+            self.assertEqual(totals["cache_write"], 2)
+
+    def test_an_interrupted_stream_records_no_usage(self):
+        # Without message_stop the numbers are partial; a half-recorded
+        # request would understate every window it lands in.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = pathlib.Path(directory)
+            upstream = _upstream(
+                _sse(
+                    '{"type":"message_start","message":{"usage":{"input_tokens":10}}}',
+                    '{"type":"message_delta","usage":{"output_tokens":3}}',
+                ),
+                tmp=tmp,
+            )
+            list(upstream.events({"model": "m", "messages": []}))
+            self.assertEqual(upstream.ledger.windows()["5h"]["input"], 0)
+
+    def test_rate_limit_headers_are_captured_from_a_failure_too(self):
+        error = _http_error(429, "{}")
+        error.headers = _headers(
+            **{"anthropic-ratelimit-unified-5h-utilization": "0.9"}
+        )
+        upstream = _upstream(error)
+        with self.assertRaises(ClaudeUpstreamError):
+            list(upstream.events({"model": "m", "messages": []}))
+        limits = {limit.label: limit for limit in upstream.usage.limits()}
+        self.assertAlmostEqual(limits["5 hour"].used_percent, 90.0)
 
 
 if __name__ == "__main__":
