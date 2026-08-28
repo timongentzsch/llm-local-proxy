@@ -47,6 +47,13 @@ def _catalog(models: list[dict[str, Any]]) -> dict[str, Any]:
             "id": model["id"],
             "display_name": model.get("name") or model["id"],
             "created_at": "1970-01-01T00:00:00Z",
+            # Anthropic's own field for the window. A client that sizes its
+            # context against the catalog gets the same number on both mounts.
+            **(
+                {"max_input_tokens": model["context_length"]}
+                if model.get("context_length")
+                else {}
+            ),
         }
         for model in models
     ]

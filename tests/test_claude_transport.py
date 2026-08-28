@@ -13,6 +13,7 @@ from llm_local_proxy.providers.claude.upstream import (
     ClaudeUpstream,
     ClaudeUpstreamError,
     UsageStore,
+    _normalize_model,
     _report_block_shape,
     _thinking_rejected,
     _upstream_error,
@@ -258,16 +259,41 @@ class UpstreamRequestTest(unittest.TestCase):
         body = {
             "model": "m",
             "messages": [],
-            "thinking": {"type": "enabled", "budget_tokens": 99},
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 99,
+                "display": "summarized",
+            },
         }
         stream = io.StringIO()
         with contextlib.redirect_stderr(stream):
             list(upstream.events(body))
         retried = json.loads(upstream._opener.requests[1].data)
-        self.assertEqual(retried["thinking"], {"type": "adaptive"})
+        self.assertEqual(
+            retried["thinking"], {"type": "adaptive", "display": "summarized"}
+        )
         self.assertEqual(body["thinking"]["type"], "enabled", "caller's body intact")
         # The retry succeeded, so nothing was worth reporting to the operator.
         self.assertEqual(stream.getvalue(), "")
+
+    def test_zero_token_prewarm_uses_non_streaming_upstream(self):
+        message = {
+            "type": "message",
+            "content": [],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 8, "output_tokens": 0},
+        }
+        response = _SseResponse(json.dumps(message).encode())
+        upstream = _upstream(response)
+        body = {"model": "m", "messages": [], "max_tokens": 0, "stream": True}
+        events = list(upstream.events(body))
+        sent = json.loads(upstream._opener.requests[0].data)
+        self.assertFalse(sent["stream"])
+        self.assertTrue(body["stream"], "caller's body remains unchanged")
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["message_start", "message_delta", "message_stop"],
+        )
 
     def test_an_unrelated_400_is_not_retried(self):
         upstream = _upstream(
@@ -346,6 +372,29 @@ class UpstreamRequestTest(unittest.TestCase):
             list(upstream.events({"model": "m", "messages": []}))
         limits = {limit.label: limit for limit in upstream.usage.limits()}
         self.assertAlmostEqual(limits["5 hour"].used_percent, 90.0)
+
+
+class ModelNormalizationTest(unittest.TestCase):
+    def test_effort_levels_come_from_the_live_catalog(self):
+        model = _normalize_model(
+            {
+                "id": "claude-future",
+                "max_input_tokens": 345678,
+                "max_tokens": 12345,
+                "capabilities": {
+                    "image_input": {"supported": True},
+                    "effort": {
+                        "high": {"supported": True},
+                        "future-tier": {"supported": True},
+                        "retired": {"supported": False},
+                    },
+                },
+            }
+        )
+        self.assertEqual(model["reasoning_efforts"], ["high", "future-tier"])
+        self.assertEqual(model["context_length"], 345678)
+        self.assertEqual(model["max_output_tokens"], 12345)
+        self.assertEqual(model["modalities"], ["text", "image"])
 
 
 if __name__ == "__main__":

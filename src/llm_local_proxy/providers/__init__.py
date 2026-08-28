@@ -1,8 +1,7 @@
 """The provider registry.
 
 Order is match priority: each provider is offered a model name in turn and
-the first to claim it serves the request. Codex is last because it is the
-fallback that claims anything left.
+the first live catalog to claim it serves the request wins.
 
 Adding a provider is one package plus one entry here.
 """

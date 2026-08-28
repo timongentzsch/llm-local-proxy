@@ -13,7 +13,7 @@ from llm_local_proxy.dialects.openai.responses_ingress import parse
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.ir import NativeItem
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
-from llm_local_proxy.providers.claude.request import build as build_claude
+from llm_local_proxy.providers.claude.request import build as _build_claude
 from llm_local_proxy.providers.claude.thinking import (
     ENVELOPE_PREFIX,
     Outcome,
@@ -30,6 +30,12 @@ REASONING = {
     "summary": [{"type": "summary_text", "text": "Checked."}],
     "encrypted_content": "opaque-secret",
 }
+
+
+def build_claude(request, model, **kwargs):
+    """Provider rendering with a catalog-reported test model limit."""
+    kwargs.setdefault("max_output", 32768)
+    return _build_claude(request, model, **kwargs)
 
 
 class ResponsesIngressTest(unittest.TestCase):
@@ -177,6 +183,21 @@ class ResponsesIngressTest(unittest.TestCase):
         self.assertEqual(assistant[1]["type"], "tool_use")
         self.assertEqual(
             len([block for block in assistant if block["type"] == "thinking"]), 1
+        )
+
+    def test_claude_maps_a_requested_summary_to_visible_thinking(self):
+        request = parse(
+            {
+                "model": "claude-test",
+                "input": "think",
+                "reasoning": {"effort": "high", "summary": "auto"},
+            }
+        )
+        # Explicit reasoning activates adaptive thinking even if an incomplete
+        # live catalog entry failed to advertise the capability.
+        upstream, _ = build_claude(request, "claude-test")
+        self.assertEqual(
+            upstream["thinking"], {"type": "adaptive", "display": "summarized"}
         )
 
 

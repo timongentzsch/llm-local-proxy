@@ -5,18 +5,16 @@ import unittest
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.errors import RequestError
-from llm_local_proxy.providers.claude.catalog import claude_model_name
+from llm_local_proxy.providers.catalog import match_model
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
-from llm_local_proxy.providers.claude.request import (
-    DEFAULT_MAX_OUTPUT_TOKENS,
-    build,
-)
+from llm_local_proxy.providers.claude.request import build
 from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 
 def claude_request(body, model, **kwargs):
     """The whole path a Chat Completions request takes to Claude."""
+    kwargs.setdefault("max_output", 32768)
     return build(parse(body), model, **kwargs)
 
 
@@ -24,11 +22,14 @@ BASE = {"model": "claude-fake-1", "messages": [{"role": "user", "content": "hi"}
 
 
 class ClaudeRoutingTest(unittest.TestCase):
-    def test_routes_only_claude_names(self):
-        self.assertEqual(claude_model_name("claude-fake-1"), "claude-fake-1")
-        self.assertEqual(claude_model_name("openrouter/claude-fake-2"), "claude-fake-2")
-        self.assertIsNone(claude_model_name("acme-gpt-1"))
-        self.assertIsNone(claude_model_name(None))
+    def test_routes_only_names_in_the_live_catalog(self):
+        models = [{"id": "any-runtime-name"}]
+        self.assertEqual(match_model("any-runtime-name", models), "any-runtime-name")
+        self.assertEqual(
+            match_model("provider/any-runtime-name", models), "any-runtime-name"
+        )
+        self.assertIsNone(match_model("claude-but-not-listed", models))
+        self.assertIsNone(match_model(None, models))
 
 
 class BuildMessagesRequestTest(unittest.TestCase):
@@ -55,7 +56,7 @@ class BuildMessagesRequestTest(unittest.TestCase):
             request["messages"],
             [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
         )
-        self.assertEqual(request["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS)
+        self.assertEqual(request["max_tokens"], 32768)
         self.assertTrue(request["stream"])
         self.assertEqual(request["model"], "claude-fake-1")
         self.assertEqual(request["cache_control"], {"type": "ephemeral"})
@@ -76,10 +77,19 @@ class BuildMessagesRequestTest(unittest.TestCase):
         )
         self.assertEqual(request["max_tokens"], 100)
 
-    def test_falls_back_to_default_for_unknown_model(self):
-        # A model absent from the static catalog uses the protocol default.
-        request, _ = claude_request(BASE, "claude-fake-1")
-        self.assertEqual(request["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS)
+    def test_zero_tokens_builds_a_prewarm_request(self):
+        request, _ = claude_request(
+            {**BASE, "max_tokens": 0, "reasoning_effort": "high"},
+            "claude-fake-1",
+            thinking="adaptive",
+        )
+        self.assertEqual(request["max_tokens"], 0)
+        self.assertNotIn("thinking", request)
+        self.assertNotIn("output_config", request)
+
+    def test_requires_a_runtime_limit_when_the_client_omits_one(self):
+        with self.assertRaisesRegex(RequestError, "catalog"):
+            build(parse(BASE), "claude-fake-1")
 
     def test_tools_and_web_search_beta(self):
         request, betas = claude_request(
@@ -138,22 +148,41 @@ class BuildMessagesRequestTest(unittest.TestCase):
             "claude-fake-1",
         )
         self.assertEqual(request["output_config"], {"effort": "high"})
-        self.assertNotIn("thinking", request)
-        # Effort and thinking are independent native controls. An adaptive
-        # model keeps adaptive thinking instead of approximating effort with a
-        # made-up token budget.
+        self.assertEqual(
+            request["thinking"], {"type": "adaptive", "display": "summarized"}
+        )
+        # Effort and thinking remain independent native controls: effort is
+        # forwarded as its tier, while thinking remains adaptively sized.
         request, _ = claude_request(
             {**BASE, "reasoning_effort": "xhigh", "max_tokens": 65537},
             "claude-fake-1",
             thinking="adaptive",
         )
         self.assertEqual(request["output_config"], {"effort": "xhigh"})
-        self.assertEqual(request["thinking"], {"type": "adaptive"})
+        self.assertEqual(
+            request["thinking"], {"type": "adaptive", "display": "summarized"}
+        )
         # Without an effort, an adaptive model still gets adaptive thinking.
         request, _ = claude_request(
             {**BASE, "max_tokens": 65537}, "claude-fake-1", thinking="adaptive"
         )
-        self.assertEqual(request["thinking"], {"type": "adaptive"})
+        self.assertEqual(
+            request["thinking"], {"type": "adaptive", "display": "summarized"}
+        )
+        # OpenAI's explicit request to hide a summary maps to Claude's native
+        # omitted display mode.
+        request, _ = claude_request(
+            {
+                **BASE,
+                "max_tokens": 4096,
+                "reasoning": {"effort": "high", "summary": "none"},
+            },
+            "claude-fake-1",
+            thinking="adaptive",
+        )
+        self.assertEqual(
+            request["thinking"], {"type": "adaptive", "display": "omitted"}
+        )
         # No effort and no adaptive capability means no thinking at all.
         request, _ = claude_request({**BASE, "max_tokens": 4096}, "claude-fake-1")
         self.assertNotIn("thinking", request)
@@ -166,7 +195,17 @@ class BuildMessagesRequestTest(unittest.TestCase):
         with self.assertRaises(RequestError):
             claude_request({**BASE, "temperature": 1.5}, "claude-fake-1")
         with self.assertRaises(RequestError):
-            claude_request({**BASE, "reasoning_effort": "ultra"}, "claude-fake-1")
+            claude_request(
+                {**BASE, "reasoning_effort": "ultra"},
+                "claude-fake-1",
+                reasoning_efforts=["low", "medium", "high"],
+            )
+
+    def test_unknown_catalog_efforts_are_forwarded_dynamically(self):
+        request, _ = claude_request(
+            {**BASE, "reasoning_effort": "future-tier"}, "claude-fake-1"
+        )
+        self.assertEqual(request["output_config"], {"effort": "future-tier"})
 
     def test_tool_roundtrip_blocks(self):
         request, _ = claude_request(

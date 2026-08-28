@@ -24,6 +24,7 @@ from ...ir import (
     WebSearchTool,
 )
 from ..base import block_text
+from .reasoning import options as reasoning_options
 
 SYSTEM_ROLES = {"system", "developer"}
 PARAMS = (
@@ -201,10 +202,10 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         else:
             raise RequestError(f"unsupported message role: {role}")
 
-    reasoning = body.get("reasoning")
+    nested_effort, thinking_display = reasoning_options(body.get("reasoning"))
     effort = body.get("reasoning_effort")
-    if not effort and isinstance(reasoning, dict):
-        effort = reasoning.get("effort")
+    if not effort:
+        effort = nested_effort
 
     return ChatRequest(
         model=body["model"] if isinstance(body.get("model"), str) else "",
@@ -216,6 +217,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         tool_choice=_tool_choice(body.get("tool_choice")),
         max_tokens=body.get("max_tokens", body.get("max_completion_tokens")),
         reasoning_effort=effort,
+        thinking_display=thinking_display,
         parallel_tool_calls=body.get("parallel_tool_calls"),
         stream=bool(body.get("stream", False)),
         session=session or str(body.get("session_id", "")),

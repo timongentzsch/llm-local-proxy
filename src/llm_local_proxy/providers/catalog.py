@@ -15,6 +15,14 @@ PARAMETERS = (
 )
 
 
+def match_model(value: Any, models: list[dict[str, Any]]) -> str | None:
+    """Resolve an optionally provider-prefixed id against a live catalog."""
+    if not isinstance(value, str) or not value:
+        return None
+    model = value.split("/", 1)[1] if "/" in value else value
+    return model if any(item.get("id") == model for item in models) else None
+
+
 def model_info(
     model: str,
     name: str,
@@ -28,7 +36,8 @@ def model_info(
     created: int = 0,
     is_default: bool = False,
 ) -> dict[str, Any]:
-    modalities = modalities or ["text", "image"]
+    # Missing capability metadata is unknown, not evidence of image support.
+    modalities = modalities or ["text"]
     value = {
         "id": model,
         "canonical_slug": model,

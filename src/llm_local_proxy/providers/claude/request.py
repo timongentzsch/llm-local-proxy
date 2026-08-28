@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from ...errors import RequestError
@@ -29,7 +30,6 @@ from .thinking import Outcome, Unpacked, unpack
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
 WEB_SEARCH_TOOL = "web_search_20250305"
-DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 #: Chat Completions knobs the Messages API has no equivalent for.
 UNSUPPORTED = (
@@ -41,8 +41,6 @@ UNSUPPORTED = (
     "response_format",
     "logit_bias",
 )
-
-EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
 def _reject_unsupported(params: dict[str, Any]) -> None:
@@ -138,8 +136,10 @@ def _assistant_blocks(
     blocks: list[dict[str, Any]] = []
     ordinals: list[int] = []
     lost = 0
+    native_thinking = False
     for block in turn.blocks:
         if isinstance(block, Thinking):
+            native_thinking = True
             # A client can hand back a block it was given, including one this
             # upstream signed without ever streaming its text.
             native = _native_thinking(block)
@@ -175,6 +175,12 @@ def _assistant_blocks(
             )
     uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
     replay = cache.get([use for use in uses if use]) if cache and uses else []
+    if native_thinking:
+        # Anthropic clients return native thinking blocks themselves. The
+        # cache exists for dialects such as Chat Completions that cannot carry
+        # those blocks; prepending it here would duplicate a signed block and
+        # Claude rejects the modified assistant turn.
+        return blocks
     if ordinals:
         # A fraction of a signed turn is altered, where none of it is merely
         # thinner, so a turn that lost any block sends none. The cache gives
@@ -217,7 +223,7 @@ def _replayable(block: dict[str, Any] | None) -> bool:
         return False
     if block.get("type") != "thinking":
         return True
-    return bool(str(block.get("thinking", "")))
+    return bool(str(block.get("thinking", "")) and str(block.get("signature", "")))
 
 
 def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
@@ -255,6 +261,7 @@ def build(
     model: str,
     max_output: int | None = None,
     thinking: str | None = None,
+    reasoning_efforts: Collection[str] | None = None,
     reasoning_cache: ReasoningCache | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     _check(request.params)
@@ -296,14 +303,21 @@ def build(
 
     max_tokens = request.max_tokens
     if max_tokens is None:
-        max_tokens = max_output if isinstance(max_output, int) and max_output > 0 else 0
-        max_tokens = max_tokens or DEFAULT_MAX_OUTPUT_TOKENS
+        if (
+            not isinstance(max_output, int)
+            or isinstance(max_output, bool)
+            or max_output <= 0
+        ):
+            raise RequestError(
+                "model catalog did not report max output tokens; provide max_tokens"
+            )
+        max_tokens = max_output
     if (
         not isinstance(max_tokens, int)
         or isinstance(max_tokens, bool)
-        or max_tokens <= 0
+        or max_tokens < 0
     ):
-        raise RequestError("max_tokens must be a positive integer")
+        raise RequestError("max_tokens must not be negative")
 
     # Must be first to bill against the subscription pool; real clients
     # already send it.
@@ -381,10 +395,17 @@ def build(
         body["tools"] = tools
         body["tool_choice"] = _tool_choice(choice)
 
+    # Anthropic's zero-token prewarm generates nothing. The transport switches
+    # just this request to non-streaming and synthesizes the ordinary event
+    # lifecycle, so generation-only controls have no work to do here.
+    if max_tokens == 0:
+        return body, betas
+
     effort = None
     if request.reasoning_effort:
         effort = str(request.reasoning_effort).casefold()
-        if effort not in EFFORTS:
+        supported = {str(item).casefold() for item in reasoning_efforts or ()}
+        if supported and effort not in supported:
             raise RequestError(
                 f"unsupported reasoning_effort: {request.reasoning_effort}"
             )
@@ -393,11 +414,12 @@ def build(
         body["output_config"] = {"effort": effort}
 
     budget = request.thinking_budget
+    display = request.thinking_display or "summarized"
     if request.thinking_mode == "disabled":
         return body, betas
     if request.thinking_mode == "adaptive":
         # The client asked the model to size its own reasoning.
-        body["thinking"] = {"type": "adaptive"}
+        body["thinking"] = {"type": "adaptive", "display": display}
         return body, betas
     if budget is not None:
         budget = min(budget, max_tokens - 1)
@@ -406,7 +428,15 @@ def build(
                 "max_tokens is too small for the requested thinking budget"
             )
         # The catalog can report enabled as unsupported yet honour it.
-        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    elif thinking == "adaptive":
-        body["thinking"] = {"type": "adaptive"}
+        body["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": budget,
+            "display": display,
+        }
+    elif thinking == "adaptive" or effort is not None or request.thinking_display:
+        # Some live catalog entries advertise effort but omit their thinking
+        # capability even though the model accepts adaptive thinking. An
+        # explicit OpenAI-shaped reasoning request must therefore activate it
+        # without relying solely on catalog metadata.
+        body["thinking"] = {"type": "adaptive", "display": display}
     return body, betas

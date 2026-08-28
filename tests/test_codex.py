@@ -19,19 +19,28 @@ from llm_local_proxy.providers.codex.app_server import (
 )
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build
+from llm_local_proxy.providers.codex.upstream import _effort_values
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 
-def codex_request(body, cache, session=""):
+def codex_request(body, cache, session="", reasoning_efforts=None):
     """The whole path a Chat Completions request takes to Codex.
 
     Which layer rejects a bad body — the dialect's ingress or the provider's
     renderer — is an implementation detail these tests should not pin.
     """
-    return build(parse(body, session), cache)
+    return build(parse(body, session), cache, reasoning_efforts)
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_transport_effort_probe_discovers_the_runtime_enum(self):
+        values = _effort_values(
+            "Invalid value: 'probe'. Supported values are: 'low', 'max', "
+            "and 'future-tier'."
+        )
+        self.assertEqual(values, {"low", "max", "future-tier"})
+        self.assertIsNone(_effort_values("some unrelated request error"))
+
     def test_rejects_invalid_tools_and_multiple_choices(self):
         base = {"model": "acme-gpt-1", "messages": [{"role": "user", "content": "hi"}]}
         with self.assertRaises(RequestError):
@@ -51,6 +60,12 @@ class ProtocolTest(unittest.TestCase):
             },
             ReasoningCache(),
         )
+        with self.assertRaisesRegex(RequestError, "reasoning_effort"):
+            codex_request(
+                {**base, "reasoning_effort": "ultra"},
+                ReasoningCache(),
+                reasoning_efforts=["high", "max"],
+            )
 
     def test_does_not_inject_default_instructions(self):
         request, _ = codex_request(

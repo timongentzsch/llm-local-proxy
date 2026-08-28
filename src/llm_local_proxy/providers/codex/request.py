@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Collection
 from typing import Any
 
 from ...errors import RequestError
@@ -135,7 +136,11 @@ def _turn_items(turn: Any, cache: ReasoningCache) -> list[dict[str, Any]]:
     return items
 
 
-def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], str]:
+def build(
+    request: ChatRequest,
+    cache: ReasoningCache,
+    reasoning_efforts: Collection[str] | None = None,
+) -> tuple[dict[str, Any], str]:
     if not request.model:
         raise RequestError("model is required")
     _reject_unsupported(request.params)
@@ -174,5 +179,11 @@ def build(request: ChatRequest, cache: ReasoningCache) -> tuple[dict[str, Any], 
     # catalog default even when the client omits an explicit effort.
     body["include"] = ["reasoning.encrypted_content"]
     if request.reasoning_effort:
-        body["reasoning"] = {"effort": request.reasoning_effort, "summary": "auto"}
+        effort = str(request.reasoning_effort).casefold()
+        supported = {str(item).casefold() for item in reasoning_efforts or ()}
+        if supported and effort not in supported:
+            raise RequestError(
+                f"unsupported reasoning_effort: {request.reasoning_effort}"
+            )
+        body["reasoning"] = {"effort": effort, "summary": "auto"}
     return body, session

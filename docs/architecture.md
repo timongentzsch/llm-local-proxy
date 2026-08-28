@@ -10,6 +10,11 @@ Any format can reach any subscription: the request's `model` decides.
 
 Everything else follows from keeping those two axes independent.
 
+Providers claim models from their live catalogs rather than from name prefixes.
+The same catalog records supply context windows, output limits, modalities and
+reasoning capabilities. Values that are protocol vocabulary remain constants;
+model and effort names do not.
+
 ## The three axes
 
 | Axis | Members | Adding one costs |
@@ -82,7 +87,7 @@ about what `/v1/models` returns and neither can own it outright.
 
 | Mount | Routes |
 | --- | --- |
-| `/openai/v1` | `chat/completions`, `models`, `models/count` |
+| `/openai/v1` | `responses` (stateless), `chat/completions`, `models`, `models/count` |
 | `/anthropic` | `v1/messages`, `v1/messages/count_tokens`, `v1/models` |
 | `/v1` | alias of `/openai/v1`, for configs written before the prefixes |
 
@@ -108,9 +113,9 @@ Wire claims are labelled, because they are not equally reliable:
   exists and it may break without notice.
 
 The structural rule: **[spec] and [empirical] code do not share a module.**
-Everything reverse-engineered lives in `providers/claude/subscription.py` and
-the auth modules — the Claude Code system marker, the beta headers, the pinned
-user agent. Nothing in `dialects/` is empirical.
+Everything reverse-engineered lives under `providers/` — subscription markers,
+beta headers, transport probes and retry behaviour. Nothing in `dialects/` is
+empirical.
 
 `tests/test_conformance.py` turns the first category into a test, so a spec
 refresh that changes the contract fails there rather than in a client. It
@@ -124,7 +129,9 @@ Details that cost real debugging, all spec-checked.
 legal — it pre-warms the prompt cache without generating. A trailing
 `assistant` message is a prefill the response continues from, and consecutive
 same-role turns merge server-side; both must survive the IR. `output_config`
-carries the same effort tiers as `reasoning_effort`. A `system` role is valid
+carries the same effort tiers as `reasoning_effort`. Thinking display is
+preserved, and defaults explicitly to `summarized` because the subscription
+edge otherwise omits text needed for signed replay. A `system` role is valid
 *inside* `messages`, distinct from the top-level system prompt.
 
 **Response.** `Message` requires `stop_reason`, `stop_sequence`,
@@ -161,10 +168,12 @@ zero and `message_delta` carries the authoritative totals.
    and the `ReasoningCache` is bypassed: the client holds them. On
    anthropic→codex they are dropped and the encrypted-reasoning cache is keyed
    by tool call id. On the openai→claude routes a block is only replayable
-   when its text arrived [empirical]: the subscription edge signs reasoning it
-   never streams, and that signature covers what Claude wrote rather than the
-   empty string left here, so such a block is neither packed nor replayed and
-   its turn goes up without thinking.
+   when its text arrived [empirical]. The proxy explicitly requests summarized
+   display so ordinary turns carry both text and signature. If a client asks
+   for omitted display, the subscription edge can sign reasoning it never
+   streams; that signature covers what Claude wrote rather than the empty
+   string left here, so such a block is neither packed nor replayed and its turn
+   goes up without thinking.
 4. **`tool_result` images** are representable to Claude but not to Codex.
 5. **Betas [empirical].** The client's `anthropic-beta` header is unioned with
    the required Claude Code betas through an allowlist.

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from llm_local_proxy.config import load
 from llm_local_proxy.providers import Provider
-from llm_local_proxy.providers.claude.catalog import claude_model_name
+from llm_local_proxy.providers.catalog import match_model
 from llm_local_proxy.providers.claude.catalog import model_info as _claude_model_info
 from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
 from llm_local_proxy.providers.codex.catalog import model_info as _model_info
@@ -81,6 +81,25 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(model["context_length"], 272000)
         self.assertEqual(model["supported_reasoning_efforts"], [])
 
+    def test_codex_catalog_omits_efforts_the_transport_rejects(self):
+        model = _model_info(
+            {
+                "model": "gpt-test",
+                "defaultReasoningEffort": "ultra",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "high"},
+                    {"reasoningEffort": "max"},
+                    {"reasoningEffort": "ultra"},
+                    {"reasoningEffort": "future-tier"},
+                ],
+            },
+            transport_efforts={"high", "max", "future-tier"},
+        )
+        self.assertEqual(
+            model["supported_reasoning_efforts"], ["high", "max", "future-tier"]
+        )
+        self.assertIsNone(model["default_parameters"])
+
     def test_claude_model_info_matches_openrouter_shape(self):
         model = _claude_model_info(
             {
@@ -131,16 +150,18 @@ class ServerTest(unittest.TestCase):
             status=lambda: ProviderStatus(signed_in=True, account="pro"),
         )
         service._seen = (seen_claude, seen_codex)
+        claude_models = [
+            _claude_model_info({"id": "claude-fake-1", "name": "Claude Fake 1"})
+        ]
+        codex_models = [_model_info({"model": "acme-gpt-1"})]
         service.providers = [
             Provider(
                 name="claude",
                 auth=claude_auth,
                 login_flow="paste_code",
-                match=claude_model_name,
+                match=lambda model: match_model(model, claude_models),
                 chat=claude_chat,
-                models=lambda: [
-                    _claude_model_info({"id": "claude-fake-1", "name": "Claude Fake 1"})
-                ],
+                models=lambda: claude_models,
                 status=claude_auth.status,
                 routes={"code": lambda body: {}, "usage": lambda body: {}},
             ),
@@ -148,9 +169,9 @@ class ServerTest(unittest.TestCase):
                 name="codex",
                 auth=codex_auth,
                 login_flow="device_code",
-                match=lambda model: None if claude_model_name(model) else model,
+                match=lambda model: match_model(model, codex_models),
                 chat=codex_chat,
-                models=lambda: [_model_info({"model": "acme-gpt-1"})],
+                models=lambda: codex_models,
                 status=codex_auth.status,
                 routes={},
             ),
@@ -171,7 +192,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(provider.name, "claude")
         self.assertEqual(canonical, "claude-fake-1")
 
-    def test_route_sends_other_models_to_codex_fallback(self):
+    def test_route_sends_catalogued_models_to_codex(self):
         service = self._service()
         provider, canonical = service.route("acme-gpt-1")
         self.assertEqual(provider.name, "codex")
@@ -179,8 +200,7 @@ class ServerTest(unittest.TestCase):
 
     def test_route_no_match_returns_none(self):
         service = self._service()
-        # claude only claims claude-*; codex claims everything else, so a
-        # model neither claims makes route() return None.
+        # A model no live provider catalog claims makes route() return None.
         service.providers[1] = Provider(
             name="codex",
             auth=service.providers[1].auth,

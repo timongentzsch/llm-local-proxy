@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -32,6 +33,22 @@ class Upstream:
     def events(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         response = self._open(body, refresh=False)
         return self._tracked(transport.read_events(response))
+
+    def reasoning_efforts(self, model: str) -> set[str] | None:
+        """Discover the transport enum without running a generation."""
+        body = {
+            "model": model,
+            "input": [],
+            "store": False,
+            "stream": True,
+            "reasoning": {"effort": "__probe__"},
+        }
+        try:
+            response = self._open(body, refresh=False)
+        except UpstreamError as error:
+            return _effort_values(str(error)) if error.status == 400 else None
+        response.close()
+        return None
 
     def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
         """Yield events unchanged, tallying the final usage of each request."""
@@ -87,3 +104,12 @@ class Upstream:
             raise UpstreamError(error.code, message) from error
         except urllib.error.URLError as error:
             raise UpstreamError(502, str(error.reason)) from error
+
+
+def _effort_values(message: str) -> set[str] | None:
+    """Parse the enum returned for an invalid reasoning effort probe."""
+    _, marker, values = message.partition("Supported values are:")
+    if not marker:
+        return None
+    found = set(re.findall(r"['\"]([a-zA-Z0-9_-]+)['\"]", values))
+    return found or None

@@ -54,10 +54,18 @@ without proxy state. It rejects `store: true` and `previous_response_id`; use
 `store: false`. The key is accepted as `Authorization: Bearer` or `x-api-key`
 on every mount — it is the proxy's own key, not a vendor's.
 
-One limit is worth knowing: the Claude subscription edge signs thinking blocks
-whose text it never streams. A signature covering text the proxy never saw
-cannot be replayed, so those turns continue without their thinking rather than
-being rejected upstream.
+Claude thinking uses `display: "summarized"` by default, so readable deltas and
+their replay signature survive tool loops. A client can explicitly request
+`display: "omitted"`; if the subscription edge withholds the signed text, that
+turn continues without its thinking rather than replaying a signature the proxy
+cannot verify against the missing text.
+
+Model ids, context and output limits, input modalities, thinking support and
+effort names come from the authenticated upstream catalogs at runtime. Codex's
+transport enum is intersected with its app-server catalog using a validation-only
+probe, so newly added tiers appear automatically and catalog-only tiers do not.
+Only currently catalogued models are routable; the proxy does not guess a
+provider from a model-name prefix or keep a stale built-in model list.
 
 The dashboard also serves `GET /api/status` and the `POST /api/<provider>/login`
 family it uses to sign in and out.
@@ -96,8 +104,8 @@ whose upstream cannot count. A client that gets the 404 falls back to its own
 estimate knowing it is one, rather than trusting a number the proxy invented.
 
 Unsupported sampling and structured-output parameters fail explicitly instead
-of being silently ignored. Pricing, provider routing and spend history are
-absent on purpose: neither subscription exposes anything equivalent.
+of being silently ignored. Pricing, user-configurable routing and spend history
+are absent on purpose: neither subscription exposes anything equivalent.
 
 Each subscription keeps its own credentials, usage windows and rate limits.
 Claude tokens are refreshed by the proxy itself, so it does not contend with a

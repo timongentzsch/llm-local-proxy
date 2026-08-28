@@ -198,8 +198,19 @@ class IngressTest(unittest.TestCase):
             parse({**BASE, "tools": [{"type": "bash_20250124", "name": "bash"}]})
 
     def test_thinking_budget_is_carried(self):
-        body = {**BASE, "thinking": {"type": "enabled", "budget_tokens": 4096}}
-        self.assertEqual(parse(body).thinking_budget, 4096)
+        body = {
+            **BASE,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 4096,
+                "display": "omitted",
+            },
+        }
+        request = parse(body)
+        self.assertEqual(request.thinking_budget, 4096)
+        self.assertEqual(request.thinking_display, "omitted")
+        with self.assertRaisesRegex(RequestError, "thinking.display"):
+            parse({**BASE, "thinking": {"type": "adaptive", "display": "raw"}})
 
     def test_a_client_cannot_hand_back_thinking_the_upstream_withheld(self):
         # An Anthropic client resends the blocks it was given, and the
@@ -245,9 +256,11 @@ class IngressTest(unittest.TestCase):
 
         signed = {"type": "thinking", "thinking": "reasoned", "signature": "S"}
         withheld = {"type": "thinking", "thinking": "", "signature": "S"}
+        unsigned = {"type": "thinking", "thinking": "reasoned", "signature": ""}
         redacted = {"type": "redacted_thinking", "data": "OPAQUE"}
         self.assertEqual(kinds(turn(signed)), ["thinking", "tool_use"])
         self.assertEqual(kinds(turn(withheld)), ["tool_use"])
+        self.assertEqual(kinds(turn(unsigned)), ["tool_use"])
         self.assertEqual(kinds(turn(redacted)), ["redacted_thinking", "tool_use"])
 
     def test_unsupported_top_level_parameters_are_refused(self):
@@ -312,6 +325,54 @@ class RoundTripTest(unittest.TestCase):
             {"type": "thinking", "thinking": "hmm", "signature": "SIG"}, blocks
         )
 
+    def test_native_thinking_is_not_duplicated_by_reasoning_cache(self):
+        body = {
+            **BASE,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "hmm", "signature": "SIG"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "f",
+                            "input": {},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "x",
+                        }
+                    ],
+                },
+            ],
+        }
+        cache = ReasoningCache()
+        cache.put(
+            ["toolu_1"],
+            [{"type": "thinking", "thinking": "hmm", "signature": "SIG"}],
+        )
+
+        upstream, _ = build_claude(
+            parse(body), "claude-sonnet-5", reasoning_cache=cache
+        )
+        thinking = [
+            block
+            for block in upstream["messages"][1]["content"]
+            if block["type"] == "thinking"
+        ]
+        self.assertEqual(
+            thinking,
+            [{"type": "thinking", "thinking": "hmm", "signature": "SIG"}],
+        )
+
     def test_the_marker_is_not_duplicated(self):
         # Real Claude Code already sends the marker as a system block; adding a
         # second one would waste tokens on every request.
@@ -339,7 +400,9 @@ class RoundTripTest(unittest.TestCase):
             "output_config": {"effort": "high"},
         }
         upstream, _ = build_claude(parse(body), "claude-sonnet-5")
-        self.assertEqual(upstream["thinking"], {"type": "adaptive"})
+        self.assertEqual(
+            upstream["thinking"], {"type": "adaptive", "display": "omitted"}
+        )
 
     def test_explicit_budget_beats_effort_tiers(self):
         body = {
@@ -349,7 +412,12 @@ class RoundTripTest(unittest.TestCase):
         }
         upstream, _ = build_claude(parse(body), "claude-sonnet-5")
         self.assertEqual(
-            upstream["thinking"], {"type": "enabled", "budget_tokens": 2000}
+            upstream["thinking"],
+            {
+                "type": "enabled",
+                "budget_tokens": 2000,
+                "display": "summarized",
+            },
         )
 
     def test_budget_must_leave_room_to_answer(self):
@@ -486,6 +554,14 @@ class DialectTest(unittest.TestCase):
         self.assertEqual(catalog["data"][0]["display_name"], "Sonnet")
         self.assertFalse(catalog["has_more"])
         self.assertEqual(catalog["first_id"], "claude-sonnet-5")
+        # A model with no known window omits the field rather than claiming 0.
+        self.assertNotIn("max_input_tokens", catalog["data"][0])
+
+    def test_catalog_carries_the_window(self):
+        catalog = ANTHROPIC.catalog(
+            [{"id": "claude-sonnet-5", "name": "Sonnet", "context_length": 1000000}]
+        )
+        self.assertEqual(catalog["data"][0]["max_input_tokens"], 1000000)
 
 
 if __name__ == "__main__":

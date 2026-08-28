@@ -19,6 +19,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
+from .reasoning import options as reasoning_options
 
 
 def _content(value: Any) -> list[Text | Image]:
@@ -169,8 +170,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
     system = [Text(str(instructions))] if instructions else []
     additional_tools: list[Any] = []
     turns = _input(body.get("input", ""), system, additional_tools)
-    reasoning = body.get("reasoning")
-    effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    effort, thinking_display = reasoning_options(body.get("reasoning"))
     params = {key: body[key] for key in ("temperature", "top_p", "stop") if key in body}
     return ChatRequest(
         model=model,
@@ -180,6 +180,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         tool_choice=_choice(body.get("tool_choice")),
         max_tokens=body.get("max_output_tokens"),
         reasoning_effort=effort,
+        thinking_display=thinking_display,
         parallel_tool_calls=body.get("parallel_tool_calls"),
         stream=bool(body.get("stream")),
         session=session or str(body.get("prompt_cache_key") or ""),

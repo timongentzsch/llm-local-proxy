@@ -226,6 +226,8 @@ class ChatRequest:
     thinking_budget: int | None = None
     #: "adaptive" or "disabled" when named; neither maps to a budget.
     thinking_mode: str = ""
+    #: Claude thinking visibility: "summarized" or "omitted".
+    thinking_display: str = ""
     parallel_tool_calls: Any = None
     stream: bool = False
     session: str = ""
