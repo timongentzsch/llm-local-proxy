@@ -12,9 +12,15 @@ and only sometimes, which makes that corruption silent until it is not.
 
 Each envelope also records where its block sat among the signed blocks of its
 assistant turn, so a client that reorders them, or drops one from the middle,
-is caught here rather than upstream. A client that drops a trailing block is
-not caught: the total is not known until the turn ends, and stamping it would
-mean holding every reasoning item back until then.
+is caught here rather than upstream. A dropped trailing block leaves ordinals
+that still read 0..n-1: the total is not known until the turn ends, and
+stamping it would mean holding every reasoning item back until then, so that
+one is caught by the reasoning cache's count instead.
+
+A block is packed only when it can actually be replayed. The subscription
+edge signs reasoning whose text it never streams, and that signature covers
+what Claude wrote rather than the empty string that arrives here, so sending
+it back is itself the modification upstream refuses.
 
 The version tag is part of the payload contract: any change to the shape below
 must bump it, so blobs an older build wrote are reported as a version this one
@@ -47,6 +53,10 @@ class Outcome(enum.Enum):
     BAD_VERSION = "bad_version"
     #: Ours by prefix and version, and damaged.
     MALFORMED = "malformed"
+    #: Ours and intact, carrying a block Claude will not accept back: it
+    #: signed reasoning whose text it never streamed, and the signature
+    #: covers that text rather than the empty string stored here.
+    WITHHELD = "withheld"
 
 
 @dataclass(frozen=True)

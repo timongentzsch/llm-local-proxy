@@ -145,7 +145,9 @@ def _assistant_blocks(
             )
         elif isinstance(block, Reasoning):
             recovered = _responses_reasoning(block.item)
-            if recovered.outcome is Outcome.OK and _replayable(recovered.block):
+            if recovered.outcome is Outcome.OK and not _replayable(recovered.block):
+                recovered = Unpacked(Outcome.WITHHELD)
+            if recovered.outcome is Outcome.OK:
                 assert recovered.block is not None
                 blocks.append(recovered.block)
                 ordinals.append(recovered.ordinal)
@@ -206,6 +208,7 @@ DROP_REASONS = {
     Outcome.FOREIGN: "this proxy did not write and cannot replay",
     Outcome.MALFORMED: "whose envelope arrived damaged",
     Outcome.BAD_VERSION: "whose envelope an unsupported version wrote",
+    Outcome.WITHHELD: "whose thinking text the upstream never streamed",
 }
 
 
@@ -235,8 +238,8 @@ def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
     would fail every later turn of that session the same way, for good. What is
     dropped is announced, and Claude accepts a turn carrying no thinking at
     all; what it rejects is thinking that came back altered. Losing one block
-    out of several is a different thing, and _assistant_blocks still catches
-    it by ordinal.
+    of several is the same kind of alteration, so _assistant_blocks drops that
+    turn's thinking entirely rather than sending up the part that survived.
     """
     return unpack(item.get("encrypted_content"))
 

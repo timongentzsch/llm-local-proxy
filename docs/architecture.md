@@ -160,7 +160,11 @@ zero and `message_delta` carries the authoritative totals.
 3. **Signatures.** On anthropic→claude, thinking blocks are forwarded verbatim
    and the `ReasoningCache` is bypassed: the client holds them. On
    anthropic→codex they are dropped and the encrypted-reasoning cache is keyed
-   by tool call id.
+   by tool call id. On the openai→claude routes a block is only replayable
+   when its text arrived [empirical]: the subscription edge signs reasoning it
+   never streams, and that signature covers what Claude wrote rather than the
+   empty string left here, so such a block is neither packed nor replayed and
+   its turn goes up without thinking.
 4. **`tool_result` images** are representable to Claude but not to Codex.
 5. **Betas [empirical].** The client's `anthropic-beta` header is unioned with
    the required Claude Code betas through an allowlist.

@@ -49,9 +49,12 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai/v1 OPENAI_API_KEY=$KEY
 
 Streaming, images, function tools, web search, parallel calls, reasoning effort
 and token usage work on both. The Responses route carries encrypted Codex
-reasoning and signed/redacted Claude thinking as opaque reasoning items, so a
-client that resends its complete `input` can continue tool loops without proxy
-state. It rejects `store: true` and `previous_response_id`; use `store: false`.
+reasoning and redacted Claude thinking as opaque reasoning items, so a client
+that resends its complete `input` can continue tool loops without proxy state.
+Signed Claude thinking travels the same way when its text is present, which on
+the subscription edge it usually is not: that upstream signs reasoning it never
+streams, and a signature covering text the proxy never saw cannot be replayed,
+so those turns continue without their thinking. It rejects `store: true` and `previous_response_id`; use `store: false`.
 The key is accepted as `Authorization: Bearer` or `x-api-key` on every mount —
 it is the proxy's own key, not a vendor's.
 
