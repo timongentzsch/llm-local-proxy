@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 import urllib.error
@@ -310,9 +311,46 @@ class ClaudeUpstream:
             if error.code == 401 and not refresh:
                 error.close()
                 return self._open(body, betas, refresh=True, url=url)
-            raise _upstream_error(error) from error
+            failed = _upstream_error(error)
+            _report_block_shape(failed, body)
+            raise failed from error
         except urllib.error.URLError as error:
             raise ClaudeUpstreamError(502, str(error.reason)) from error
+
+
+def _report_block_shape(error: ClaudeUpstreamError, body: dict[str, Any]) -> None:
+    """Name the turn a rejected signed block sits in, without its content.
+
+    A complaint about thinking blocks points at a message and a position, and
+    nothing else in the logs says what the proxy actually put there. Kinds and
+    sizes answer that: whether a block went up as thinking or redacted, where
+    it sat among the calls it was interleaved with, and whether its signature
+    travelled. The text itself is the conversation, so it stays out.
+    """
+    if error.status != 400 or "thinking" not in str(error).casefold():
+        return
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    lines = [f"claude: upstream rejected a signed turn: {error}"]
+    for index, message in enumerate(messages):
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        shapes = []
+        for block in content:
+            kind = block.get("type") if isinstance(block, dict) else "?"
+            if kind == "thinking":
+                shapes.append(
+                    f"thinking(text={len(block.get('thinking', ''))},"
+                    f"sig={len(block.get('signature', ''))})"
+                )
+            elif kind == "redacted_thinking":
+                shapes.append(f"redacted(data={len(block.get('data', ''))})")
+            else:
+                shapes.append(str(kind))
+        lines.append(f"  [{index}] {message.get('role')}: {', '.join(shapes)}")
+    sys.stderr.write("\n".join(lines) + "\n")
 
 
 def _thinking_rejected(error: ClaudeUpstreamError, body: dict[str, Any]) -> bool:
