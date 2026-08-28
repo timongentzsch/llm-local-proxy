@@ -1,10 +1,22 @@
 """The Codex provider: Responses requests out, Responses events back."""
 
+import base64
+import io
+import json
+import pathlib
+import tempfile
+import threading
+import time
 import unittest
 
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.errors import RequestError
+from llm_local_proxy.providers.codex.app_server import (
+    AppServer,
+    RpcError,
+    _jwt_payload,
+)
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build
 from llm_local_proxy.providers.reasoning import ReasoningCache
@@ -244,6 +256,196 @@ class ProtocolTest(unittest.TestCase):
             translator.result()["usage"]["server_tool_use"]["web_search_requests"],
             1,
         )
+
+
+def _jwt(payload: dict) -> str:
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"header.{body}.signature"
+
+
+class _FakeProc:
+    """Stands in for the app-server child: a pipe in, a scripted pipe out."""
+
+    def __init__(self, replies=None, alive=True):
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+        self.replies = replies or {}
+        self._alive = alive
+        self.terminated = False
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def terminate(self):
+        self.terminated = True
+        self._alive = False
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _server(proc):
+    """An AppServer wired to a fake child, without spawning anything."""
+    server = AppServer.__new__(AppServer)
+    server._proc = proc
+    server._pending = {}
+    server._lock = threading.Lock()
+    server._next_id = 1
+    server._model_contexts = None
+    return server
+
+
+class AppServerProtocolTest(unittest.TestCase):
+    """The JSONL bridge: request ids, errors, timeouts, and a dead child."""
+
+    def _answer(self, server, message):
+        """Deliver one reply as the reader thread would."""
+        for _ in range(200):
+            pending = server._pending.get(message.get("id"))
+            if pending:
+                pending.put(message)
+                return
+            time.sleep(0.005)
+        raise AssertionError("no request was waiting")
+
+    def test_a_call_writes_one_request_and_returns_its_result(self):
+        server = _server(_FakeProc())
+        threading.Thread(
+            target=self._answer,
+            args=(server, {"id": 1, "result": {"ok": True}}),
+            daemon=True,
+        ).start()
+        self.assertEqual(server.call("ping", {"x": 1}), {"ok": True})
+        sent = json.loads(server._proc.stdin.getvalue().strip())
+        self.assertEqual(sent, {"method": "ping", "id": 1, "params": {"x": 1}})
+
+    def test_an_error_reply_becomes_an_rpc_error_naming_the_method(self):
+        server = _server(_FakeProc())
+        threading.Thread(
+            target=self._answer,
+            args=(server, {"id": 1, "error": {"message": "nope"}}),
+            daemon=True,
+        ).start()
+        with self.assertRaisesRegex(RpcError, "ping: nope"):
+            server.call("ping")
+
+    def test_a_silent_child_times_out_instead_of_hanging(self):
+        server = _server(_FakeProc())
+        with self.assertRaisesRegex(RpcError, "slow timed out"):
+            server.call("slow", timeout=0)
+        # The waiter is cleaned up, so a later reply cannot be mistaken for it.
+        self.assertEqual(server._pending, {})
+
+    def test_a_dead_child_is_reported_rather_than_written_to(self):
+        server = _server(_FakeProc(alive=False))
+        with self.assertRaisesRegex(RpcError, "not running"):
+            server.call("ping")
+
+    def test_a_non_object_result_is_still_a_mapping(self):
+        server = _server(_FakeProc())
+        threading.Thread(
+            target=self._answer, args=(server, {"id": 1, "result": 7}), daemon=True
+        ).start()
+        self.assertEqual(server.call("ping"), {"value": 7})
+
+    def test_the_reader_answers_a_server_request_it_cannot_serve(self):
+        # The app-server may call the client; an unanswered request would
+        # stall it, so unknown methods are refused explicitly.
+        proc = _FakeProc()
+        proc.stdout = io.StringIO(
+            json.dumps({"id": 9, "method": "client/doThing"}) + "\n"
+        )
+        server = _server(proc)
+        server._read()
+        self.assertEqual(
+            json.loads(proc.stdin.getvalue().strip()),
+            {
+                "id": 9,
+                "error": {"code": -32601, "message": "unsupported client method"},
+            },
+        )
+
+    def test_a_stopped_child_releases_every_waiting_call(self):
+        # Without this a caller waits out its whole timeout for a reply that
+        # can never come.
+        proc = _FakeProc()
+        server = _server(proc)
+        import queue as queue_module
+
+        waiter: queue_module.Queue = queue_module.Queue(maxsize=1)
+        server._pending[1] = waiter
+        server._read()
+        self.assertIn("stopped", waiter.get_nowait()["error"]["message"])
+
+    def test_garbage_on_the_pipe_is_skipped(self):
+        proc = _FakeProc()
+        proc.stdout = io.StringIO("not json\n" + json.dumps({"id": 1}) + "\n")
+        server = _server(proc)
+        server._read()  # must not raise
+
+
+class AppServerTokenTest(unittest.TestCase):
+    """Credentials come from Codex's own auth.json; the proxy only reads it."""
+
+    def _server_with_auth(self, auth):
+        directory = tempfile.mkdtemp()
+        server = _server(_FakeProc())
+        server.auth_path = pathlib.Path(directory) / "auth.json"
+        if auth is not None:
+            server.auth_path.write_text(json.dumps(auth))
+        return server
+
+    def test_a_live_token_is_used_without_a_refresh(self):
+        access = _jwt({"exp": time.time() + 3600})
+        server = self._server_with_auth(
+            {"tokens": {"access_token": access, "account_id": "acct"}}
+        )
+        self.assertEqual(server.token(), (access, "acct"))
+        self.assertEqual(server._proc.stdin.getvalue(), "", "no refresh was needed")
+
+    def test_the_account_id_falls_back_to_the_token_claim(self):
+        access = _jwt(
+            {
+                "exp": time.time() + 3600,
+                "https://api.openai.com/auth.chatgpt_account_id": "from-claim",
+            }
+        )
+        server = self._server_with_auth({"tokens": {"access_token": access}})
+        self.assertEqual(server.token()[1], "from-claim")
+
+    def test_signed_out_is_a_readable_error(self):
+        server = self._server_with_auth(None)
+        server.call = lambda *a, **k: {}
+        with self.assertRaisesRegex(RpcError, "not signed in"):
+            server.token()
+
+    def test_a_token_without_an_account_is_refused(self):
+        server = self._server_with_auth(
+            {"tokens": {"access_token": _jwt({"exp": time.time() + 3600})}}
+        )
+        with self.assertRaisesRegex(RpcError, "account id is missing"):
+            server.token()
+
+    def test_an_expiring_token_is_refreshed_before_it_is_used(self):
+        stale = _jwt({"exp": time.time() + 30})
+        fresh = _jwt({"exp": time.time() + 3600})
+        server = self._server_with_auth(
+            {"tokens": {"access_token": stale, "account_id": "acct"}}
+        )
+
+        def refresh(method, params=None, timeout=30):
+            server.auth_path.write_text(
+                json.dumps({"tokens": {"access_token": fresh, "account_id": "acct"}})
+            )
+            return {}
+
+        server.call = refresh
+        self.assertEqual(server.token()[0], fresh)
+
+    def test_an_unreadable_payload_is_empty_rather_than_fatal(self):
+        self.assertEqual(_jwt_payload("not.a.jwt"), {})
+        self.assertEqual(_jwt_payload(""), {})
 
 
 if __name__ == "__main__":
