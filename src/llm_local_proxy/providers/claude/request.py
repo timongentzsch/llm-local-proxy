@@ -131,6 +131,7 @@ def _assistant_blocks(
     """
     blocks: list[dict[str, Any]] = []
     ordinals: list[int] = []
+    lost = 0
     for block in turn.blocks:
         if isinstance(block, Thinking):
             blocks.append(
@@ -148,8 +149,10 @@ def _assistant_blocks(
                 assert recovered.block is not None
                 blocks.append(recovered.block)
                 ordinals.append(recovered.ordinal)
-            elif dropped is not None:
-                dropped.append(recovered.outcome)
+            else:
+                lost += 1
+                if dropped is not None:
+                    dropped.append(recovered.outcome)
         elif isinstance(block, Text) and block.text.strip():
             # An empty text block is rejected upstream.
             blocks.append({"type": "text", "text": block.text})
@@ -173,6 +176,14 @@ def _assistant_blocks(
         # rejects -- where sending no signed block at all would have passed.
         if replay:
             return replay + [b for b in blocks if b["type"] not in _SIGNED]
+        # Some of this turn's reasoning survived and some did not: a history
+        # holding both envelope versions, or one carrying another upstream's
+        # blobs beside ours. What is left is a fraction of what Claude signed,
+        # and a fraction is altered where nothing at all is merely thinner --
+        # so the rest goes too. Keeping the survivors is what makes a mixed
+        # history a session that can never continue.
+        if lost:
+            return [b for b in blocks if b["type"] not in _SIGNED]
         # Reordered, or missing one from the middle, with nothing to fall back
         # on. What is left is not the turn Claude signed.
         if ordinals != list(range(len(ordinals))):

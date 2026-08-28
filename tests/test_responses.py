@@ -485,6 +485,16 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
             history([items[1]]), "claude-test", reasoning_cache=cache
         )
         self.assertEqual(upstream["messages"][1]["content"][:2], signed)
+        # A history holding one envelope this build reads and one it does not
+        # -- an older version, or another upstream's blob -- must not send the
+        # half that survived: a fraction of a signed turn is altered, while a
+        # turn with no thinking is merely thinner and is accepted.
+        mixed = history([items[0], {**items[1], "encrypted_content": "gAAAAABq-other"}])
+        upstream, _ = build_claude(mixed, "claude-test")
+        self.assertEqual(
+            [block["type"] for block in upstream["messages"][1]["content"]],
+            ["tool_use"],
+        )
         # Dropping the *trailing* block leaves ordinals that still read 0..n-1,
         # so nothing about the envelopes says the turn is short. Forwarding the
         # one that survived would send Claude a turn it did not sign, which it
@@ -559,7 +569,7 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
                         f"dropped 1 reasoning item {reason}", warnings.getvalue()
                     )
 
-    def test_losing_one_signed_block_of_a_turn_is_still_refused(self):
+    def test_losing_one_signed_block_costs_the_whole_turns_thinking(self):
         # Dropping what cannot be read is only safe wholesale: a turn Claude
         # signed, minus one of its blocks, is not the turn Claude signed.
         signed = [
@@ -590,11 +600,21 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
                 ],
             }
         )
-        with (
-            contextlib.redirect_stderr(io.StringIO()),
-            self.assertRaisesRegex(RequestError, "out of order or incomplete"),
-        ):
-            build_claude(request, "claude-test")
+        # Losing one block of a signed turn costs the whole turn's thinking:
+        # the survivor alone is a turn Claude did not sign, and refusing here
+        # instead would strand an append-only history at that turn for good.
+        # Reordering, which loses nothing, is still refused above.
+        with contextlib.redirect_stderr(io.StringIO()):
+            upstream, _ = build_claude(request, "claude-test")
+        kinds = [
+            block["type"]
+            for message in upstream["messages"]
+            for block in message["content"]
+        ]
+        self.assertNotIn("thinking", kinds)
+        # Nothing but thinking was in that turn, so the turn itself goes: an
+        # assistant message with no content is rejected upstream.
+        self.assertEqual([m["role"] for m in upstream["messages"]], ["user"])
 
     def test_foreign_reasoning_blob_is_dropped_not_reshaped(self):
         request = parse(
