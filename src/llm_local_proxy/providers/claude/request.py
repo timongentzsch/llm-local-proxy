@@ -120,6 +120,12 @@ def _user_blocks(turn: Turn) -> list[dict[str, Any]]:
     return blocks
 
 
+def _native_thinking(block: Thinking) -> dict[str, Any]:
+    if block.redacted:
+        return {"type": "redacted_thinking", "data": block.redacted}
+    return {"type": "thinking", "thinking": block.text, "signature": block.signature}
+
+
 def _assistant_blocks(
     turn: Turn, cache: ReasoningCache | None, dropped: list[Outcome] | None = None
 ) -> list[dict[str, Any]]:
@@ -134,17 +140,9 @@ def _assistant_blocks(
     lost = 0
     for block in turn.blocks:
         if isinstance(block, Thinking):
-            native = (
-                {"type": "redacted_thinking", "data": block.redacted}
-                if block.redacted
-                else {
-                    "type": "thinking",
-                    "thinking": block.text,
-                    "signature": block.signature,
-                }
-            )
             # A client can hand back a block it was given, including one this
             # upstream signed without ever streaming its text.
+            native = _native_thinking(block)
             if _replayable(native):
                 blocks.append(native)
             else:
