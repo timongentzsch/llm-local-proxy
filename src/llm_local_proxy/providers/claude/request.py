@@ -134,15 +134,23 @@ def _assistant_blocks(
     lost = 0
     for block in turn.blocks:
         if isinstance(block, Thinking):
-            blocks.append(
-                {
+            native = (
+                {"type": "redacted_thinking", "data": block.redacted}
+                if block.redacted
+                else {
                     "type": "thinking",
                     "thinking": block.text,
                     "signature": block.signature,
                 }
-                if not block.redacted
-                else {"type": "redacted_thinking", "data": block.redacted}
             )
+            # A client can hand back a block it was given, including one this
+            # upstream signed without ever streaming its text.
+            if _replayable(native):
+                blocks.append(native)
+            else:
+                lost += 1
+                if dropped is not None:
+                    dropped.append(Outcome.WITHHELD)
         elif isinstance(block, Reasoning):
             recovered = _responses_reasoning(block.item)
             if recovered.outcome is Outcome.OK and not _replayable(recovered.block):

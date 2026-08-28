@@ -7,6 +7,8 @@ cover.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 
 from llm_local_proxy.dialects import ANTHROPIC, resolve
@@ -198,6 +200,55 @@ class IngressTest(unittest.TestCase):
     def test_thinking_budget_is_carried(self):
         body = {**BASE, "thinking": {"type": "enabled", "budget_tokens": 4096}}
         self.assertEqual(parse(body).thinking_budget, 4096)
+
+    def test_a_client_cannot_hand_back_thinking_the_upstream_withheld(self):
+        # An Anthropic client resends the blocks it was given, and the
+        # subscription edge signs some whose text it never streamed. Those
+        # arrive here as native Thinking rather than as an envelope, and
+        # forwarding one is the modification upstream refuses.
+        def turn(block):
+            return parse(
+                {
+                    **BASE,
+                    "messages": [
+                        {"role": "user", "content": "go"},
+                        {
+                            "role": "assistant",
+                            "content": [
+                                block,
+                                {
+                                    "type": "tool_use",
+                                    "id": "toolu_1",
+                                    "name": "f",
+                                    "input": {},
+                                },
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "toolu_1",
+                                    "content": "ok",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            )
+
+        def kinds(request):
+            with contextlib.redirect_stderr(io.StringIO()):
+                body, _ = build_claude(request, "claude-test")
+            return [block["type"] for block in body["messages"][1]["content"]]
+
+        signed = {"type": "thinking", "thinking": "reasoned", "signature": "S"}
+        withheld = {"type": "thinking", "thinking": "", "signature": "S"}
+        redacted = {"type": "redacted_thinking", "data": "OPAQUE"}
+        self.assertEqual(kinds(turn(signed)), ["thinking", "tool_use"])
+        self.assertEqual(kinds(turn(withheld)), ["tool_use"])
+        self.assertEqual(kinds(turn(redacted)), ["redacted_thinking", "tool_use"])
 
     def test_unsupported_top_level_parameters_are_refused(self):
         for name in ("container", "mcp_servers", "service_tier"):
