@@ -485,6 +485,15 @@ class ClaudeThinkingRoundTripTest(unittest.TestCase):
             history([items[1]]), "claude-test", reasoning_cache=cache
         )
         self.assertEqual(upstream["messages"][1]["content"][:2], signed)
+        # Dropping the *trailing* block leaves ordinals that still read 0..n-1,
+        # so nothing about the envelopes says the turn is short. Forwarding the
+        # one that survived would send Claude a turn it did not sign, which it
+        # rejects where it would have accepted no thinking at all. The cache
+        # knows the whole turn, so it decides what gets replayed.
+        upstream, _ = build_claude(
+            history([items[0]]), "claude-test", reasoning_cache=cache
+        )
+        self.assertEqual(upstream["messages"][1]["content"][:2], signed)
 
     def test_unreadable_envelope_is_dropped_rather_than_stranding_the_client(self):
         # A client keeps its history append-only: refusing an item it cannot

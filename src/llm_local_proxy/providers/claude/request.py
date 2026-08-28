@@ -162,25 +162,29 @@ def _assistant_blocks(
                     "input": _arguments(block.arguments),
                 }
             )
-    if ordinals and ordinals != list(range(len(ordinals))):
-        # Reordered, or missing one from the middle. Either way what is left is
-        # not the turn Claude signed, and the cache is the only honest source.
-        uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
-        replay = cache.get([use for use in uses if use]) if cache else []
-        if not replay:
+    uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
+    replay = cache.get([use for use in uses if use]) if cache and uses else []
+    if ordinals:
+        # Envelopes came back, and the cache outranks them: it holds the turn
+        # whole and in the order Claude signed, which the ordinals cannot
+        # establish by themselves. A client that drops the trailing block
+        # leaves 0..n-1 behind, indistinguishable from a complete turn, and
+        # forwarding that partial set is exactly the alteration Claude
+        # rejects -- where sending no signed block at all would have passed.
+        if replay:
+            return replay + [b for b in blocks if b["type"] not in _SIGNED]
+        # Reordered, or missing one from the middle, with nothing to fall back
+        # on. What is left is not the turn Claude signed.
+        if ordinals != list(range(len(ordinals))):
             raise RequestError(
                 "cannot replay Claude reasoning: the assistant turn's signed "
                 "blocks arrived out of order or incomplete"
             )
-        return replay + [b for b in blocks if b["type"] not in _SIGNED]
-    if not ordinals:
-        # A dialect that cannot carry reasoning at all, or a history written
-        # before the envelope existed. Claude accepts a turn with no thinking;
-        # it rejects one whose thinking was altered.
-        uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
-        replay = cache.get([use for use in uses if use]) if cache and uses else []
-        blocks = replay + blocks
-    return blocks
+        return blocks
+    # No envelopes: a dialect that cannot carry reasoning at all, or a history
+    # written before the envelope existed. Claude accepts a turn with no
+    # thinking; it rejects one whose thinking was altered.
+    return replay + blocks
 
 
 #: Block kinds Claude signs, and therefore will not accept rebuilt.
