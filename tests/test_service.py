@@ -6,6 +6,7 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 from llm_local_proxy.config import load
+from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers import Provider
 from llm_local_proxy.providers.catalog import match_model
 from llm_local_proxy.providers.claude.catalog import model_info as _claude_model_info
@@ -46,6 +47,10 @@ class ServiceWiringTest(unittest.TestCase):
                     self.assertEqual(provider.status().accounts, ())
                     added = provider.routes["accounts"]({"action": "add"})
                     self.assertEqual(len(provider.status().accounts), 1)
+                    with self.assertRaisesRegex(
+                        RequestError, "existing unsigned account"
+                    ):
+                        provider.routes["accounts"]({"action": "add"})
                     provider.routes["accounts"](
                         {"action": "remove", "account": added["account"]}
                     )

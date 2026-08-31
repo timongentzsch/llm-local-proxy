@@ -148,7 +148,7 @@ def make_handler(service: Service):
             return None
 
         def _count_tokens(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            request = dialect.parse_count(body, self.headers.get("X-Session-Id", ""))
+            request = dialect.parse_count(body, self._session_id())
             provider, canonical = self._route(request.model)
             if provider.count_tokens is None:
                 # Truthful for a provider whose upstream cannot count: the
@@ -169,9 +169,7 @@ def make_handler(service: Service):
         def _responses(self, dialect: Dialect, body: dict[str, Any]) -> None:
             if dialect.parse_responses is None or dialect.encode_responses is None:
                 raise RequestError("Responses API is not supported by this dialect")
-            request = dialect.parse_responses(
-                body, self.headers.get("X-Session-Id", "")
-            )
+            request = dialect.parse_responses(body, self._session_id())
             return self._generate(
                 dialect,
                 request,
@@ -181,8 +179,13 @@ def make_handler(service: Service):
             )
 
         def _chat(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            request = dialect.parse(body, self.headers.get("X-Session-Id", ""))
+            request = dialect.parse(body, self._session_id())
             return self._generate(dialect, request, dialect.encode)
+
+        def _session_id(self) -> str:
+            return self.headers.get("X-Session-Id", "") or self.headers.get(
+                "X-Claude-Code-Session-Id", ""
+            )
 
         def _generate(self, dialect: Dialect, request: Any, encode: Any) -> None:
             provider, canonical = self._route(request.model)

@@ -75,6 +75,19 @@ class AccountPool(Generic[T]):
                 return account
         raise RequestError(f"unknown account: {account_id}")
 
+    def require_no_unsigned(self) -> None:
+        """Refuse another slot while an existing one still needs a login."""
+
+        for account in self.accounts:
+            try:
+                signed_in = account.auth.signed_in()
+            except (OSError, RuntimeError, ValueError):
+                signed_in = False
+            if not signed_in:
+                raise RequestError(
+                    "sign in or remove the existing unsigned account first"
+                )
+
     def candidates(self, session: str = "") -> tuple[Account[T], ...]:
         signed_in = []
         for account in self.accounts:

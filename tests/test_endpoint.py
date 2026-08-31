@@ -47,10 +47,12 @@ MODELS = {
     "object": "list",
     "data": [{"id": "claude-sonnet-5", "name": "Claude Sonnet 5"}],
 }
+SESSIONS = []
 
 
 def _chat(canonical, request):
     """The canned stream, or the failure the model name asks for."""
+    SESSIONS.append(request.session)
     if canonical.startswith("claude-fail-"):
         raise ClaudeUpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
     if canonical == "claude-burst":
@@ -97,11 +99,13 @@ class EndpointTest(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         payload = json.dumps(body) if body is not None else None
-        headers = {"Content-Type": "application/json"} if payload else {}
-        connection.request(method, path, payload, headers)
+        sent_headers = dict(headers or {})
+        if payload:
+            sent_headers.setdefault("Content-Type", "application/json")
+        connection.request(method, path, payload, sent_headers)
         response = connection.getresponse()
         text = response.read().decode()
         connection.close()
@@ -222,6 +226,21 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["stop_reason"], "end_turn")
         self.assertEqual(body["usage"]["input_tokens"], 11)
 
+    def test_claude_code_session_header_preserves_affinity(self):
+        SESSIONS.clear()
+        status, _ = self.request(
+            "POST",
+            "/anthropic/v1/messages",
+            {
+                "model": "claude-sonnet-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            {"X-Claude-Code-Session-Id": "claude-session-42"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(SESSIONS, ["claude-session-42"])
+
     # -- dashboard --------------------------------------------------------
 
     def test_dashboard_is_served_with_the_auth_flag_substituted(self):
@@ -267,6 +286,9 @@ class EndpointTest(unittest.TestCase):
         self.assertIn('class="add-account"', text)
         self.assertIn('class="remove" hidden', text)
         self.assertIn("/accounts`", text)
+        self.assertIn("items.some(a=>!a.signed_in)", text)
+        self.assertIn("load().then(()=>poll(true))", text)
+        self.assertIn("body:accountBody(a.id)", text)
 
     def test_dashboard_has_structured_accessible_loading_skeletons(self):
         _, text = self.request("GET", "/")

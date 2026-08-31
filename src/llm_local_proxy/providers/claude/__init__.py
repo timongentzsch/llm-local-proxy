@@ -61,6 +61,7 @@ class Claude:
         self.cache = ReasoningCache()
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._lock = threading.Lock()
+        self._accounts_lock = threading.Lock()
 
     def _new_account(self, account_id: str) -> Account[ClaudeUpstream]:
         directory = self.context.directory
@@ -76,24 +77,27 @@ class Claude:
     def manage_accounts(self, body: dict[str, Any]) -> dict[str, Any]:
         action = body.get("action")
         if action == "add":
-            account_id = self.store.add()
-            try:
-                self.pool.add(self._new_account(account_id))
-            except Exception:
-                self.store.remove(account_id)
-                raise
+            with self._accounts_lock:
+                self.pool.require_no_unsigned()
+                account_id = self.store.add()
+                try:
+                    self.pool.add(self._new_account(account_id))
+                except Exception:
+                    self.store.remove(account_id)
+                    raise
         elif action == "remove":
             account_id = body.get("account")
             if not isinstance(account_id, str) or not account_id:
                 raise RequestError("account is required")
-            account = self.pool.get(account_id)
-            if account.auth.signed_in():
-                raise RequestError("sign out before removing this account")
-            self.store.remove(account_id)
-            self.pool.remove(account_id)
-            remove_account_state(
-                self.context.directory / "accounts" / "claude" / account_id
-            )
+            with self._accounts_lock:
+                account = self.pool.get(account_id)
+                if account.auth.signed_in():
+                    raise RequestError("sign out before removing this account")
+                self.store.remove(account_id)
+                self.pool.remove(account_id)
+                remove_account_state(
+                    self.context.directory / "accounts" / "claude" / account_id
+                )
         else:
             raise RequestError("action must be add or remove")
         self.forget()

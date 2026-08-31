@@ -105,7 +105,8 @@ and manage its context wrongly.
 
 Every provider owns an `AccountPool`; dialect and service routing still see one
 Claude provider and one Codex provider, so model IDs do not acquire account
-suffixes. A request with `X-Session-Id` hashes to a stable signed-in account.
+suffixes. A request with `X-Session-Id` hashes to a stable signed-in account;
+Claude Code's native `X-Claude-Code-Session-Id` is accepted as its fallback.
 Without a session ID the starting account advances round-robin.
 
 Only a 429 received before the first upstream event triggers failover. The
@@ -119,9 +120,9 @@ Account state has one canonical layout: Codex homes are
 `accounts/<provider>/<slot>` under the config directory. Slot IDs are internal;
 the dashboard labels authenticated rows with the provider-reported email.
 Each provider's adjacent `slots.json` registry is changed live by the dashboard,
-so pools can grow without a configured count or restart. Removing a signed-in
-slot is refused; after sign-out, removal closes its client and deletes only that
-slot's state.
+so pools can grow without a configured count or restart. A second unsigned slot
+is refused. Removing a signed-in slot is also refused; after sign-out, removal
+closes its client and deletes only that slot's state.
 
 ## Evidence rules
 

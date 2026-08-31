@@ -72,8 +72,10 @@ provider from a model-name prefix or keep a stale built-in model list.
 
 The dashboard also serves `GET /api/status` and the `POST /api/<provider>/login`
 family it uses to manage sign-ins. `POST /api/<provider>/accounts` adds or
-removes slots; removal requires signing out first. Login, pasted-code and
-logout bodies carry an internal slot id such as `{"account":"2"}`.
+removes slots; a provider can have only one unsigned slot, and removal requires
+signing out first. Login, pasted-code and logout bodies carry an internal slot
+id such as `{"account":"2"}`. Missing Claude usage bars are warmed once when
+the dashboard opens; later probes refresh them every minute.
 
 ### Example
 
@@ -114,7 +116,8 @@ are absent on purpose: neither subscription exposes anything equivalent.
 
 Each account keeps its own credentials, usage windows and token ledger. A
 downstream `X-Session-Id` stays on a stable account for prompt-cache locality;
-requests without one round-robin. If an account returns 429 before emitting any
+Claude Code's native `X-Claude-Code-Session-Id` works the same way. Requests
+without either one round-robin. If an account returns 429 before emitting any
 output, it is cooled locally for five minutes and the same request tries the
 next signed-in account. The proxy never retries after output starts, because
 that could duplicate a partial answer. Claude tokens are refreshed by the
@@ -135,7 +138,8 @@ request_timeout = 600
 ```
 
 Account slots are added and removed live from the dashboard and have no
-configured count or artificial cap. Every Codex login has an isolated home at
+configured count or artificial cap, but each provider permits only one unsigned
+slot at a time. Every Codex login has an isolated home at
 `codex_home/accounts/<n>`. Provider credentials, usage, the slot registry and
 token ledgers use the single layout `accounts/<provider>` inside the config
 directory. The dashboard identifies signed-in slots by the email returned by

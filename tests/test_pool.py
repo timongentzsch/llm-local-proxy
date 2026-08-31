@@ -107,6 +107,13 @@ class AccountPoolTest(unittest.TestCase):
         self.assertEqual(pool.remove("1").client, "one")
         self.assertEqual(pool.accounts, ())
 
+    def test_only_one_unsigned_slot_is_allowed(self):
+        pool = AccountPool([Account("1", _Auth(False), "one")])
+        with self.assertRaisesRegex(RequestError, "existing unsigned account"):
+            pool.require_no_unsigned()
+        pool.get("1").auth.value = True
+        pool.require_no_unsigned()
+
 
 class AccountStoreTest(unittest.TestCase):
     def test_slots_are_persistent_reusable_and_uncapped(self):

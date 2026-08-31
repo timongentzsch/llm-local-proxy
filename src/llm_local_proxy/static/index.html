@@ -116,14 +116,14 @@ function wire(name,id,c){
   copyLogin.onclick=async()=>{try{await navigator.clipboard.writeText(loginUrl.textContent);copyLogin.textContent="copied"}catch(e){alert(e.message)}};
   c.querySelector(".signout").onclick=async()=>{await api(`/api/${name}/logout`,{method:"POST",body:accountBody(id)});login.hidden=true;load()};
   c.querySelector(".remove").onclick=async()=>{try{await api(`/api/${name}/accounts`,{method:"POST",body:accountBody(id,{action:"remove"})});load()}catch(e){alert(e.message)}};
-  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:accountBody(login.dataset.account||id,{code:input.value})});input.value="";login.hidden=true;load()}catch(e){alert(e.message)}};
+  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:accountBody(login.dataset.account||id,{code:input.value})});input.value="";login.hidden=true;await load();poll(true)}catch(e){alert(e.message)}};
 }
 function showProvider(p){
   const c=providerCard(p.name),items=p.accounts||[],root=c.querySelector(".accounts");
   const connected=items.filter(a=>a.signed_in).length;
   c.querySelector(".title").textContent=p.name;
   c.querySelector(".summary").textContent=`${connected}/${items.length} connected`;
-  c.querySelector(".add-account").hidden=!(p.routes||[]).includes("accounts");
+  c.querySelector(".add-account").hidden=!(p.routes||[]).includes("accounts")||items.some(a=>!a.signed_in);
   const ids=new Set(items.map(a=>a.id||""));for(const slot of root.querySelectorAll(".account-slot")){if(!ids.has(slot.dataset.account))slot.remove()}
   for(const a of items){const id=a.id||"",slot=accountCard(p.name,id,root),on=!!a.signed_in,parts=String(a.account||"").split(" · ").filter(Boolean),name=parts.shift()||`${p.name} account`;slot.classList.toggle("signed",on);slot.querySelector(".account-label").textContent=a.error?"unavailable":on?name:`add ${p.name} login`;slot.querySelector(".account-meta").textContent=a.error?a.error:on?parts.join(" · "):"available login slot";slot.querySelector(".signin").textContent="sign in";slot.querySelector(".signin").hidden=on;slot.querySelector(".signout").hidden=!on;slot.querySelector(".remove").hidden=on;if(on)slot.querySelector(".login").hidden=true;const usage=slot.querySelector(".usage");usage.replaceChildren();if(on){for(const limit of a.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);showTokens(usage,a.tokens||{})}slot.querySelector(".stamp").textContent=on&&a.updated_at?`updated ${fmtTime(a.updated_at)}`:""}
 }
@@ -155,11 +155,11 @@ async function load(){
   if(initial&&q("#commands").querySelector(".skeleton-command"))q("#commands").textContent="unavailable";
   document.body.classList.add("ready");
 }
-function poll(){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).map(p=>api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{}));Promise.all(pings).then(load)}
+function poll(missingOnly=false){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).flatMap(p=>missingOnly?(p.accounts||[]).filter(a=>a.signed_in&&!(a.limits||[]).length).map(a=>api(`/api/${p.name}/usage`,{method:"POST",body:accountBody(a.id)}).catch(()=>{})):[api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{})]);return pings.length?Promise.all(pings).then(load):Promise.resolve()}
 function showKey(){q("#key").textContent=key||(authRequired?"open the link printed at startup":"disabled");for(const id of["#copy","#forget"])q(id).style.display=key?"":"none"}
 q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
 q("#forget").onclick=()=>{forgetKey();location.reload()};
 showKey();
-if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
+if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load().then(()=>poll(true));setInterval(poll,60000)}
 </script>
 </html>
