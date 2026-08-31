@@ -4,8 +4,8 @@ The proxy serves two downstream wire formats over two upstream subscriptions.
 Any format can reach any subscription: the request's `model` decides.
 
 ```
-  request    dialects/<d>/ingress.py  ──► ChatRequest ──► providers/<p>/request.py  ──► upstream
-  response   providers/<p>/events.py  ──► StreamEvent ──► dialects/<d>/egress.py    ──► client
+  request    dialects/<d>/ingress.py  ──► ChatRequest ──► providers/<p>/request.py ──► account pool ──► upstream
+  response   providers/<p>/events.py  ──► StreamEvent ──► dialects/<d>/egress.py   ──► client
 ```
 
 Everything else follows from keeping those two axes independent.
@@ -21,7 +21,7 @@ model and effort names do not.
 | --- | --- | --- |
 | **Dialect** — downstream wire format | OpenAI Chat Completions, Anthropic Messages | one package, one registry line |
 | **Provider** — upstream subscription | Codex, Claude | one package, one registry line |
-| **Auth** — credential lifecycle | per provider, behind the `Auth` ABC | nothing outside that provider |
+| **Auth** — credential lifecycle | account slots behind the `Auth` ABC | nothing outside that provider |
 
 Without the intermediate representations this would be a grid: every dialect
 would need a converter for every provider. With them it is N + M.
@@ -67,8 +67,9 @@ src/llm_local_proxy/
   providers/
     base.py        # Provider, ProviderContext
     __init__.py    # REGISTRY, in match-priority order
-    auth.py        # Auth ABC
+    auth.py        # Auth ABC + multi-login facade
     catalog.py     # the OpenRouter model shape both providers report
+    pool.py        # sticky selection, round-robin and pre-output 429 failover
     reasoning.py   # ReasoningCache
     transport.py   # no-redirect handler + SSE reader
     codex/         # app_server auth upstream request events catalog
@@ -99,6 +100,28 @@ header a client happens to send would only produce a confusing 401.
 `404` by those that cannot. A client that gets the 404 falls back to its own
 estimate knowing it is one; a client handed a guessed integer would trust it
 and manage its context wrongly.
+
+## Account routing
+
+Every provider owns an `AccountPool`; dialect and service routing still see one
+Claude provider and one Codex provider, so model IDs do not acquire account
+suffixes. A request with `X-Session-Id` hashes to a stable signed-in account.
+Without a session ID the starting account advances round-robin.
+
+Only a 429 received before the first upstream event triggers failover. The
+account is cooled for five minutes and the untouched request is tried on the
+next login. Other errors retain their upstream status, and no error after the
+first event can switch accounts. This boundary avoids both retrying invalid
+requests and duplicating streamed output.
+
+Account state has one canonical layout: Codex homes are
+`codex_home/accounts/<slot>`, while proxy-owned state is
+`accounts/<provider>/<slot>` under the config directory. Slot IDs are internal;
+the dashboard labels authenticated rows with the provider-reported email.
+Each provider's adjacent `slots.json` registry is changed live by the dashboard,
+so pools can grow without a configured count or restart. Removing a signed-in
+slot is refused; after sign-out, removal closes its client and deletes only that
+slot's state.
 
 ## Evidence rules
 

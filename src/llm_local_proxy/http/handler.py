@@ -101,9 +101,17 @@ def make_handler(service: Service):
                 if provider_route:
                     provider, route = provider_route
                     if route == "login":
-                        return self._json(HTTPStatus.OK, provider.auth.login_start())
+                        account = body.get("account")
+                        if not isinstance(account, str) or not account:
+                            raise RequestError("account is required")
+                        return self._json(
+                            HTTPStatus.OK, provider.auth.login_start(account)
+                        )
                     if route == "logout":
-                        provider.auth.logout()
+                        account = body.get("account")
+                        if not isinstance(account, str) or not account:
+                            raise RequestError("account is required")
+                        provider.auth.logout(account)
                         service.invalidate_models()
 
                         return self._json(HTTPStatus.OK, {"ok": True})

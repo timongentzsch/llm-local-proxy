@@ -21,8 +21,10 @@ llm-local-proxy
 ```
 
 Open the URL printed at startup — it carries the generated API key in the
-fragment. Sign in to either subscription from that page, then point a client at
-one of the base URLs it shows.
+fragment. Sign in to one or more accounts for either subscription from that
+page, then point a client at one of the base URLs it shows. The dashboard also
+generates copyable Codex CLI, Claude Code and OpenCode launch commands for the
+selected live model.
 
 ```sh
 docker compose up --build   # publishes 127.0.0.1:8787 only
@@ -35,10 +37,11 @@ ask an Anthropic endpoint for a Codex model and it is translated both ways.
 
 ```sh
 # Claude Code, or any Anthropic SDK
-ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic ANTHROPIC_API_KEY=$KEY claude
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic ANTHROPIC_AUTH_TOKEN=$KEY \
+  claude --model claude-opus-4-6
 
-# Any OpenAI-compatible client
-OPENAI_BASE_URL=http://127.0.0.1:8787/openai/v1 OPENAI_API_KEY=$KEY
+# The dashboard supplies the complete one-line Codex and OpenCode configs,
+# including their custom provider declarations and selected model.
 ```
 
 | Mount | Routes |
@@ -68,7 +71,9 @@ Only currently catalogued models are routable; the proxy does not guess a
 provider from a model-name prefix or keep a stale built-in model list.
 
 The dashboard also serves `GET /api/status` and the `POST /api/<provider>/login`
-family it uses to sign in and out.
+family it uses to manage sign-ins. `POST /api/<provider>/accounts` adds or
+removes slots; removal requires signing out first. Login, pasted-code and
+logout bodies carry an internal slot id such as `{"account":"2"}`.
 
 ### Example
 
@@ -107,9 +112,13 @@ Unsupported sampling and structured-output parameters fail explicitly instead
 of being silently ignored. Pricing, user-configurable routing and spend history
 are absent on purpose: neither subscription exposes anything equivalent.
 
-Each subscription keeps its own credentials, usage windows and rate limits.
-Claude tokens are refreshed by the proxy itself, so it does not contend with a
-Claude Code login on another machine.
+Each account keeps its own credentials, usage windows and token ledger. A
+downstream `X-Session-Id` stays on a stable account for prompt-cache locality;
+requests without one round-robin. If an account returns 429 before emitting any
+output, it is cooled locally for five minutes and the same request tries the
+next signed-in account. The proxy never retries after output starts, because
+that could duplicate a partial answer. Claude tokens are refreshed by the
+proxy itself, so they do not contend with Claude Code logins on other machines.
 
 ## Configuration
 
@@ -124,6 +133,26 @@ codex_home = "~/.codex"
 codex_binary = "codex"
 request_timeout = 600
 ```
+
+Account slots are added and removed live from the dashboard and have no
+configured count or artificial cap. Every Codex login has an isolated home at
+`codex_home/accounts/<n>`. Provider credentials, usage, the slot registry and
+token ledgers use the single layout `accounts/<provider>` inside the config
+directory. The dashboard identifies signed-in slots by the email returned by
+Codex or Claude; numeric slot IDs remain internal. A slot must be signed out
+before removal. On first startup, canonical credential files are indexed into
+the registry so existing logins survive this breaking configuration change.
+There is no old-path fallback. Before upgrading an older single-account
+install, stop the proxy and move the account-1 files as follows (using your
+configured roots):
+
+| Previous path | Current path |
+| --- | --- |
+| `<codex_home>/auth.json` | `<codex_home>/accounts/1/auth.json` |
+| `<config>/claude-credentials.json` | `<config>/accounts/claude/1/credentials.json` |
+| `<config>/claude-usage.json` | `<config>/accounts/claude/1/usage.json` |
+| `<config>/claude-tokens.json` | `<config>/accounts/claude/1/tokens.json` |
+| `<config>/codex-tokens.json` | `<config>/accounts/codex/1/tokens.json` |
 
 An empty `api_key` disables authentication; otherwise it must be at least 24
 characters. Native installs refuse non-loopback bind addresses. Under Docker,

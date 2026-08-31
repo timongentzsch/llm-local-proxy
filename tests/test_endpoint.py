@@ -61,7 +61,7 @@ def _chat(canonical, request):
 def _service():
     provider = SimpleNamespace(
         name="claude",
-        routes={},
+        routes={"accounts": lambda body: body},
         auth=SimpleNamespace(),
         chat=_chat,
         count_tokens=lambda canonical, request: {"input_tokens": 42},
@@ -252,6 +252,42 @@ class EndpointTest(unittest.TestCase):
         self.assertIn("navigator.clipboard.writeText(loginUrl.textContent)", text)
         self.assertNotIn("window.open(", text)
 
+    def test_dashboard_builds_commands_for_all_supported_clients(self):
+        _, text = self.request("GET", "/")
+        self.assertIn("codex --model", text)
+        self.assertIn("claude --model", text)
+        self.assertIn("opencode --model", text)
+        self.assertIn("OPENCODE_CONFIG_CONTENT", text)
+        self.assertIn("model_providers.local_proxy", text)
+        self.assertIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", text)
+        self.assertIn('class="account-label"', text)
+        self.assertIn('box.className="command-code"', text)
+        self.assertIn('copy.className="command-copy"', text)
+        self.assertIn('reset=setTimeout(()=>copy.textContent="copy",1500)', text)
+        self.assertIn('class="add-account"', text)
+        self.assertIn('class="remove" hidden', text)
+        self.assertIn("/accounts`", text)
+
+    def test_dashboard_has_structured_accessible_loading_skeletons(self):
+        _, text = self.request("GET", "/")
+        self.assertIn('class="provider skeleton-provider" aria-hidden="true"', text)
+        self.assertIn('class="row command skeleton-command" aria-hidden="true"', text)
+        self.assertIn('class="model skeleton-model" aria-hidden="true"', text)
+        self.assertIn("prefers-reduced-motion:reduce", text)
+        self.assertNotIn('class="remote"', text)
+
+    def test_account_auth_routes_require_an_explicit_slot(self):
+        for route in ("login", "logout"):
+            with self.subTest(route=route):
+                status, text = self.request("POST", f"/api/claude/{route}", {})
+                self.assertEqual(status, 400)
+                self.assertIn("account is required", text)
+
+    def test_account_slots_can_be_managed_over_http(self):
+        status, text = self.request("POST", "/api/claude/accounts", {"action": "add"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(text), {"action": "add"})
+
     # -- mounts -----------------------------------------------------------
 
     def test_openai_prefix_and_bare_path_are_byte_identical(self):
@@ -363,7 +399,9 @@ class EndpointTest(unittest.TestCase):
                             "127.0.0.1", port, timeout=10
                         )
                         connection.request("GET", path, headers=header)
-                        status = connection.getresponse().status
+                        response = connection.getresponse()
+                        status = response.status
+                        response.read()
                         connection.close()
                         self.assertEqual(status, 200)
         finally:

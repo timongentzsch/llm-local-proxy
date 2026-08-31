@@ -10,3 +10,4 @@ dist/
 .uagent/
 # Third-party wire specs; fetch with scripts/refresh-specs.sh
 specs/
+.coverage

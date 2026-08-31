@@ -21,14 +21,14 @@ class CodexAuth(Auth):
     def __init__(self, app: AppServer):
         self.app = app
 
-    def login_start(self) -> dict[str, Any]:
+    def login_start(self, account_id: str = "") -> dict[str, Any]:
         value = self.app.call("account/login/start", {"type": "chatgptDeviceCode"})
         return {
             "url": value.get("verificationUrl", ""),
             "code": value.get("userCode", ""),
         }
 
-    def logout(self) -> None:
+    def logout(self, account_id: str = "") -> None:
         self.app.call("account/logout")
 
     def signed_in(self) -> bool:

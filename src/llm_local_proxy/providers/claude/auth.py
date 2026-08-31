@@ -29,6 +29,7 @@ from ..auth import Auth
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 AUTHORIZE_URL = "https://platform.claude.com/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 MANUAL_REDIRECT_URL = "https://platform.claude.com/oauth/code/callback"
 SCOPE = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers"
 OAUTH_BETA = "oauth-2025-04-20"
@@ -55,6 +56,7 @@ class ClaudeAuth(Auth):
         self._lock = threading.Lock()
         self._verifier = ""
         self._state = ""
+        self._profile_attempted = False
 
     # -- private store ----------------------------------------------------
 
@@ -86,7 +88,7 @@ class ClaudeAuth(Auth):
 
     # -- login flow ---------------------------------------------------------
 
-    def login_start(self) -> dict[str, Any]:
+    def login_start(self, account_id: str = "") -> dict[str, Any]:
         verifier = _b64url(secrets.token_bytes(32))
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
         state = secrets.token_urlsafe(24)
@@ -138,6 +140,7 @@ class ClaudeAuth(Auth):
                 raise ClaudeAuthError(
                     "Claude OAuth response is missing access_token", 502
                 )
+            token = self._with_profile(token)
             self._write(token)
             self._verifier = ""
             self._state = ""
@@ -170,7 +173,7 @@ class ClaudeAuth(Auth):
             raise ClaudeAuthError("code is required", 400)
         return code
 
-    def logout(self) -> None:
+    def logout(self, account_id: str = "") -> None:
         with self._lock:
             self._verifier = ""
             self._state = ""
@@ -187,10 +190,29 @@ class ClaudeAuth(Auth):
         value = self._read()
         if not value or not value.get("access_token"):
             return ProviderStatus()
+        email = str(value.get("email") or "")
+        subscription = str(value.get("subscription_type") or "")
+        account = " · ".join(part for part in (email, subscription) if part)
         return ProviderStatus(
             signed_in=True,
-            account=str(value.get("subscription_type") or "claude"),
+            account=account or "claude",
         )
+
+    def hydrate_profile(self) -> None:
+        """Populate identity metadata when a credential file lacks it."""
+
+        with self._lock:
+            value = self._read()
+            if (
+                not value
+                or not value.get("access_token")
+                or value.get("email")
+                or self._profile_attempted
+            ):
+                return
+            enriched = self._with_profile(value)
+            if enriched != value:
+                self._write(enriched)
 
     def access_token(self, force_refresh: bool = False) -> str:
         with self._lock:
@@ -219,8 +241,51 @@ class ClaudeAuth(Auth):
         if not token.get("access_token"):
             raise ClaudeAuthError("Claude token refresh is missing access_token", 502)
         merged = {**value, **token}
+        merged = self._with_profile(merged)
         self._write(merged)
         return merged
+
+    def _with_profile(self, value: dict[str, Any]) -> dict[str, Any]:
+        if value.get("email"):
+            return value
+        self._profile_attempted = True
+        try:
+            profile = self._profile_request(str(value["access_token"]))
+        except (ClaudeAuthError, KeyError):
+            # Identity metadata is useful for identifying a pool slot, but a
+            # temporary profile failure must not invalidate a working login.
+            return value
+        account = profile.get("account")
+        if not isinstance(account, dict) or not account.get("email"):
+            return value
+        return {**value, "email": str(account["email"])}
+
+    def _profile_request(self, access_token: str) -> dict[str, Any]:
+        request = urllib.request.Request(
+            PROFILE_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "anthropic-beta": OAUTH_BETA,
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as error:
+            raise ClaudeAuthError(
+                f"Claude profile failed: {_error_message(error)}", error.code
+            ) from error
+        except urllib.error.URLError as error:
+            raise ClaudeAuthError(
+                f"Claude profile unreachable: {error.reason}", 502
+            ) from error
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def _token_request(self, fields: dict[str, str]) -> dict[str, Any]:
         # The CLI posts JSON (not form data) to the token endpoint; the

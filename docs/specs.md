@@ -15,10 +15,10 @@ and skips when the directory is absent, so a clone without them still passes.
 
 | File | Bytes | SHA-256 |
 | --- | --- | --- |
-| `openai-openapi.yaml` | 2968497 | `5de4ab93fa24e33be716983c03e09d9f5b43e8b73168363e7c7d887b6ac66e3c` |
-| `anthropic-openapi.json` | 2017030 | `0042750ea1ee2eab1751ab0e8affb44e1d0a5d6bb39bb4ea914e9a90873dfcdc` |
+| `openai-openapi.yaml` | 2977302 | `959ef977e1351b7cae23e261fd868dada9c4dd1c95c14bcd0241f9a692b76c6e` |
+| `anthropic-openapi.json` | 2444219 | `717ab2a5efd6263fc76a03b1b361c03d34fe3a0987c2b8f445b6537ede0c991a` |
 
-Fetched 2026-08-20.
+Fetched 2026-08-31.
 
 ## openai-openapi.yaml
 
@@ -31,8 +31,8 @@ Fetched 2026-08-20.
 
 - Source: the `openapi_spec_url` pinned in
   <https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/.stats.yml>
-  (currently `storage.googleapis.com/stainless-sdk-openapi-specs/anthropic/anthropic-893a61e9c1cd6c69a70d1043c626ed02d12d6a492eb6ca6ef7a84c64cfb15393.yml`).
-- OpenAPI 3.1, 96 paths, 1100 schemas. Served with a `.yml` extension but the
+  (currently `storage.googleapis.com/stainless-sdk-openapi-specs/anthropic/anthropic-319861ef873b46e22d6feb51442e743643815093bdd2b3324df52ed202d7ab93.yml`).
+- OpenAPI 3.1, 139 paths, 1218 schemas. Served with a `.yml` extension but the
   body is JSON, hence the local name.
 
 Anthropic publishes **no** official OpenAPI document. This is the Stainless

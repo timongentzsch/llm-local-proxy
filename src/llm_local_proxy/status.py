@@ -26,6 +26,19 @@ class Limit:
 
 
 @dataclass(frozen=True)
+class AccountStatus:
+    """One independently authenticated account within a provider pool."""
+
+    id: str
+    signed_in: bool = False
+    account: str = ""
+    limits: tuple[Limit, ...] = ()
+    tokens: dict[str, dict[str, int]] = field(default_factory=dict)
+    updated_at: float | None = None
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class ProviderStatus:
     signed_in: bool = False
     #: One-line account description (e.g. "user@example.com · pro").
@@ -37,9 +50,25 @@ class ProviderStatus:
     updated_at: float | None = None
     #: Set when the provider could not be reached; the card degrades to this.
     error: str = ""
+    #: Independently routed logins. Empty only for providers without pooling.
+    accounts: tuple[AccountStatus, ...] = ()
 
     def payload(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def account_status(account_id: str, status: ProviderStatus) -> AccountStatus:
+    """Narrow a provider-shaped status into one account row."""
+
+    return AccountStatus(
+        id=account_id,
+        signed_in=status.signed_in,
+        account=status.account,
+        limits=status.limits,
+        tokens=status.tokens,
+        updated_at=status.updated_at,
+        error=status.error,
+    )
 
 
 def window_label(key: str) -> str:

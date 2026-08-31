@@ -4,47 +4,86 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LLM Local Proxy</title>
 <style>
-  :root{color-scheme:light dark;font:14px ui-monospace,SFMono-Regular,Consolas,monospace}
-  body{max-width:640px;margin:64px auto;padding:0 20px;line-height:1.5}
-  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:40px}
-  h1{font-size:16px;margin:0}h2{font-size:14px;margin:32px 0 8px}
-  .muted{opacity:.6}.row{display:flex;gap:12px;justify-content:space-between;border-top:1px solid #8884;padding:9px 0}
-  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#888;margin-right:7px}.dot.on{background:#16a34a}
+  :root{color-scheme:light dark;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;--line:#8884;--green:#16a34a}
+  *{box-sizing:border-box}body{max-width:1040px;margin:28px auto;padding:0 18px 48px;line-height:1.45}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;padding:0 2px}
+  h1{font-size:16px;margin:0}h2{font-size:13px;margin:0}.muted{opacity:.62}
+  .panel,.provider{border:1px solid var(--line);overflow:hidden}.provider{display:flex;flex-direction:column}
+  .panel{margin-top:12px;padding:14px}.section-head,.provider-head,.account-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .section-head{margin-bottom:10px}.provider-head{padding:12px 14px;border-bottom:1px solid var(--line)}
+  #providers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .provider-controls,.account-controls{display:flex;align-items:center;gap:6px}.summary{font-size:11px;border:1px solid var(--line);padding:2px 7px;white-space:nowrap}.add-account,.remove{padding:2px 7px;font-size:11px}
+  .row{display:flex;gap:12px;justify-content:space-between;border-top:1px solid var(--line);padding:7px 0}
+  .dot,.account-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#888;margin-right:7px}.dot.on,.account-slot.signed .account-dot{background:var(--green)}
   .spin{display:none;width:9px;height:9px;border:2px solid #8885;border-top-color:currentColor;border-radius:50%;margin-right:7px;animation:spin .7s linear infinite}
   body.loading .spin{display:inline-block}body.loading .dot{display:none}
-  body:not(.ready).loading .remote{color:transparent;background:#8882;border-radius:3px;min-width:12ch;animation:pulse 1s ease-in-out infinite}
-  button{font:inherit;border:1px solid #8886;border-radius:4px;background:none;color:inherit;padding:5px 9px;cursor:pointer}
-  button:hover{border-color:#888}code{font:inherit;word-break:break-all}input{font:inherit;border:1px solid #8886;border-radius:4px;background:none;color:inherit;padding:5px 9px;flex:1;min-width:0}.actions{display:flex;gap:8px;margin:20px 0}
+  button,select,input{font:inherit;border:1px solid #8886;border-radius:0;background:none;color:inherit;padding:4px 8px}button{cursor:pointer}
+  button:hover{border-color:#888}code{font:inherit;word-break:break-all}input{flex:1;min-width:0}.actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
   .login-address{display:flex;align-items:flex-start;gap:8px;min-width:0}.login-url{word-break:break-all}
-  .limit{margin:10px 0}.bar{height:3px;background:#8884}.bar i{display:block;height:100%;background:currentColor}
-  #models{border-top:1px solid #8884}.model{padding:10px 0;border-bottom:1px solid #8884}.model-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.model-context{white-space:nowrap}.efforts{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.effort{border:1px solid #8885;border-radius:999px;padding:1px 7px;font-size:12px}.efforts-empty{opacity:.6;font-size:12px}
-  [hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{opacity:.45}}
+  .limit{margin:7px 0;font-size:11px}.bar{height:3px;background:#8884;margin-top:3px}.bar i{display:block;height:100%;background:currentColor}
+  .accounts{display:flex;flex:1;flex-direction:column}.account-slot{padding:11px 14px}.account-slot+.account-slot{border-top:1px solid var(--line)}.account-slot:last-child{flex:1}.account-slot:not(.signed):last-child{display:flex;flex-direction:column}.account-slot:not(.signed):last-child>.actions{margin-top:auto}.identity{min-width:0}.account-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-meta{display:block;margin:1px 0 0 14px;font-size:11px;opacity:.62}.signout{padding:2px 7px;font-size:11px}.usage:empty{display:none}.stamp{font-size:10px}.login{margin-top:9px}.login .row{align-items:flex-start}.login-hint{font-size:11px;margin:6px 0}.paste{display:flex}
+  #clients{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}#clients .row{display:block;border:1px solid var(--line);padding:7px 9px}#clients code{display:block;margin-top:2px}
+  .key-row{margin-top:8px;align-items:center}.key-row code{margin-left:auto}.command{display:grid;grid-template-columns:86px minmax(0,1fr);align-items:start;gap:10px;padding:8px 0}.command:first-child{border-top:0}.command-code{position:relative;min-width:0;background:#8881;border:1px solid var(--line)}.command code{display:block;overflow-x:auto;word-break:normal;white-space:pre;padding:7px 62px 7px 9px}.command-copy{position:absolute;inset:-1px -1px -1px auto;white-space:nowrap;background:Canvas}#command-model{max-width:55%;margin-left:auto}
+  #models{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.model{padding:8px 0;border-top:1px solid var(--line)}.model-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.model-context{white-space:nowrap}.efforts{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.effort{border:1px solid #8885;padding:0 6px;font-size:10px}.efforts-empty{opacity:.6;font-size:10px}
+  .skeleton-line,.skeleton-code,.skeleton-button{display:block;background:linear-gradient(90deg,#8881 25%,#8883 50%,#8881 75%);background-size:200% 100%;animation:shimmer 1.4s ease-in-out infinite}.skeleton-line{height:9px}.skeleton-provider .provider-head{height:43px}.skeleton-provider .account-slot{min-height:76px}.skeleton-provider .actions{margin-top:12px}.skeleton-client .skeleton-line+ .skeleton-line{margin-top:7px}.skeleton-code{height:31px}.skeleton-button{width:48px;height:27px;border:1px solid var(--line)}.skeleton-code .skeleton-button{position:absolute;inset:-1px -1px -1px auto;height:auto}.skeleton-model .skeleton-line{margin-top:1px}.skeleton-model .efforts{margin-top:7px}.skeleton-model .efforts .skeleton-line{height:12px}
+  @media(max-width:720px){body{margin-top:18px}#providers,#clients,#models{grid-template-columns:1fr}.command{grid-template-columns:1fr;gap:5px}#command-model{max-width:65%}}
+  @media(prefers-reduced-motion:reduce){.skeleton-line,.skeleton-code,.skeleton-button{animation:none}}
+  [hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shimmer{to{background-position:-200% 0}}
 </style>
 <header><h1>llm local proxy</h1><span><i class="spin"></i><i id="dot" class="dot"></i><span id="state">loading</span></span></header>
 <main>
   <div id="providers"></div>
-  <h2>client</h2>
-  <div id="clients"></div>
-  <div class="row"><span class="muted">api key</span><span><code id="key"></code> <button id="copy">copy</button> <button id="forget">forget</button></span></div>
-  <h2>models</h2>
-  <div id="models" class="remote">loading</div>
+  <section class="panel">
+    <div class="section-head"><h2>connection</h2></div>
+    <div id="clients" aria-live="polite"></div>
+    <div class="row key-row"><span class="muted">api key</span><code id="key"></code><span><button id="copy">copy</button> <button id="forget">forget</button></span></div>
+  </section>
+  <section class="panel">
+    <div class="section-head"><h2>launch a client</h2><select id="command-model" aria-label="model" disabled><option>loading models</option></select></div>
+    <div id="commands" aria-live="polite"></div>
+  </section>
+  <section class="panel">
+    <div class="section-head"><h2>models</h2></div>
+    <div id="models" aria-live="polite"></div>
+  </section>
 </main>
+<template id="skeleton-provider">
+  <section class="provider skeleton-provider" aria-hidden="true">
+    <div class="provider-head"><span class="skeleton-line" style="width:8ch"></span><span class="skeleton-line" style="width:11ch"></span></div>
+    <div class="accounts">
+      <div class="account-slot"><span class="skeleton-line" style="width:44%"></span><span class="skeleton-line" style="width:29%;margin:7px 0 0 14px"></span><div class="actions"><span></span><span class="skeleton-button"></span></div></div>
+      <div class="account-slot"><span class="skeleton-line" style="width:39%"></span><span class="skeleton-line" style="width:32%;margin:7px 0 0 14px"></span><div class="actions"><span></span><span class="skeleton-button"></span></div></div>
+    </div>
+  </section>
+</template>
+<template id="skeleton-client"><div class="row skeleton-client" aria-hidden="true"><span class="skeleton-line" style="width:20ch"></span><span class="skeleton-line" style="width:74%"></span></div></template>
+<template id="skeleton-command"><div class="row command skeleton-command" aria-hidden="true"><span class="skeleton-line" style="width:7ch;margin-top:10px"></span><span class="command-code skeleton-code"><span class="skeleton-button"></span></span></div></template>
+<template id="skeleton-model"><div class="model skeleton-model" aria-hidden="true"><div class="model-main"><span class="skeleton-line" style="width:42%"></span><span class="skeleton-line" style="width:13ch"></span></div><div class="efforts"><span class="skeleton-line" style="width:7ch"></span><span class="skeleton-line" style="width:6ch"></span></div></div></template>
 <template id="provider-card">
   <section class="provider">
-    <h2 class="title"></h2>
-    <div class="row"><span class="muted">account</span><span class="account">loading</span></div>
+    <div class="provider-head"><h2 class="title"></h2><div class="provider-controls"><div class="summary muted"></div><button class="add-account">add account</button></div></div>
+    <div class="accounts"></div>
+  </section>
+</template>
+<template id="account-card">
+  <div class="account-slot">
+    <div class="account-head">
+      <div class="identity"><strong class="account-name"><i class="account-dot"></i><span class="account-label">loading</span></strong><span class="account-meta"></span></div>
+      <span class="account-controls"><button class="signout" hidden>sign out</button><button class="remove" hidden>remove</button></span>
+    </div>
     <div class="usage"></div>
-    <div class="actions"><span class="muted stamp"></span></div>
-    <div class="actions"><button class="signin"></button><button class="signout" hidden></button></div>
+    <div class="actions"><span class="muted stamp"></span><button class="signin"></button></div>
     <div class="login" hidden>
       <div class="row"><span class="muted">sign in URL</span><span class="login-address"><code class="login-url"></code><button class="copy-login">copy</button></span></div>
       <p class="login-hint"></p>
       <div class="row paste" hidden><input class="login-code" type="text" placeholder="paste the code" autocomplete="off"><button class="confirm">confirm</button></div>
     </div>
-  </section>
+  </div>
 </template>
 <script>
 const authRequired=__AUTH_REQUIRED__,STORE="llm-local-proxy.key",q=s=>document.querySelector(s);
+function fillSkeleton(root,template,count){for(let i=0;i<count;i++)q(root).append(q(template).content.cloneNode(true))}
+fillSkeleton("#providers","#skeleton-provider",2);fillSkeleton("#clients","#skeleton-client",2);fillSkeleton("#commands","#skeleton-command",3);fillSkeleton("#models","#skeleton-model",4);
 // The key arrives once in the URL fragment, which never reaches the server.
 // Keep it in storage scoped to this origin so a refresh still works, and drop
 // it from the address bar so it cannot be bookmarked or shared by accident.
@@ -57,7 +96,7 @@ function takeKey(){const v=hashKey();if(!v)return storedKey();history.replaceSta
 // fragment, which the browser treats as a same-document navigation: without
 // this the page would keep running with the old key and look unresponsive.
 addEventListener("hashchange",()=>{if(hashKey())location.reload()});
-let key=takeKey(),active=0,providers=[];
+let key=takeKey(),active=0,providers=[],dialects=[],modelList=[];
 function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
 async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json();if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
 const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});
@@ -68,42 +107,52 @@ function bar(root,label,percent,resetsAt){const pct=Math.min(100,Math.round(perc
 function hasTokens(t){return !!(t&&Object.values(t).some(w=>w&&(w.input||w.output||w.cache_read||w.cache_write)))}
 function tokenLine(t){const read=t.cache_read||0,input=(t.input||0)+read+(t.cache_write||0);let s=`${fmtTokens(input)} in`;if(input&&read)s+=` · ${Math.round(read/input*100)}% cache hits`;return`${s} · ${fmtTokens(t.output||0)} out`}
 function showTokens(root,tokens){if(!hasTokens(tokens))return;let shown="";for(const w of Object.keys(tokens)){const t=tokens[w];if(!t||(!t.input&&!t.output&&!t.cache_read&&!t.cache_write))continue;const line=tokenLine(t);if(line===shown)continue;shown=line;const div=document.createElement("div");div.className="limit";div.textContent=`proxy tokens · ${windowLabel(w)}: ${line}`;root.append(div)}}
-function card(name){let c=document.getElementById(`provider-${name}`);if(c)return c;c=q("#provider-card").content.firstElementChild.cloneNode(true);c.id=`provider-${name}`;q("#providers").append(c);wire(name,c);return c}
-function wire(name,c){
+function providerCard(name){let c=document.getElementById(`provider-${name}`);if(c)return c;q("#providers").querySelectorAll(".skeleton-provider").forEach(item=>item.remove());c=q("#provider-card").content.firstElementChild.cloneNode(true);c.id=`provider-${name}`;c.querySelector(".add-account").onclick=async()=>{try{await api(`/api/${name}/accounts`,{method:"POST",body:JSON.stringify({action:"add"})});load()}catch(e){alert(e.message)}};q("#providers").append(c);return c}
+function accountCard(name,id,root){let c=root.querySelector(`[data-account="${id}"]`);if(c)return c;c=q("#account-card").content.firstElementChild.cloneNode(true);c.dataset.account=id;root.append(c);wire(name,id,c);return c}
+function accountBody(id,extra={}){return JSON.stringify({...extra,...(id?{account:id}:{})})}
+function wire(name,id,c){
   const login=c.querySelector(".login"),loginUrl=c.querySelector(".login-url"),copyLogin=c.querySelector(".copy-login");
-  c.querySelector(".signin").onclick=async()=>{try{const r=await api(`/api/${name}/login`,{method:"POST",body:"{}"}),url=new URL(r.url);if(url.protocol!=="https:")throw Error("invalid sign in URL");loginUrl.textContent=url.href;c.querySelector(".login-hint").textContent=r.code?`Open the URL and enter ${r.code}.`:"Open the URL, approve access, then paste the code from the callback page below.";c.querySelector(".paste").hidden=!!r.code;copyLogin.textContent="copy";login.hidden=false}catch(e){alert(e.message)}};
+  c.querySelector(".signin").onclick=async()=>{try{const r=await api(`/api/${name}/login`,{method:"POST",body:accountBody(id)}),url=new URL(r.url);if(url.protocol!=="https:")throw Error("invalid sign in URL");loginUrl.textContent=url.href;c.querySelector(".login-hint").textContent=r.code?`Open the URL and enter ${r.code}.`:"Open the URL, approve access, then paste the code from the callback page below.";c.querySelector(".paste").hidden=!!r.code;copyLogin.textContent="copy";login.dataset.account=r.account||id;login.hidden=false}catch(e){alert(e.message)}};
   copyLogin.onclick=async()=>{try{await navigator.clipboard.writeText(loginUrl.textContent);copyLogin.textContent="copied"}catch(e){alert(e.message)}};
-  c.querySelector(".signout").onclick=async()=>{await api(`/api/${name}/logout`,{method:"POST",body:"{}"});login.hidden=true;load()};
-  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:JSON.stringify({code:input.value})});input.value="";login.hidden=true;load()}catch(e){alert(e.message)}};
+  c.querySelector(".signout").onclick=async()=>{await api(`/api/${name}/logout`,{method:"POST",body:accountBody(id)});login.hidden=true;load()};
+  c.querySelector(".remove").onclick=async()=>{try{await api(`/api/${name}/accounts`,{method:"POST",body:accountBody(id,{action:"remove"})});load()}catch(e){alert(e.message)}};
+  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:accountBody(login.dataset.account||id,{code:input.value})});input.value="";login.hidden=true;load()}catch(e){alert(e.message)}};
 }
 function showProvider(p){
-  const c=card(p.name),on=!!p.signed_in;
-  c.querySelector(".title").textContent=`${p.name} subscription`;
-  c.querySelector(".account").textContent=p.error?`unavailable · ${p.error}`:on?p.account||"signed in":"not signed in";
-  c.querySelector(".signin").textContent=`${p.name} sign in`;c.querySelector(".signin").hidden=on;
-  c.querySelector(".signout").textContent=`${p.name} sign out`;c.querySelector(".signout").hidden=!on;
-  if(on)c.querySelector(".login").hidden=true;
-  const usage=c.querySelector(".usage");usage.replaceChildren();
-  if(on){for(const limit of p.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);showTokens(usage,p.tokens||{})}
-  c.querySelector(".stamp").textContent=on&&p.updated_at?`updated ${fmtTime(p.updated_at)}`:"";
+  const c=providerCard(p.name),items=p.accounts||[],root=c.querySelector(".accounts");
+  const connected=items.filter(a=>a.signed_in).length;
+  c.querySelector(".title").textContent=p.name;
+  c.querySelector(".summary").textContent=`${connected}/${items.length} connected`;
+  c.querySelector(".add-account").hidden=!(p.routes||[]).includes("accounts");
+  const ids=new Set(items.map(a=>a.id||""));for(const slot of root.querySelectorAll(".account-slot")){if(!ids.has(slot.dataset.account))slot.remove()}
+  for(const a of items){const id=a.id||"",slot=accountCard(p.name,id,root),on=!!a.signed_in,parts=String(a.account||"").split(" · ").filter(Boolean),name=parts.shift()||`${p.name} account`;slot.classList.toggle("signed",on);slot.querySelector(".account-label").textContent=a.error?"unavailable":on?name:`add ${p.name} login`;slot.querySelector(".account-meta").textContent=a.error?a.error:on?parts.join(" · "):"available login slot";slot.querySelector(".signin").textContent="sign in";slot.querySelector(".signin").hidden=on;slot.querySelector(".signout").hidden=!on;slot.querySelector(".remove").hidden=on;if(on)slot.querySelector(".login").hidden=true;const usage=slot.querySelector(".usage");usage.replaceChildren();if(on){for(const limit of a.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);showTokens(usage,a.tokens||{})}slot.querySelector(".stamp").textContent=on&&a.updated_at?`updated ${fmtTime(a.updated_at)}`:""}
 }
-function showDialects(dialects){const root=q("#clients");root.replaceChildren();for(const d of dialects){const row=document.createElement("div");row.className="row";const label=document.createElement("span");label.className="muted";label.textContent=`${d.name} base url`;const value=document.createElement("code");value.textContent=d.base_url;row.append(label,value);root.append(row)}}
+function showDialects(items){dialects=items;const root=q("#clients");root.replaceChildren();for(const d of items){const row=document.createElement("div");row.className="row";const label=document.createElement("span");label.className="muted";label.textContent=`${d.name} base url`;const value=document.createElement("code");value.textContent=d.base_url;row.append(label,value);root.append(row)}showCommands()}
 function fmtContext(n){n=Number(n);if(!Number.isFinite(n)||n<=0)return"context unknown";if(n>=1e6&&n%1e6===0)return`${n/1e6}M context`;if(n>=1e3&&n%1e3===0)return`${n/1e3}k context`;return`${n.toLocaleString()} context`}
-function showModels(models){const root=q("#models");root.replaceChildren();for(const model of models){const row=document.createElement("div"),main=document.createElement("div"),id=document.createElement("code"),context=document.createElement("span"),efforts=document.createElement("div");row.className="model";main.className="model-main";id.textContent=model.id;id.title=model.name;context.className="model-context muted";context.textContent=fmtContext(model.context_length);efforts.className="efforts";const modes=Array.isArray(model.supported_reasoning_efforts)?model.supported_reasoning_efforts:[];if(modes.length){for(const mode of modes){const badge=document.createElement("span");badge.className="effort";badge.textContent=mode;efforts.append(badge)}}else{const empty=document.createElement("span");empty.className="efforts-empty";empty.textContent="effort modes not reported";efforts.append(empty)}main.append(id,context);row.append(main,efforts);root.append(row)}if(!models.length)root.textContent="no models available"}
+function showModels(models){modelList=models;const root=q("#models"),select=q("#command-model"),selected=select.value;root.replaceChildren();select.replaceChildren();for(const model of models){const option=document.createElement("option");option.value=model.id;option.textContent=model.id;select.append(option);const row=document.createElement("div"),main=document.createElement("div"),id=document.createElement("code"),context=document.createElement("span"),efforts=document.createElement("div");row.className="model";main.className="model-main";id.textContent=model.id;id.title=model.name;context.className="model-context muted";context.textContent=fmtContext(model.context_length);efforts.className="efforts";const modes=Array.isArray(model.supported_reasoning_efforts)?model.supported_reasoning_efforts:[];if(modes.length){for(const mode of modes){const badge=document.createElement("span");badge.className="effort";badge.textContent=mode;efforts.append(badge)}}else{const empty=document.createElement("span");empty.className="efforts-empty";empty.textContent="effort modes not reported";efforts.append(empty)}main.append(id,context);row.append(main,efforts);root.append(row)}if(selected&&models.some(m=>m.id===selected))select.value=selected;select.disabled=false;if(!models.length){root.textContent="no models available";select.hidden=true;select.disabled=true}else select.hidden=false;showCommands()}
+function shell(v){return"'"+String(v).replaceAll("'","'\\''")+"'"}
+function showCommands(){const root=q("#commands"),model=q("#command-model").value,selected=modelList.find(item=>item.id===model),context=Number(selected?.context_length)||0,openai=dialects.find(d=>d.name==="openai")?.base_url,anthropic=dialects.find(d=>d.name==="anthropic")?.base_url,clientKey=key||"local";if(!model||!openai||!anthropic){if(!root.querySelector(".skeleton-command"))root.textContent="unavailable";return}const codex=`LLM_PROXY_API_KEY=${shell(clientKey)} codex --model ${shell(model)} -c 'model_provider="local_proxy"' -c ${shell(`model_providers.local_proxy={ name="LLM Local Proxy", base_url="${openai}", env_key="LLM_PROXY_API_KEY", wire_api="responses" }`)}`,claude=`ANTHROPIC_BASE_URL=${shell(anthropic)} ANTHROPIC_AUTH_TOKEN=${shell(clientKey)}${context?` CLAUDE_CODE_MAX_CONTEXT_TOKENS=${context}`:""} claude --model ${shell(model)}`,config={"$schema":"https://opencode.ai/config.json",provider:{"local-proxy":{npm:"@ai-sdk/openai",name:"LLM Local Proxy",options:{baseURL:openai,apiKey:"{env:LLM_PROXY_API_KEY}"},models:{[model]:{name:model}}}}},opencode=`LLM_PROXY_API_KEY=${shell(clientKey)} OPENCODE_CONFIG_CONTENT=${shell(JSON.stringify(config))} opencode --model ${shell(`local-proxy/${model}`)}`;root.replaceChildren();for(const [name,command] of [["codex",codex],["claude code",claude],["opencode",opencode]]){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=document.createElement("button");let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;copy.className="command-copy";copy.textContent="copy";copy.setAttribute("aria-label",`copy ${name} command`);copy.onclick=async()=>{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.textContent="copied";reset=setTimeout(()=>copy.textContent="copy",1500)};box.append(code,copy);row.append(label,box);root.append(row)}}
+q("#command-model").onchange=showCommands;
 async function load(){
-  const [status,models]=await Promise.allSettled([api("/api/status"),api("/v1/models")]);
-  if(models.status==="fulfilled")showModels(models.value.data);else q("#models").textContent="unavailable";
-  if(status.status==="fulfilled"){
-    showDialects(status.value.dialects||[]);
-    providers=status.value.providers||[];
+  const initial=!document.body.classList.contains("ready");
+  const status=api("/api/status").then(value=>{
+    showDialects(value.dialects||[]);
+    providers=value.providers||[];
+    const providerRoot=q("#providers");providerRoot.querySelectorAll(".skeleton-provider").forEach(item=>item.remove());
+    if(!providers.length)providerRoot.textContent="no providers configured";
     for(const p of providers)showProvider(p);
-    const on=providers.filter(p=>p.signed_in).length;
-    q("#dot").classList.toggle("on",on>0);q("#state").textContent=`${on}/${providers.length} signed in`;
-  }else if(status.reason?.status===401){
+    const accounts=providers.flatMap(p=>p.accounts?.length?p.accounts:[p]),on=accounts.filter(a=>a.signed_in).length;
+    q("#dot").classList.toggle("on",on>0);q("#state").textContent=`${on}/${accounts.length} accounts signed in`;
+  }).catch(error=>{
+    if(error.status===401){
     // A key that no longer works, e.g. after the proxy regenerated one.
     // Drop it rather than retrying with it until the user clears storage.
-    forgetKey();showKey();q("#state").textContent="api key rejected · reopen the link printed at startup";
-  }else q("#state").textContent=status.reason.message;
+      forgetKey();showKey();q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#state").textContent="api key rejected · reopen the link printed at startup";
+    }else{q("#state").textContent=error.message;if(initial){q("#providers").textContent="unavailable";q("#clients").textContent="unavailable"}}
+  });
+  const models=api("/v1/models").then(value=>showModels(value.data)).catch(()=>{if(initial){q("#models").textContent="unavailable";q("#command-model").hidden=true}});
+  await Promise.all([status,models]);
+  if(initial&&q("#commands").querySelector(".skeleton-command"))q("#commands").textContent="unavailable";
   document.body.classList.add("ready");
 }
 function poll(){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).map(p=>api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{}));Promise.all(pings).then(load)}
@@ -111,6 +160,6 @@ function showKey(){q("#key").textContent=key||(authRequired?"open the link print
 q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
 q("#forget").onclick=()=>{forgetKey();location.reload()};
 showKey();
-if(authRequired&&!key){q("#state").textContent="api key required";q("#models").textContent="unavailable";document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
+if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load();setInterval(poll,60000)}
 </script>
 </html>

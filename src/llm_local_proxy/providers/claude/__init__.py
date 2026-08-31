@@ -10,9 +10,18 @@ from typing import Any
 
 from ...errors import RequestError
 from ...ir import ChatRequest
-from ...status import ProviderStatus
+from ...status import ProviderStatus, account_status
+from ..auth import MultiAuth
 from ..base import Provider, ProviderContext
 from ..catalog import match_model
+from ..pool import (
+    Account,
+    AccountPool,
+    AccountStore,
+    account_file,
+    remove_account_state,
+    stored_account_ids,
+)
 from ..reasoning import ReasoningCache
 from .auth import ClaudeAuth, ClaudeAuthError
 from .catalog import model_info
@@ -35,18 +44,61 @@ COUNTED_FIELDS = (
 
 class Claude:
     def __init__(self, context: ProviderContext):
-        config = context.config
+        self.context = context
         self.invalidate = context.invalidate
-        self.auth = ClaudeAuth(context.directory / "claude-credentials.json")
-        self.upstream = ClaudeUpstream(
-            self.auth,
-            config.request_timeout,
-            usage_path=context.directory / "claude-usage.json",
-            tokens_path=context.directory / "claude-tokens.json",
+        state_root = context.directory / "accounts" / "claude"
+        self.store = AccountStore(
+            context.directory,
+            "claude",
+            stored_account_ids(state_root, "credentials.json"),
+        )
+        self.pool = AccountPool(
+            [self._new_account(account_id) for account_id in self.store.ids()]
+        )
+        self.auth = MultiAuth(
+            lambda: tuple((account.id, account.auth) for account in self.pool.accounts)
         )
         self.cache = ReasoningCache()
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._lock = threading.Lock()
+
+    def _new_account(self, account_id: str) -> Account[ClaudeUpstream]:
+        directory = self.context.directory
+        auth = ClaudeAuth(account_file(directory, "claude", account_id, "credentials"))
+        upstream = ClaudeUpstream(
+            auth,
+            self.context.config.request_timeout,
+            usage_path=account_file(directory, "claude", account_id, "usage"),
+            tokens_path=account_file(directory, "claude", account_id, "tokens"),
+        )
+        return Account(account_id, auth, upstream)
+
+    def manage_accounts(self, body: dict[str, Any]) -> dict[str, Any]:
+        action = body.get("action")
+        if action == "add":
+            account_id = self.store.add()
+            try:
+                self.pool.add(self._new_account(account_id))
+            except Exception:
+                self.store.remove(account_id)
+                raise
+        elif action == "remove":
+            account_id = body.get("account")
+            if not isinstance(account_id, str) or not account_id:
+                raise RequestError("account is required")
+            account = self.pool.get(account_id)
+            if account.auth.signed_in():
+                raise RequestError("sign out before removing this account")
+            self.store.remove(account_id)
+            self.pool.remove(account_id)
+            remove_account_state(
+                self.context.directory / "accounts" / "claude" / account_id
+            )
+        else:
+            raise RequestError("action must be add or remove")
+        self.forget()
+        self.invalidate()
+        return {"ok": True, "account": account_id}
 
     def _request(
         self, canonical: str, request: ChatRequest
@@ -70,7 +122,14 @@ class Claude:
         self, canonical: str, request: ChatRequest
     ) -> tuple[Iterator[dict[str, Any]], ClaudeDecoder]:
         body, betas = self._request(canonical, request)
-        return self.upstream.events(body, betas), ClaudeDecoder(self.cache)
+        events = self.pool.stream(
+            request.session,
+            lambda account: account.client.events(body, betas),
+            lambda: ClaudeAuthError(
+                "not signed in to Claude; use the sign in button on the status page"
+            ),
+        )
+        return events, ClaudeDecoder(self.cache)
 
     def match(self, model: str) -> str | None:
         return (
@@ -81,7 +140,13 @@ class Claude:
         body, betas = self._request(canonical, request)
         # Its schema accepts only prompt fields; the rest are rejected.
         counted = {key: body[key] for key in COUNTED_FIELDS if key in body}
-        return self.upstream.count_tokens(counted, betas)
+        return self.pool.call(
+            request.session,
+            lambda account: account.client.count_tokens(counted, betas),
+            lambda: ClaudeAuthError(
+                "not signed in to Claude; use the sign in button on the status page"
+            ),
+        )
 
     def models(self) -> list[dict[str, Any]]:
         return (
@@ -91,18 +156,30 @@ class Claude:
         )
 
     def status(self) -> ProviderStatus:
-        return replace(
-            self.auth.status(),
-            limits=self.upstream.usage.limits(),
-            tokens=self.upstream.ledger.windows(),
-            updated_at=self.upstream.usage.updated_at(),
-        )
+        accounts = []
+        for account in self.pool.accounts:
+            try:
+                account.auth.hydrate_profile()
+                value = replace(
+                    account.auth.status(),
+                    limits=account.client.usage.limits(),
+                    tokens=account.client.ledger.windows(),
+                    updated_at=account.client.usage.updated_at(),
+                )
+            except (ClaudeAuthError, ClaudeUpstreamError, OSError, ValueError) as error:
+                value = ProviderStatus(error=str(error) or "unavailable")
+            accounts.append(account_status(account.id, value))
+        aggregate = self.auth.status()
+        return replace(aggregate, accounts=tuple(accounts))
 
     def finish_login(self, body: dict[str, Any]) -> dict[str, Any]:
         code = body.get("code")
         if not isinstance(code, str) or not code.strip():
             raise RequestError("code is required")
-        result = self.auth.finish(code)
+        account = body.get("account")
+        if not isinstance(account, str) or not account:
+            raise RequestError("account is required")
+        result = self.auth.finish(account, code)
         self.forget()
         self.invalidate()
         return result
@@ -112,7 +189,20 @@ class Claude:
         if not models:
             raise ClaudeUpstreamError(502, "Claude model catalog is empty")
         model = min(models, key=lambda item: int(item.get("max_output_tokens") or 0))
-        return {"usage": self.upstream.ping_usage(str(model["id"]))}
+        account_id = body.get("account", "")
+        if not isinstance(account_id, str):
+            raise RequestError("account must be a string")
+        if account_id:
+            account = self.pool.get(account_id)
+            if not account.auth.signed_in():
+                raise ClaudeAuthError(f"Claude account {account_id} is not signed in")
+            usage = account.client.ping_usage(str(model["id"]))
+            return {"account": account_id, "usage": usage}
+        usage = {}
+        for account in self.pool.accounts:
+            if account.auth.signed_in():
+                usage[account.id] = account.client.ping_usage(str(model["id"]))
+        return {"usage": usage}
 
     def forget(self) -> None:
         with self._lock:
@@ -124,8 +214,12 @@ class Claude:
         if cached and time.time() - cached[0] < CATALOG_TTL_SECONDS:
             return cached[1]
         try:
-            items = self.upstream.models()
-        except ClaudeUpstreamError:
+            items = self.pool.call(
+                "catalog",
+                lambda account: account.client.models(),
+                lambda: ClaudeAuthError("not signed in to Claude"),
+            )
+        except (ClaudeAuthError, ClaudeUpstreamError):
             items = []
         with self._lock:
             self._catalog = (time.time(), items)
@@ -150,6 +244,10 @@ def create(context: ProviderContext) -> Provider:
         chat=claude.chat,
         models=claude.models,
         status=claude.status,
-        routes={"code": claude.finish_login, "usage": claude.usage},
+        routes={
+            "accounts": claude.manage_accounts,
+            "code": claude.finish_login,
+            "usage": claude.usage,
+        },
         count_tokens=claude.count_tokens,
     )

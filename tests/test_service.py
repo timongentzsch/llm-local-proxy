@@ -11,11 +11,47 @@ from llm_local_proxy.providers.catalog import match_model
 from llm_local_proxy.providers.claude.catalog import model_info as _claude_model_info
 from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
 from llm_local_proxy.providers.codex.catalog import model_info as _model_info
+from llm_local_proxy.providers.pool import AccountStore
 from llm_local_proxy.service import Service
 from llm_local_proxy.status import ProviderStatus
 
 
 class ServiceWiringTest(unittest.TestCase):
+    def test_account_slots_change_live_without_a_configured_count(self):
+        class FakeApp:
+            def __init__(self, *_):
+                pass
+
+            def call(self, method, params=None):
+                return {}
+
+            def alive(self):
+                return True
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.toml"
+            config_path.write_text(
+                'host="127.0.0.1"\nport=8799\napi_key=""\n'
+                f'codex_home="{directory}/codex"\n'
+            )
+            config_path.chmod(0o600)
+            with patch(
+                "llm_local_proxy.providers.codex.AppServer", side_effect=FakeApp
+            ):
+                service = Service(load(config_path))
+                for provider in service.providers:
+                    self.assertEqual(provider.status().accounts, ())
+                    added = provider.routes["accounts"]({"action": "add"})
+                    self.assertEqual(len(provider.status().accounts), 1)
+                    provider.routes["accounts"](
+                        {"action": "remove", "account": added["account"]}
+                    )
+                    self.assertEqual(provider.status().accounts, ())
+                service.close()
+
     def test_upstreams_get_tokens_paths(self):
         # Regression guard: the token ledgers must be persisted to disk next
         # to the config, otherwise totals reset on every restart.
@@ -25,15 +61,19 @@ class ServiceWiringTest(unittest.TestCase):
                 'host="127.0.0.1"\nport=8799\napi_key="123456789012345678901234"\n'
             )
             config_path.chmod(0o600)
+            for provider in ("codex", "claude"):
+                store = AccountStore(Path(directory), provider)
+                store.add()
+                store.add()
             config = load(config_path)
-            seen = {}
+            seen = {"codex_tokens": [], "claude_tokens": []}
 
             def fake_upstream(app, timeout, tokens_path=None):
-                seen["codex_tokens"] = tokens_path
+                seen["codex_tokens"].append(tokens_path)
                 return SimpleNamespace(ledger=SimpleNamespace(windows=dict))
 
             def fake_claude_upstream(auth, timeout, usage_path=None, tokens_path=None):
-                seen["claude_tokens"] = tokens_path
+                seen["claude_tokens"].append(tokens_path)
                 return SimpleNamespace(
                     ledger=SimpleNamespace(windows=dict),
                     usage=SimpleNamespace(get=lambda: None),
@@ -53,10 +93,18 @@ class ServiceWiringTest(unittest.TestCase):
             ):
                 Service(config)
             self.assertEqual(
-                seen["codex_tokens"], Path(directory) / "codex-tokens.json"
+                seen["codex_tokens"],
+                [
+                    Path(directory) / "accounts/codex/1/tokens.json",
+                    Path(directory) / "accounts/codex/2/tokens.json",
+                ],
             )
             self.assertEqual(
-                seen["claude_tokens"], Path(directory) / "claude-tokens.json"
+                seen["claude_tokens"],
+                [
+                    Path(directory) / "accounts/claude/1/tokens.json",
+                    Path(directory) / "accounts/claude/2/tokens.json",
+                ],
             )
 
 
@@ -253,6 +301,7 @@ class ServerTest(unittest.TestCase):
             "tokens",
             "updated_at",
             "error",
+            "accounts",
         }
         for card in cards:
             self.assertEqual(set(card), fields)
