@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ...atomic import atomic_write_json
+from ...errors import ProviderError
 from ...status import ProviderStatus
 from ..auth import Auth
 
@@ -37,7 +38,7 @@ REFRESH_SKEW_SECONDS = 120
 USER_AGENT = "llm-local-proxy/0.1.0"
 
 
-class ClaudeAuthError(RuntimeError):
+class ClaudeAuthError(ProviderError):
     def __init__(self, message: str, status: int = 401):
         super().__init__(message)
         self.status = status

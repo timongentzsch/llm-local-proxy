@@ -10,8 +10,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ...errors import ProviderError
 
-class RpcError(RuntimeError):
+
+class RpcError(ProviderError):
     pass
 
 

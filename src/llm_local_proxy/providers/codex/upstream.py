@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from ...errors import ProviderError
 from ...ledger import TokenLedger
 from .. import transport
 from .app_server import AppServer, RpcError
@@ -15,10 +16,11 @@ from .app_server import AppServer, RpcError
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 
 
-class UpstreamError(RuntimeError):
-    def __init__(self, status: int, message: str):
+class UpstreamError(ProviderError):
+    def __init__(self, status: int, message: str, *, account_unavailable: bool = False):
         super().__init__(message)
         self.status = status
+        self.account_unavailable = account_unavailable
 
 
 class Upstream:
@@ -46,6 +48,8 @@ class Upstream:
         try:
             response = self._open(body, refresh=False)
         except UpstreamError as error:
+            if error.account_unavailable:
+                raise
             return _effort_values(str(error)) if error.status == 400 else None
         response.close()
         return None
@@ -70,7 +74,7 @@ class Upstream:
         try:
             access, account = self.app.token(force_refresh=refresh)
         except RpcError as error:
-            raise UpstreamError(401, str(error)) from error
+            raise UpstreamError(401, str(error), account_unavailable=True) from error
         request = urllib.request.Request(
             RESPONSES_URL,
             data=json.dumps(body, separators=(",", ":")).encode(),
@@ -101,7 +105,11 @@ class Upstream:
                 )
             except json.JSONDecodeError:
                 message = raw or error.reason
-            raise UpstreamError(error.code, message) from error
+            raise UpstreamError(
+                error.code,
+                message,
+                account_unavailable=error.code == 401,
+            ) from error
         except urllib.error.URLError as error:
             raise UpstreamError(502, str(error.reason)) from error
 

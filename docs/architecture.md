@@ -48,7 +48,7 @@ two; the Chat Completions encoder narrows them to four.
 ```
 src/llm_local_proxy/
   ir.py            # ChatRequest, content blocks, StreamEvent
-  errors.py        # RequestError
+  errors.py        # downstream request and provider failure boundaries
   service.py       # registry, merged catalog, status
   config.py  atomic.py  ledger.py  status.py
 
@@ -69,7 +69,7 @@ src/llm_local_proxy/
     __init__.py    # REGISTRY, in match-priority order
     auth.py        # Auth ABC + multi-login facade
     catalog.py     # the OpenRouter model shape both providers report
-    pool.py        # sticky selection, round-robin and pre-output 429 failover
+    pool.py        # sticky selection, round-robin and safe pre-output failover
     reasoning.py   # ReasoningCache
     transport.py   # no-redirect handler + SSE reader
     codex/         # app_server auth upstream request events catalog
@@ -109,11 +109,20 @@ suffixes. A request with `X-Session-Id` hashes to a stable signed-in account;
 Claude Code's native `X-Claude-Code-Session-Id` is accepted as its fallback.
 Without a session ID the starting account advances round-robin.
 
-Only a 429 received before the first upstream event triggers failover. The
-account is cooled for five minutes and the untouched request is tried on the
-next login. Other errors retain their upstream status, and no error after the
-first event can switch accounts. This boundary avoids both retrying invalid
-requests and duplicating streamed output.
+A 429 received before the first upstream event cools that account for five
+minutes and tries the untouched request on the next login. Provider transports
+also classify terminal authentication failures; those fail over at the same
+safe boundary, mark the slot as requiring reauthentication and cool it for one
+minute. Other errors retain their upstream status, and no error after the first
+event can switch accounts. The shorter auth cooldown avoids repeated refresh
+latency while periodically checking whether a repaired login can rejoin. This
+boundary avoids both retrying invalid requests and duplicating streamed output.
+
+Model discovery uses the same pool without session affinity. Each uncached
+refresh starts at the next account and accepts the first live catalog, skipping
+stale credentials without querying every healthy account. Claude and Codex
+share this selection path; only their transport-specific auth classification
+differs.
 
 Account state has one canonical layout: Codex homes are
 `codex_home/accounts/<slot>`, while proxy-owned state is

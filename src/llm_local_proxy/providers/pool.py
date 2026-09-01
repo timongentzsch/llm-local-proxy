@@ -20,6 +20,7 @@ T = TypeVar("T")
 E = TypeVar("E")
 
 RATE_LIMIT_COOLDOWN_SECONDS = 300
+AUTH_FAILURE_COOLDOWN_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -34,15 +35,16 @@ class AccountPool(Generic[T]):
 
     A downstream session hashes to a stable starting account, which preserves
     upstream prompt-cache locality. Requests without a session round-robin.
-    A 429 cools that account locally and advances to the next login. Once an
-    event has been yielded, retrying would duplicate output, so errors pass
-    through unchanged.
+    Rate limits and confirmed unusable credentials cool that account locally
+    and advance to the next login. Once an event has been yielded, retrying
+    would duplicate output, so errors pass through unchanged.
     """
 
     def __init__(self, accounts: Sequence[Account[T]]):
         self._accounts = tuple(accounts)
         self._cursor = 0
         self._cooldown: dict[str, float] = {}
+        self._account_errors: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @property
@@ -67,6 +69,7 @@ class AccountPool(Generic[T]):
                 item for item in self._accounts if item.id != account_id
             )
             self._cooldown.pop(account_id, None)
+            self._account_errors.pop(account_id, None)
             return account
 
     def get(self, account_id: str) -> Account[T]:
@@ -88,7 +91,7 @@ class AccountPool(Generic[T]):
                     "sign in or remove the existing unsigned account first"
                 )
 
-    def candidates(self, session: str = "") -> tuple[Account[T], ...]:
+    def candidates(self, session: str | None = None) -> tuple[Account[T], ...]:
         signed_in = []
         for account in self.accounts:
             try:
@@ -118,13 +121,33 @@ class AccountPool(Generic[T]):
         with self._lock:
             self._cooldown[account_id] = time.time() + RATE_LIMIT_COOLDOWN_SECONDS
 
+    def account_error(self, account_id: str) -> str:
+        """Latest terminal authentication failure observed for one account."""
+
+        with self._lock:
+            return self._account_errors.get(account_id, "")
+
+    def clear_account_error(self, account_id: str) -> None:
+        with self._lock:
+            self._account_errors.pop(account_id, None)
+            self._cooldown.pop(account_id, None)
+
+    def _mark_account_error(self, account_id: str, error: Exception) -> None:
+        with self._lock:
+            self._account_errors[account_id] = str(error) or "authentication failed"
+            self._cooldown[account_id] = time.time() + AUTH_FAILURE_COOLDOWN_SECONDS
+
+    @staticmethod
+    def _account_unavailable(error: Exception) -> bool:
+        return bool(getattr(error, "account_unavailable", False))
+
     def stream(
         self,
         session: str,
         create: Callable[[Account[T]], Iterator[E]],
         no_account: Callable[[], Exception],
     ) -> Iterator[E]:
-        """Try each candidate on 429, but only before output has begun."""
+        """Fail over on rate limits or unusable auth before output begins."""
 
         candidates = self.candidates(session)
         if not candidates:
@@ -134,22 +157,32 @@ class AccountPool(Generic[T]):
             started = False
             try:
                 for event in create(account):
-                    started = True
+                    if not started:
+                        started = True
+                        self.clear_account_error(account.id)
                     yield event
+                if not started:
+                    self.clear_account_error(account.id)
                 return
             except Exception as error:
-                if started or getattr(error, "status", None) != 429:
+                unavailable = self._account_unavailable(error)
+                retryable = getattr(error, "status", None) == 429 or unavailable
+                if started or not retryable:
                     raise
-                self.mark_rate_limited(account.id)
+                if unavailable:
+                    self._mark_account_error(account.id, error)
+                else:
+                    self.mark_rate_limited(account.id)
                 last = error
         assert last is not None
         raise last
 
     def call(
         self,
-        session: str,
+        session: str | None,
         invoke: Callable[[Account[T]], E],
         no_account: Callable[[], Exception],
+        retry_if: Callable[[Exception], bool] | None = None,
     ) -> E:
         """Non-streaming equivalent used by token counting and usage probes."""
 
@@ -159,14 +192,35 @@ class AccountPool(Generic[T]):
         last: Exception | None = None
         for account in candidates:
             try:
-                return invoke(account)
+                result = invoke(account)
+                self.clear_account_error(account.id)
+                return result
             except Exception as error:
-                if getattr(error, "status", None) != 429:
+                unavailable = self._account_unavailable(error)
+                retryable = (
+                    getattr(error, "status", None) == 429
+                    or unavailable
+                    or (retry_if is not None and retry_if(error))
+                )
+                if not retryable:
                     raise
-                self.mark_rate_limited(account.id)
+                if unavailable:
+                    self._mark_account_error(account.id, error)
+                elif getattr(error, "status", None) == 429:
+                    self.mark_rate_limited(account.id)
                 last = error
         assert last is not None
         raise last
+
+    def discover(
+        self,
+        invoke: Callable[[Account[T]], E],
+        no_account: Callable[[], Exception],
+        retry_if: Callable[[Exception], bool] | None = None,
+    ) -> E:
+        """Read shared metadata from a rotating, first-success account."""
+
+        return self.call(None, invoke, no_account, retry_if)
 
 
 def account_file(directory: Path, provider: str, account_id: str, name: str) -> Path:

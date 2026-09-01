@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.auth import MultiAuth
 from llm_local_proxy.providers.pool import (
+    AUTH_FAILURE_COOLDOWN_SECONDS,
     Account,
     AccountPool,
     AccountStore,
@@ -33,9 +36,10 @@ class _Auth:
 
 
 class _Error(RuntimeError):
-    def __init__(self, status):
+    def __init__(self, status, *, account_unavailable=False):
         super().__init__(f"status {status}")
         self.status = status
+        self.account_unavailable = account_unavailable
 
 
 class AccountPoolTest(unittest.TestCase):
@@ -99,6 +103,46 @@ class AccountPoolTest(unittest.TestCase):
         with self.assertRaises(_Error):
             pool.call("", invoke, RuntimeError)
         self.assertEqual(calls, ["1"])
+
+    def test_unavailable_account_fails_over_before_output_and_is_reported(self):
+        pool = self.pool()
+        calls = []
+
+        def events(account):
+            calls.append(account.id)
+            if account.id == "1":
+                raise _Error(400, account_unavailable=True)
+            yield account.client
+
+        self.assertEqual(list(pool.stream("", events, RuntimeError)), ["two"])
+        self.assertEqual(calls, ["1", "2"])
+        self.assertEqual(pool.account_error("1"), "status 400")
+        self.assertEqual(pool.account_error("2"), "")
+        self.assertEqual(pool.candidates()[0].id, "2")
+
+    def test_discovery_rotates_and_clears_a_recovered_account(self):
+        pool = self.pool()
+        starts = []
+        stale = True
+
+        def discover(account):
+            nonlocal stale
+            starts.append(account.id)
+            if account.id == "1" and stale:
+                raise _Error(401, account_unavailable=True)
+            return account.client
+
+        self.assertEqual(pool.discover(discover, RuntimeError), "two")
+        self.assertEqual(pool.account_error("1"), "status 401")
+        self.assertEqual(pool.discover(discover, RuntimeError), "two")
+        stale = False
+        after_cooldown = time.time() + AUTH_FAILURE_COOLDOWN_SECONDS
+        with patch(
+            "llm_local_proxy.providers.pool.time.time", return_value=after_cooldown
+        ):
+            self.assertEqual(pool.discover(discover, RuntimeError), "one")
+        self.assertEqual(starts, ["1", "2", "2", "1"])
+        self.assertEqual(pool.account_error("1"), "")
 
     def test_accounts_can_be_added_and_removed_live(self):
         pool = AccountPool([])

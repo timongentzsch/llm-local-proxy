@@ -119,9 +119,14 @@ downstream `X-Session-Id` stays on a stable account for prompt-cache locality;
 Claude Code's native `X-Claude-Code-Session-Id` works the same way. Requests
 without either one round-robin. If an account returns 429 before emitting any
 output, it is cooled locally for five minutes and the same request tries the
-next signed-in account. The proxy never retries after output starts, because
-that could duplicate a partial answer. Claude tokens are refreshed by the
-proxy itself, so they do not contend with Claude Code logins on other machines.
+next signed-in account. A terminal authentication failure follows the same safe
+pre-output failover path, marks that slot as requiring reauthentication and
+cools it for one minute. Catalog refreshes rotate between accounts and skip
+cooled stale slots, so one bad login cannot hide a provider's models; the short
+cooldown periodically retries them so a recovered login rejoins automatically.
+The proxy never retries after output starts, because that could duplicate a
+partial answer. Claude tokens are refreshed by the proxy itself, so they do not
+contend with Claude Code logins on other machines.
 
 ## Configuration
 

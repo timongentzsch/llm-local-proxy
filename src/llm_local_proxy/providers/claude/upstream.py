@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ...atomic import atomic_write_json
+from ...errors import ProviderError
 from ...ledger import TokenLedger
 from ...status import Limit, window_label
 from .. import transport
@@ -32,10 +33,11 @@ CLAUDE_CODE_BETA = "claude-code-20250219"
 USER_AGENT = "claude-cli/2.1.235 (external, sdk-cli)"
 
 
-class ClaudeUpstreamError(RuntimeError):
-    def __init__(self, status: int, message: str):
+class ClaudeUpstreamError(ProviderError):
+    def __init__(self, status: int, message: str, *, account_unavailable: bool = False):
         super().__init__(message)
         self.status = status
+        self.account_unavailable = account_unavailable
 
 
 def _message_events(response: Any) -> Iterator[dict[str, Any]]:
@@ -162,7 +164,11 @@ class ClaudeUpstream:
         try:
             token = self.auth.access_token(force_refresh=refresh)
         except ClaudeAuthError as error:
-            raise ClaudeUpstreamError(error.status, str(error)) from error
+            raise ClaudeUpstreamError(
+                error.status,
+                str(error),
+                account_unavailable=error.status in {400, 401, 403},
+            ) from error
         request = urllib.request.Request(
             MODELS_URL,
             method="GET",
@@ -329,7 +335,11 @@ class ClaudeUpstream:
         try:
             token = self.auth.access_token(force_refresh=refresh)
         except ClaudeAuthError as error:
-            raise ClaudeUpstreamError(error.status, str(error)) from error
+            raise ClaudeUpstreamError(
+                error.status,
+                str(error),
+                account_unavailable=error.status in {400, 401, 403},
+            ) from error
         request = urllib.request.Request(
             url,
             data=json.dumps(body, separators=(",", ":")).encode(),
@@ -459,7 +469,11 @@ def _upstream_error(error: urllib.error.HTTPError) -> ClaudeUpstreamError:
     message = _error_message(error.read().decode("utf-8", "replace"))
     if error.code == 429 and message in {"", "Error"}:
         message = "Claude usage limit reached; the subscription is rate limited"
-    return ClaudeUpstreamError(error.code, message)
+    return ClaudeUpstreamError(
+        error.code,
+        message,
+        account_unavailable=error.code == 401,
+    )
 
 
 def _error_message(raw: str) -> str:

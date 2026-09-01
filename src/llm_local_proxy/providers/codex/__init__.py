@@ -139,10 +139,24 @@ class Codex:
             cached = self._catalog
         if cached and time.time() - cached[0] < CATALOG_TTL_SECONDS:
             return cached[1]
-        candidates = self.pool.candidates("catalog")
-        if not candidates:
-            return []
-        upstream = candidates[0].client
+        try:
+            models = self.pool.discover(
+                lambda account: self._catalog_from(account.client),
+                lambda: UpstreamError(
+                    401,
+                    "not signed in to Codex; use the sign in button on the status page",
+                    account_unavailable=True,
+                ),
+                retry_if=lambda error: isinstance(error, RpcError),
+            )
+        except (RpcError, UpstreamError):
+            models = []
+        with self._lock:
+            self._catalog = (time.time(), models)
+        return models
+
+    @staticmethod
+    def _catalog_from(upstream: Upstream) -> list[dict[str, Any]]:
         app = upstream.app
         result = app.call("model/list", {"limit": 100, "includeHidden": False})
         contexts = app.model_contexts()
@@ -163,8 +177,6 @@ class Codex:
             model = model_info(item, contexts, transport_efforts)
             if model:
                 models.append(model)
-        with self._lock:
-            self._catalog = (time.time(), models)
         return models
 
     def status(self) -> ProviderStatus:
@@ -177,6 +189,13 @@ class Codex:
                 )
             except (RpcError, OSError, ValueError) as error:
                 value = ProviderStatus(error=str(error) or "unavailable")
+            observed = self.pool.account_error(account.id)
+            if observed and value.signed_in:
+                value = replace(
+                    value,
+                    signed_in=False,
+                    error=f"reauthentication required: {observed}",
+                )
             signed_in += value.signed_in
             accounts.append(account_status(account.id, value))
         return ProviderStatus(

@@ -172,9 +172,20 @@ class Claude:
                 )
             except (ClaudeAuthError, ClaudeUpstreamError, OSError, ValueError) as error:
                 value = ProviderStatus(error=str(error) or "unavailable")
+            observed = self.pool.account_error(account.id)
+            if observed and value.signed_in:
+                value = replace(
+                    value,
+                    signed_in=False,
+                    error=f"reauthentication required: {observed}",
+                )
             accounts.append(account_status(account.id, value))
-        aggregate = self.auth.status()
-        return replace(aggregate, accounts=tuple(accounts))
+        signed_in = sum(account.signed_in for account in accounts)
+        return ProviderStatus(
+            signed_in=bool(signed_in),
+            account=f"{signed_in} of {len(accounts)} accounts signed in",
+            accounts=tuple(accounts),
+        )
 
     def finish_login(self, body: dict[str, Any]) -> dict[str, Any]:
         code = body.get("code")
@@ -184,6 +195,7 @@ class Claude:
         if not isinstance(account, str) or not account:
             raise RequestError("account is required")
         result = self.auth.finish(account, code)
+        self.pool.clear_account_error(account)
         self.forget()
         self.invalidate()
         return result
@@ -218,8 +230,7 @@ class Claude:
         if cached and time.time() - cached[0] < CATALOG_TTL_SECONDS:
             return cached[1]
         try:
-            items = self.pool.call(
-                "catalog",
+            items = self.pool.discover(
                 lambda account: account.client.models(),
                 lambda: ClaudeAuthError("not signed in to Claude"),
             )

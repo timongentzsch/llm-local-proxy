@@ -17,12 +17,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..dialects import Dialect, resolve
-from ..errors import RequestError
+from ..errors import ProviderError, RequestError
 from ..providers import Provider
-from ..providers.claude.auth import ClaudeAuthError
-from ..providers.claude.upstream import ClaudeUpstreamError
-from ..providers.codex.app_server import RpcError
-from ..providers.codex.upstream import UpstreamError
 from ..service import Service
 from . import security
 from .sse import SseStream, with_heartbeats
@@ -32,6 +28,13 @@ def api_path(path: str) -> str:
     """Map the dashboard's /api/v1/... alias onto the real /v1/... route."""
     prefix = "/api/v1/"
     return f"/v1/{path[len(prefix) :]}" if path.startswith(prefix) else path
+
+
+def _account(body: dict[str, Any]) -> str:
+    account = body.get("account")
+    if not isinstance(account, str) or not account:
+        raise RequestError("account is required")
+    return account
 
 
 def make_handler(service: Service):
@@ -84,8 +87,8 @@ def make_handler(service: Service):
                         {"data": {"count": len(service.models()["data"])}},
                     )
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            except RpcError as error:
-                self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))
+            except ProviderError as error:
+                self._api_error(dialect, error.status, str(error))
 
         def do_POST(self) -> None:
             if not self._valid_host():
@@ -101,19 +104,14 @@ def make_handler(service: Service):
                 if provider_route:
                     provider, route = provider_route
                     if route == "login":
-                        account = body.get("account")
-                        if not isinstance(account, str) or not account:
-                            raise RequestError("account is required")
+                        account = _account(body)
                         return self._json(
                             HTTPStatus.OK, provider.auth.login_start(account)
                         )
                     if route == "logout":
-                        account = body.get("account")
-                        if not isinstance(account, str) or not account:
-                            raise RequestError("account is required")
+                        account = _account(body)
                         provider.auth.logout(account)
                         service.invalidate_models()
-
                         return self._json(HTTPStatus.OK, {"ok": True})
                     handler = provider.routes.get(route)
                     if handler is None:
@@ -128,13 +126,7 @@ def make_handler(service: Service):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except RequestError as error:
                 self._api_error(dialect, HTTPStatus.BAD_REQUEST, str(error))
-            except RpcError as error:
-                self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))
-            except UpstreamError as error:
-                self._api_error(dialect, error.status, str(error))
-            except ClaudeAuthError as error:
-                self._api_error(dialect, error.status, str(error))
-            except ClaudeUpstreamError as error:
+            except ProviderError as error:
                 self._api_error(dialect, error.status, str(error))
             except (RuntimeError, OSError, ValueError) as error:
                 self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))

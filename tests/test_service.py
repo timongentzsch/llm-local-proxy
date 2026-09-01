@@ -9,10 +9,13 @@ from llm_local_proxy.config import load
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers import Provider
 from llm_local_proxy.providers.catalog import match_model
+from llm_local_proxy.providers.claude import Claude
 from llm_local_proxy.providers.claude.catalog import model_info as _claude_model_info
 from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
+from llm_local_proxy.providers.codex import Codex
 from llm_local_proxy.providers.codex.catalog import model_info as _model_info
-from llm_local_proxy.providers.pool import AccountStore
+from llm_local_proxy.providers.codex.upstream import UpstreamError
+from llm_local_proxy.providers.pool import Account, AccountPool, AccountStore
 from llm_local_proxy.service import Service
 from llm_local_proxy.status import ProviderStatus
 
@@ -354,6 +357,86 @@ class ServerTest(unittest.TestCase):
         value = Service.models(service)
         ids = [model["id"] for model in value["data"]]
         self.assertEqual(ids, ["acme-gpt-1"])
+
+
+class MultiAccountCatalogTest(unittest.TestCase):
+    class Auth:
+        def __init__(self, account):
+            self.account = account
+
+        def signed_in(self):
+            return True
+
+        def hydrate_profile(self):
+            pass
+
+        def status(self):
+            return ProviderStatus(signed_in=True, account=self.account)
+
+    class Client:
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+            self.ledger = SimpleNamespace(windows=dict)
+            self.usage = SimpleNamespace(limits=tuple, updated_at=lambda: None)
+
+        def models(self):
+            self.calls += 1
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    @classmethod
+    def accounts(cls, first, second):
+        return AccountPool(
+            [
+                Account("1", cls.Auth("one"), first),
+                Account("2", cls.Auth("two"), second),
+            ]
+        )
+
+    def test_claude_catalog_rotates_past_stale_accounts(self):
+        stale = self.Client(
+            ClaudeUpstreamError(400, "refresh token invalid", account_unavailable=True)
+        )
+        live = self.Client([{"id": "claude-live", "name": "Claude Live"}])
+        claude = Claude.__new__(Claude)
+        claude.pool = self.accounts(stale, live)
+        claude._lock = Lock()
+        claude._catalog = None
+
+        self.assertEqual(claude._live_catalog()[0]["id"], "claude-live")
+        self.assertIn("refresh token invalid", claude.pool.account_error("1"))
+        claude._catalog = None
+        self.assertEqual(claude._live_catalog()[0]["id"], "claude-live")
+        self.assertEqual((stale.calls, live.calls), (1, 2))
+
+        accounts = claude.status().accounts
+        self.assertFalse(accounts[0].signed_in)
+        self.assertIn("reauthentication required", accounts[0].error)
+        self.assertTrue(accounts[1].signed_in)
+
+    def test_codex_catalog_uses_the_same_rotating_discovery(self):
+        stale = self.Client(
+            UpstreamError(401, "refresh failed", account_unavailable=True)
+        )
+        live = self.Client([{"id": "gpt-live"}])
+        codex = Codex.__new__(Codex)
+        codex.pool = self.accounts(stale, live)
+        codex._lock = Lock()
+        codex._catalog = None
+        codex._catalog_from = lambda client: client.models()
+
+        self.assertEqual(codex._live_catalog(), [{"id": "gpt-live"}])
+        self.assertIn("refresh failed", codex.pool.account_error("1"))
+        codex._catalog = None
+        self.assertEqual(codex._live_catalog(), [{"id": "gpt-live"}])
+        self.assertEqual((stale.calls, live.calls), (1, 2))
+
+        accounts = codex.status().accounts
+        self.assertFalse(accounts[0].signed_in)
+        self.assertIn("reauthentication required", accounts[0].error)
+        self.assertTrue(accounts[1].signed_in)
 
 
 if __name__ == "__main__":

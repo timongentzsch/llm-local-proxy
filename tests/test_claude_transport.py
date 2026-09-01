@@ -9,6 +9,7 @@ import unittest
 import urllib.error
 from email.message import Message
 
+from llm_local_proxy.providers.claude.auth import ClaudeAuthError
 from llm_local_proxy.providers.claude.upstream import (
     ClaudeUpstream,
     ClaudeUpstreamError,
@@ -49,6 +50,18 @@ class UpstreamErrorTest(unittest.TestCase):
             )
         )
         self.assertEqual(str(error), "max_tokens too large")
+
+    def test_only_unauthorized_responses_mark_the_account_unavailable(self):
+        unauthorized = _upstream_error(
+            _http_error(401, '{"error":{"message":"expired"}}')
+        )
+        forbidden = _upstream_error(_http_error(403, '{"error":{"message":"revoked"}}'))
+        malformed = _upstream_error(
+            _http_error(400, '{"error":{"message":"bad request"}}')
+        )
+        self.assertTrue(unauthorized.account_unavailable)
+        self.assertFalse(forbidden.account_unavailable)
+        self.assertFalse(malformed.account_unavailable)
 
 
 class BlockShapeReportTest(unittest.TestCase):
@@ -194,6 +207,11 @@ class _FakeAuth:
         return self.tokens[min(len(self.forced) - 1, len(self.tokens) - 1)]
 
 
+class _StaleAuth:
+    def access_token(self, force_refresh: bool = False) -> str:
+        raise ClaudeAuthError("refresh token invalid", 400)
+
+
 class _FakeOpener:
     """Answers each open() with the next queued response or error."""
 
@@ -240,6 +258,12 @@ class UpstreamRequestTest(unittest.TestCase):
         events = list(upstream.events({"model": "m", "messages": []}))
         self.assertEqual([event["type"] for event in events], ["message_stop"])
         self.assertEqual(upstream.auth.forced, [False, True])
+
+    def test_terminal_refresh_failure_marks_the_account_unavailable(self):
+        upstream = ClaudeUpstream(_StaleAuth(), timeout=5)
+        with self.assertRaises(ClaudeUpstreamError) as caught:
+            upstream.models()
+        self.assertTrue(caught.exception.account_unavailable)
 
     def test_a_second_401_is_reported_rather_than_retried_forever(self):
         upstream = _upstream(_http_error(401, "{}"), _http_error(401, "{}"))

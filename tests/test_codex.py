@@ -19,7 +19,11 @@ from llm_local_proxy.providers.codex.app_server import (
 )
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build
-from llm_local_proxy.providers.codex.upstream import _effort_values
+from llm_local_proxy.providers.codex.upstream import (
+    Upstream,
+    UpstreamError,
+    _effort_values,
+)
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 
@@ -40,6 +44,16 @@ class ProtocolTest(unittest.TestCase):
         )
         self.assertEqual(values, {"low", "max", "future-tier"})
         self.assertIsNone(_effort_values("some unrelated request error"))
+
+    def test_transport_effort_probe_propagates_an_unusable_account(self):
+        class StaleApp:
+            def token(self, force_refresh=False):
+                raise RpcError("refresh failed")
+
+        upstream = Upstream(StaleApp(), timeout=5)
+        with self.assertRaises(UpstreamError) as caught:
+            upstream.reasoning_efforts("gpt-test")
+        self.assertTrue(caught.exception.account_unavailable)
 
     def test_rejects_invalid_tools_and_multiple_choices(self):
         base = {"model": "acme-gpt-1", "messages": [{"role": "user", "content": "hi"}]}
