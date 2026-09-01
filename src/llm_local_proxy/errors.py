@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 
+class ProviderError(RuntimeError):
+    """A provider failure safe to expose through a downstream error envelope."""
+
+    status = 502
+
+
 class RequestError(ValueError):
     """A downstream request the proxy will not serve.
 

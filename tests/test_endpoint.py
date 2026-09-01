@@ -47,10 +47,12 @@ MODELS = {
     "object": "list",
     "data": [{"id": "claude-sonnet-5", "name": "Claude Sonnet 5"}],
 }
+SESSIONS = []
 
 
 def _chat(canonical, request):
     """The canned stream, or the failure the model name asks for."""
+    SESSIONS.append(request.session)
     if canonical.startswith("claude-fail-"):
         raise ClaudeUpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
     if canonical == "claude-burst":
@@ -61,7 +63,7 @@ def _chat(canonical, request):
 def _service():
     provider = SimpleNamespace(
         name="claude",
-        routes={},
+        routes={"accounts": lambda body: body},
         auth=SimpleNamespace(),
         chat=_chat,
         count_tokens=lambda canonical, request: {"input_tokens": 42},
@@ -97,11 +99,13 @@ class EndpointTest(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         payload = json.dumps(body) if body is not None else None
-        headers = {"Content-Type": "application/json"} if payload else {}
-        connection.request(method, path, payload, headers)
+        sent_headers = dict(headers or {})
+        if payload:
+            sent_headers.setdefault("Content-Type", "application/json")
+        connection.request(method, path, payload, sent_headers)
         response = connection.getresponse()
         text = response.read().decode()
         connection.close()
@@ -222,6 +226,21 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(body["stop_reason"], "end_turn")
         self.assertEqual(body["usage"]["input_tokens"], 11)
 
+    def test_claude_code_session_header_preserves_affinity(self):
+        SESSIONS.clear()
+        status, _ = self.request(
+            "POST",
+            "/anthropic/v1/messages",
+            {
+                "model": "claude-sonnet-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            {"X-Claude-Code-Session-Id": "claude-session-42"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(SESSIONS, ["claude-session-42"])
+
     # -- dashboard --------------------------------------------------------
 
     def test_dashboard_is_served_with_the_auth_flag_substituted(self):
@@ -251,6 +270,45 @@ class EndpointTest(unittest.TestCase):
         self.assertIn('class="copy-login"', text)
         self.assertIn("navigator.clipboard.writeText(loginUrl.textContent)", text)
         self.assertNotIn("window.open(", text)
+
+    def test_dashboard_builds_commands_for_all_supported_clients(self):
+        _, text = self.request("GET", "/")
+        self.assertIn("codex --model", text)
+        self.assertIn("claude --model", text)
+        self.assertIn("opencode --model", text)
+        self.assertIn("OPENCODE_CONFIG_CONTENT", text)
+        self.assertIn("model_providers.local_proxy", text)
+        self.assertIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", text)
+        self.assertIn('class="account-label"', text)
+        self.assertIn('box.className="command-code"', text)
+        self.assertIn('copy.className="command-copy"', text)
+        self.assertIn('reset=setTimeout(()=>copy.textContent="copy",1500)', text)
+        self.assertIn('class="add-account"', text)
+        self.assertIn('class="remove" hidden', text)
+        self.assertIn("/accounts`", text)
+        self.assertIn("items.some(a=>!a.signed_in)", text)
+        self.assertIn("load().then(()=>poll(true))", text)
+        self.assertIn("body:accountBody(a.id)", text)
+
+    def test_dashboard_has_structured_accessible_loading_skeletons(self):
+        _, text = self.request("GET", "/")
+        self.assertIn('class="provider skeleton-provider" aria-hidden="true"', text)
+        self.assertIn('class="row command skeleton-command" aria-hidden="true"', text)
+        self.assertIn('class="model skeleton-model" aria-hidden="true"', text)
+        self.assertIn("prefers-reduced-motion:reduce", text)
+        self.assertNotIn('class="remote"', text)
+
+    def test_account_auth_routes_require_an_explicit_slot(self):
+        for route in ("login", "logout"):
+            with self.subTest(route=route):
+                status, text = self.request("POST", f"/api/claude/{route}", {})
+                self.assertEqual(status, 400)
+                self.assertIn("account is required", text)
+
+    def test_account_slots_can_be_managed_over_http(self):
+        status, text = self.request("POST", "/api/claude/accounts", {"action": "add"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(text), {"action": "add"})
 
     # -- mounts -----------------------------------------------------------
 
@@ -363,7 +421,9 @@ class EndpointTest(unittest.TestCase):
                             "127.0.0.1", port, timeout=10
                         )
                         connection.request("GET", path, headers=header)
-                        status = connection.getresponse().status
+                        response = connection.getresponse()
+                        status = response.status
+                        response.read()
                         connection.close()
                         self.assertEqual(status, 200)
         finally:

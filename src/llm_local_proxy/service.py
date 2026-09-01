@@ -13,15 +13,14 @@ from typing import Any
 
 from .config import Config
 from .dialects import DIALECTS
+from .errors import ProviderError
 from .providers import REGISTRY, Provider, ProviderContext
-from .providers.claude.upstream import ClaudeUpstreamError
-from .providers.codex.app_server import RpcError
 from .status import ProviderStatus
 
 CATALOG_TTL_SECONDS = 60
 
 #: An unreachable provider degrades its own slice, not the whole response.
-DEGRADES = (RpcError, ClaudeUpstreamError, OSError, ValueError)
+DEGRADES = (ProviderError, OSError, ValueError)
 
 
 class Service:

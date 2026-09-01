@@ -17,12 +17,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..dialects import Dialect, resolve
-from ..errors import RequestError
+from ..errors import ProviderError, RequestError
 from ..providers import Provider
-from ..providers.claude.auth import ClaudeAuthError
-from ..providers.claude.upstream import ClaudeUpstreamError
-from ..providers.codex.app_server import RpcError
-from ..providers.codex.upstream import UpstreamError
 from ..service import Service
 from . import security
 from .sse import SseStream, with_heartbeats
@@ -32,6 +28,13 @@ def api_path(path: str) -> str:
     """Map the dashboard's /api/v1/... alias onto the real /v1/... route."""
     prefix = "/api/v1/"
     return f"/v1/{path[len(prefix) :]}" if path.startswith(prefix) else path
+
+
+def _account(body: dict[str, Any]) -> str:
+    account = body.get("account")
+    if not isinstance(account, str) or not account:
+        raise RequestError("account is required")
+    return account
 
 
 def make_handler(service: Service):
@@ -84,8 +87,8 @@ def make_handler(service: Service):
                         {"data": {"count": len(service.models()["data"])}},
                     )
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            except RpcError as error:
-                self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))
+            except ProviderError as error:
+                self._api_error(dialect, error.status, str(error))
 
         def do_POST(self) -> None:
             if not self._valid_host():
@@ -101,11 +104,14 @@ def make_handler(service: Service):
                 if provider_route:
                     provider, route = provider_route
                     if route == "login":
-                        return self._json(HTTPStatus.OK, provider.auth.login_start())
+                        account = _account(body)
+                        return self._json(
+                            HTTPStatus.OK, provider.auth.login_start(account)
+                        )
                     if route == "logout":
-                        provider.auth.logout()
+                        account = _account(body)
+                        provider.auth.logout(account)
                         service.invalidate_models()
-
                         return self._json(HTTPStatus.OK, {"ok": True})
                     handler = provider.routes.get(route)
                     if handler is None:
@@ -120,13 +126,7 @@ def make_handler(service: Service):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             except RequestError as error:
                 self._api_error(dialect, HTTPStatus.BAD_REQUEST, str(error))
-            except RpcError as error:
-                self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))
-            except UpstreamError as error:
-                self._api_error(dialect, error.status, str(error))
-            except ClaudeAuthError as error:
-                self._api_error(dialect, error.status, str(error))
-            except ClaudeUpstreamError as error:
+            except ProviderError as error:
                 self._api_error(dialect, error.status, str(error))
             except (RuntimeError, OSError, ValueError) as error:
                 self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))
@@ -140,7 +140,7 @@ def make_handler(service: Service):
             return None
 
         def _count_tokens(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            request = dialect.parse_count(body, self.headers.get("X-Session-Id", ""))
+            request = dialect.parse_count(body, self._session_id())
             provider, canonical = self._route(request.model)
             if provider.count_tokens is None:
                 # Truthful for a provider whose upstream cannot count: the
@@ -161,9 +161,7 @@ def make_handler(service: Service):
         def _responses(self, dialect: Dialect, body: dict[str, Any]) -> None:
             if dialect.parse_responses is None or dialect.encode_responses is None:
                 raise RequestError("Responses API is not supported by this dialect")
-            request = dialect.parse_responses(
-                body, self.headers.get("X-Session-Id", "")
-            )
+            request = dialect.parse_responses(body, self._session_id())
             return self._generate(
                 dialect,
                 request,
@@ -173,8 +171,13 @@ def make_handler(service: Service):
             )
 
         def _chat(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            request = dialect.parse(body, self.headers.get("X-Session-Id", ""))
+            request = dialect.parse(body, self._session_id())
             return self._generate(dialect, request, dialect.encode)
+
+        def _session_id(self) -> str:
+            return self.headers.get("X-Session-Id", "") or self.headers.get(
+                "X-Claude-Code-Session-Id", ""
+            )
 
         def _generate(self, dialect: Dialect, request: Any, encode: Any) -> None:
             provider, canonical = self._route(request.model)

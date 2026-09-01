@@ -6,16 +6,60 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 from llm_local_proxy.config import load
+from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers import Provider
 from llm_local_proxy.providers.catalog import match_model
+from llm_local_proxy.providers.claude import Claude
 from llm_local_proxy.providers.claude.catalog import model_info as _claude_model_info
 from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
+from llm_local_proxy.providers.codex import Codex
 from llm_local_proxy.providers.codex.catalog import model_info as _model_info
+from llm_local_proxy.providers.codex.upstream import UpstreamError
+from llm_local_proxy.providers.pool import Account, AccountPool, AccountStore
 from llm_local_proxy.service import Service
 from llm_local_proxy.status import ProviderStatus
 
 
 class ServiceWiringTest(unittest.TestCase):
+    def test_account_slots_change_live_without_a_configured_count(self):
+        class FakeApp:
+            def __init__(self, *_):
+                pass
+
+            def call(self, method, params=None):
+                return {}
+
+            def alive(self):
+                return True
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.toml"
+            config_path.write_text(
+                'host="127.0.0.1"\nport=8799\napi_key=""\n'
+                f'codex_home="{directory}/codex"\n'
+            )
+            config_path.chmod(0o600)
+            with patch(
+                "llm_local_proxy.providers.codex.AppServer", side_effect=FakeApp
+            ):
+                service = Service(load(config_path))
+                for provider in service.providers:
+                    self.assertEqual(provider.status().accounts, ())
+                    added = provider.routes["accounts"]({"action": "add"})
+                    self.assertEqual(len(provider.status().accounts), 1)
+                    with self.assertRaisesRegex(
+                        RequestError, "existing unsigned account"
+                    ):
+                        provider.routes["accounts"]({"action": "add"})
+                    provider.routes["accounts"](
+                        {"action": "remove", "account": added["account"]}
+                    )
+                    self.assertEqual(provider.status().accounts, ())
+                service.close()
+
     def test_upstreams_get_tokens_paths(self):
         # Regression guard: the token ledgers must be persisted to disk next
         # to the config, otherwise totals reset on every restart.
@@ -25,15 +69,19 @@ class ServiceWiringTest(unittest.TestCase):
                 'host="127.0.0.1"\nport=8799\napi_key="123456789012345678901234"\n'
             )
             config_path.chmod(0o600)
+            for provider in ("codex", "claude"):
+                store = AccountStore(Path(directory), provider)
+                store.add()
+                store.add()
             config = load(config_path)
-            seen = {}
+            seen = {"codex_tokens": [], "claude_tokens": []}
 
             def fake_upstream(app, timeout, tokens_path=None):
-                seen["codex_tokens"] = tokens_path
+                seen["codex_tokens"].append(tokens_path)
                 return SimpleNamespace(ledger=SimpleNamespace(windows=dict))
 
             def fake_claude_upstream(auth, timeout, usage_path=None, tokens_path=None):
-                seen["claude_tokens"] = tokens_path
+                seen["claude_tokens"].append(tokens_path)
                 return SimpleNamespace(
                     ledger=SimpleNamespace(windows=dict),
                     usage=SimpleNamespace(get=lambda: None),
@@ -53,10 +101,18 @@ class ServiceWiringTest(unittest.TestCase):
             ):
                 Service(config)
             self.assertEqual(
-                seen["codex_tokens"], Path(directory) / "codex-tokens.json"
+                seen["codex_tokens"],
+                [
+                    Path(directory) / "accounts/codex/1/tokens.json",
+                    Path(directory) / "accounts/codex/2/tokens.json",
+                ],
             )
             self.assertEqual(
-                seen["claude_tokens"], Path(directory) / "claude-tokens.json"
+                seen["claude_tokens"],
+                [
+                    Path(directory) / "accounts/claude/1/tokens.json",
+                    Path(directory) / "accounts/claude/2/tokens.json",
+                ],
             )
 
 
@@ -253,6 +309,7 @@ class ServerTest(unittest.TestCase):
             "tokens",
             "updated_at",
             "error",
+            "accounts",
         }
         for card in cards:
             self.assertEqual(set(card), fields)
@@ -300,6 +357,86 @@ class ServerTest(unittest.TestCase):
         value = Service.models(service)
         ids = [model["id"] for model in value["data"]]
         self.assertEqual(ids, ["acme-gpt-1"])
+
+
+class MultiAccountCatalogTest(unittest.TestCase):
+    class Auth:
+        def __init__(self, account):
+            self.account = account
+
+        def signed_in(self):
+            return True
+
+        def hydrate_profile(self):
+            pass
+
+        def status(self):
+            return ProviderStatus(signed_in=True, account=self.account)
+
+    class Client:
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+            self.ledger = SimpleNamespace(windows=dict)
+            self.usage = SimpleNamespace(limits=tuple, updated_at=lambda: None)
+
+        def models(self):
+            self.calls += 1
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    @classmethod
+    def accounts(cls, first, second):
+        return AccountPool(
+            [
+                Account("1", cls.Auth("one"), first),
+                Account("2", cls.Auth("two"), second),
+            ]
+        )
+
+    def test_claude_catalog_rotates_past_stale_accounts(self):
+        stale = self.Client(
+            ClaudeUpstreamError(400, "refresh token invalid", account_unavailable=True)
+        )
+        live = self.Client([{"id": "claude-live", "name": "Claude Live"}])
+        claude = Claude.__new__(Claude)
+        claude.pool = self.accounts(stale, live)
+        claude._lock = Lock()
+        claude._catalog = None
+
+        self.assertEqual(claude._live_catalog()[0]["id"], "claude-live")
+        self.assertIn("refresh token invalid", claude.pool.account_error("1"))
+        claude._catalog = None
+        self.assertEqual(claude._live_catalog()[0]["id"], "claude-live")
+        self.assertEqual((stale.calls, live.calls), (1, 2))
+
+        accounts = claude.status().accounts
+        self.assertFalse(accounts[0].signed_in)
+        self.assertIn("reauthentication required", accounts[0].error)
+        self.assertTrue(accounts[1].signed_in)
+
+    def test_codex_catalog_uses_the_same_rotating_discovery(self):
+        stale = self.Client(
+            UpstreamError(401, "refresh failed", account_unavailable=True)
+        )
+        live = self.Client([{"id": "gpt-live"}])
+        codex = Codex.__new__(Codex)
+        codex.pool = self.accounts(stale, live)
+        codex._lock = Lock()
+        codex._catalog = None
+        codex._catalog_from = lambda client: client.models()
+
+        self.assertEqual(codex._live_catalog(), [{"id": "gpt-live"}])
+        self.assertIn("refresh failed", codex.pool.account_error("1"))
+        codex._catalog = None
+        self.assertEqual(codex._live_catalog(), [{"id": "gpt-live"}])
+        self.assertEqual((stale.calls, live.calls), (1, 2))
+
+        accounts = codex.status().accounts
+        self.assertFalse(accounts[0].signed_in)
+        self.assertIn("reauthentication required", accounts[0].error)
+        self.assertTrue(accounts[1].signed_in)
 
 
 if __name__ == "__main__":

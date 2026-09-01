@@ -1,3 +1,4 @@
+import json
 import pathlib
 import tempfile
 import unittest
@@ -22,6 +23,9 @@ class ClaudeAuthTest(unittest.TestCase):
             "access_token": "at",
             "refresh_token": "rt",
         }
+        auth._profile_request = lambda token: {
+            "account": {"email": "person@example.com"}
+        }
         callback = "https://platform.claude.com/oauth/code/callback"
         with self.assertRaises(ClaudeAuthError):
             auth.finish(f"{callback}?code=abc&state=stale")
@@ -42,6 +46,7 @@ class ClaudeAuthTest(unittest.TestCase):
                 "refresh_token": "rt",
             }
         )
+        auth._profile_request = lambda token: {}
         callback = "https://platform.claude.com/oauth/code/callback"
         auth.finish(f"{callback}?code=abc&state={state}")
         self.assertEqual(
@@ -76,6 +81,7 @@ class ClaudeAuthTest(unittest.TestCase):
                 "expires_in": 3600,
             }
         )
+        auth._profile_request = lambda token: {}
         auth.access_token(force_refresh=True)
         self.assertEqual(seen["grant_type"], "refresh_token")
         self.assertEqual(seen["refresh_token"], "rt")
@@ -90,6 +96,7 @@ class ClaudeAuthTest(unittest.TestCase):
             "access_token": "at",
             "refresh_token": "rt",
         }
+        restarted._profile_request = lambda token: {}
         status = restarted.finish(
             f"https://platform.claude.com/oauth/code/callback?code=abc&state={state}"
         )
@@ -133,7 +140,7 @@ class ClaudeAuthTest(unittest.TestCase):
 
     def test_status_never_exposes_secrets(self):
         # The dashboard and /api/status must not leak tokens or expiries;
-        # status() only reports sign-in state and the subscription tier.
+        # status() only reports sign-in state and non-secret identity metadata.
         auth = ClaudeAuth(pathlib.Path(tempfile.mkdtemp()) / "credentials.json")
         status = auth.status().payload()
         self.assertFalse(status["signed_in"])
@@ -142,12 +149,12 @@ class ClaudeAuthTest(unittest.TestCase):
         path.write_text(
             '{"access_token":"at","refresh_token":"rt","expires_at":4102444800,'
             '"refresh_expires_at":4102444800,"scopes":["user:inference"],'
-            '"subscription_type":"pro"}'
+            '"subscription_type":"pro","email":"person@example.com"}'
         )
         path.chmod(0o600)
         status = auth.status().payload()
         self.assertTrue(status["signed_in"])
-        self.assertEqual(status["account"], "pro")
+        self.assertEqual(status["account"], "person@example.com · pro")
         for secret in (
             "access_token",
             "refresh_token",
@@ -157,6 +164,20 @@ class ClaudeAuthTest(unittest.TestCase):
             "scopes",
         ):
             self.assertNotIn(secret, status)
+
+    def test_hydrates_credentials_missing_profile_email(self):
+        auth = ClaudeAuth(pathlib.Path(tempfile.mkdtemp()) / "credentials.json")
+        auth.path.write_text('{"access_token":"at","subscription_type":"max"}')
+        auth._profile_request = lambda token: {
+            "account": {"email": "person@example.com", "full_name": "Person"}
+        }
+
+        auth.hydrate_profile()
+
+        self.assertEqual(auth.status().account, "person@example.com · max")
+        self.assertEqual(
+            json.loads(auth.path.read_text())["email"], "person@example.com"
+        )
 
 
 if __name__ == "__main__":

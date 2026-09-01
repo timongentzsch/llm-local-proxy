@@ -4,8 +4,8 @@ The proxy serves two downstream wire formats over two upstream subscriptions.
 Any format can reach any subscription: the request's `model` decides.
 
 ```
-  request    dialects/<d>/ingress.py  ──► ChatRequest ──► providers/<p>/request.py  ──► upstream
-  response   providers/<p>/events.py  ──► StreamEvent ──► dialects/<d>/egress.py    ──► client
+  request    dialects/<d>/ingress.py  ──► ChatRequest ──► providers/<p>/request.py ──► account pool ──► upstream
+  response   providers/<p>/events.py  ──► StreamEvent ──► dialects/<d>/egress.py   ──► client
 ```
 
 Everything else follows from keeping those two axes independent.
@@ -21,7 +21,7 @@ model and effort names do not.
 | --- | --- | --- |
 | **Dialect** — downstream wire format | OpenAI Chat Completions, Anthropic Messages | one package, one registry line |
 | **Provider** — upstream subscription | Codex, Claude | one package, one registry line |
-| **Auth** — credential lifecycle | per provider, behind the `Auth` ABC | nothing outside that provider |
+| **Auth** — credential lifecycle | account slots behind the `Auth` ABC | nothing outside that provider |
 
 Without the intermediate representations this would be a grid: every dialect
 would need a converter for every provider. With them it is N + M.
@@ -48,7 +48,7 @@ two; the Chat Completions encoder narrows them to four.
 ```
 src/llm_local_proxy/
   ir.py            # ChatRequest, content blocks, StreamEvent
-  errors.py        # RequestError
+  errors.py        # downstream request and provider failure boundaries
   service.py       # registry, merged catalog, status
   config.py  atomic.py  ledger.py  status.py
 
@@ -67,8 +67,9 @@ src/llm_local_proxy/
   providers/
     base.py        # Provider, ProviderContext
     __init__.py    # REGISTRY, in match-priority order
-    auth.py        # Auth ABC
+    auth.py        # Auth ABC + multi-login facade
     catalog.py     # the OpenRouter model shape both providers report
+    pool.py        # sticky selection, round-robin and safe pre-output failover
     reasoning.py   # ReasoningCache
     transport.py   # no-redirect handler + SSE reader
     codex/         # app_server auth upstream request events catalog
@@ -99,6 +100,38 @@ header a client happens to send would only produce a confusing 401.
 `404` by those that cannot. A client that gets the 404 falls back to its own
 estimate knowing it is one; a client handed a guessed integer would trust it
 and manage its context wrongly.
+
+## Account routing
+
+Every provider owns an `AccountPool`; dialect and service routing still see one
+Claude provider and one Codex provider, so model IDs do not acquire account
+suffixes. A request with `X-Session-Id` hashes to a stable signed-in account;
+Claude Code's native `X-Claude-Code-Session-Id` is accepted as its fallback.
+Without a session ID the starting account advances round-robin.
+
+A 429 received before the first upstream event cools that account for five
+minutes and tries the untouched request on the next login. Provider transports
+also classify terminal authentication failures; those fail over at the same
+safe boundary, mark the slot as requiring reauthentication and cool it for one
+minute. Other errors retain their upstream status, and no error after the first
+event can switch accounts. The shorter auth cooldown avoids repeated refresh
+latency while periodically checking whether a repaired login can rejoin. This
+boundary avoids both retrying invalid requests and duplicating streamed output.
+
+Model discovery uses the same pool without session affinity. Each uncached
+refresh starts at the next account and accepts the first live catalog, skipping
+stale credentials without querying every healthy account. Claude and Codex
+share this selection path; only their transport-specific auth classification
+differs.
+
+Account state has one canonical layout: Codex homes are
+`codex_home/accounts/<slot>`, while proxy-owned state is
+`accounts/<provider>/<slot>` under the config directory. Slot IDs are internal;
+the dashboard labels authenticated rows with the provider-reported email.
+Each provider's adjacent `slots.json` registry is changed live by the dashboard,
+so pools can grow without a configured count or restart. A second unsigned slot
+is refused. Removing a signed-in slot is also refused; after sign-out, removal
+closes its client and deletes only that slot's state.
 
 ## Evidence rules
 
