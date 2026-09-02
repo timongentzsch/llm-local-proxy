@@ -118,10 +118,12 @@ class MessageEncoder:
                 self._delta({"type": "thinking_delta", "thinking": event.text})
             ]
         if isinstance(event, ThinkingSignature):
-            if self._open is None or self._open["kind"] != "thinking":
-                return []
+            frames = self._ensure(
+                "thinking", {"type": "thinking", "thinking": "", "signature": ""}
+            )
+            assert self._open is not None
             self._open["block"]["signature"] = event.signature
-            return [
+            return frames + [
                 self._delta({"type": "signature_delta", "signature": event.signature})
             ]
         if isinstance(event, RedactedThinkingDelta):
