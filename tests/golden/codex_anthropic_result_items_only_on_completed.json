@@ -6,6 +6,11 @@
     "model": "gpt-5.6-sol",
     "content": [
       {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "llpv1-codex-reasoning:eyJpdGVtIjp7ImVuY3J5cHRlZF9jb250ZW50IjoiRU5DLTkiLCJpZCI6InJzXzkiLCJzdW1tYXJ5IjpbXSwidHlwZSI6InJlYXNvbmluZyJ9LCJ0aGlua2luZyI6IiJ9"
+      },
+      {
         "type": "tool_use",
         "id": "call_9",
         "name": "late",

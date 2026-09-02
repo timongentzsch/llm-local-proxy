@@ -238,6 +238,19 @@ def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
     return unpack(item.get("encrypted_content"))
 
 
+def _web_tool(tool: WebSearchTool) -> dict[str, Any]:
+    if tool.native is None:
+        return {"type": WEB_SEARCH_TOOL, "name": "web_search"}
+    kind = str(tool.native.get("type") or "")
+    if kind.startswith("web_search_"):
+        return dict(tool.native)
+    if set(tool.native) - {"type"}:
+        raise RequestError(
+            "Claude upstream cannot faithfully represent Responses web_search options"
+        )
+    return {"type": WEB_SEARCH_TOOL, "name": "web_search"}
+
+
 def _tool_choice(choice: ToolChoice | None) -> dict[str, Any]:
     if choice is None or choice.kind == "auto":
         return {"type": "auto"}
@@ -369,11 +382,7 @@ def build(
                     + ", ".join(unsupported)
                 )
     web_tools = [tool for tool in request.tools if isinstance(tool, WebSearchTool)]
-    for tool in web_tools:
-        if tool.native is not None and set(tool.native) - {"type"}:
-            raise RequestError(
-                "Claude upstream cannot faithfully represent Responses web_search options"
-            )
+    rendered_web_tools = [_web_tool(tool) for tool in web_tools]
     tools = [
         {
             "name": tool.name,
@@ -387,8 +396,8 @@ def build(
         }
         for tool in function_tools
     ]
-    if web_tools:
-        tools.append({"type": WEB_SEARCH_TOOL, "name": "web_search"})
+    if rendered_web_tools:
+        tools.extend(rendered_web_tools)
         betas.append(WEB_SEARCH_BETA)
     choice = request.tool_choice
     if tools and not (choice and choice.kind == "none"):

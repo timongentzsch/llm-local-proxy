@@ -266,6 +266,19 @@ class ResponsesEgressTest(unittest.TestCase):
         )
         self.assertEqual(encoder.result()["output"][0]["summary"], [])
 
+    def test_completed_only_reasoning_summary_is_not_duplicated(self):
+        encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
+        encoder.feed(
+            {
+                "type": "response.completed",
+                "response": {"output": [REASONING], "usage": {}},
+            }
+        )
+        reasoning = [
+            item for item in encoder.result()["output"] if item["type"] == "reasoning"
+        ]
+        self.assertEqual(reasoning, [REASONING])
+
     def test_native_output_item_and_stream_error_are_preserved(self):
         decoder = CodexDecoder(ReasoningCache())
         encoder = ResponseEncoder("gpt-test", decoder)

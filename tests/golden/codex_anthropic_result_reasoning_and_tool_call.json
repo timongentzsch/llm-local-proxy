@@ -8,7 +8,7 @@
       {
         "type": "thinking",
         "thinking": "Weighing options.",
-        "signature": ""
+        "signature": "llpv1-codex-reasoning:eyJpdGVtIjp7ImVuY3J5cHRlZF9jb250ZW50IjoiRU5DUllQVEVELUJMT0IiLCJpZCI6InJzXzEiLCJzdW1tYXJ5IjpbeyJ0ZXh0IjoiV2VpZ2hpbmcgb3B0aW9ucy4iLCJ0eXBlIjoic3VtbWFyeV90ZXh0In1dLCJ0eXBlIjoicmVhc29uaW5nIn0sInRoaW5raW5nIjoiV2VpZ2hpbmcgb3B0aW9ucy4ifQ=="
       },
       {
         "type": "tool_use",

@@ -119,7 +119,7 @@ def _tools(value: Any) -> list[Tool]:
             raise RequestError("invalid tool")
         kind = str(item.get("type") or "")
         if kind.startswith(WEB_SEARCH_PREFIX):
-            tools.append(WebSearchTool())
+            tools.append(WebSearchTool(native=dict(item)))
             continue
         if kind and not item.get("input_schema"):
             raise RequestError(f"unsupported server tool: {kind}")

@@ -15,6 +15,7 @@ from ...ir import (
     NativeTool,
     Reasoning,
     Text,
+    Thinking,
     Tool,
     ToolChoice,
     ToolResult,
@@ -22,6 +23,7 @@ from ...ir import (
     WebSearchTool,
 )
 from ..reasoning import ReasoningCache
+from .thinking import unpack as unpack_thinking
 
 #: Knobs Codex does not expose, and the value of each that means "unset".
 UNSUPPORTED = (
@@ -70,8 +72,19 @@ def _content(turn_blocks: list[Any], role: str) -> list[dict[str, Any]]:
 def _tool(tool: Tool) -> dict[str, Any]:
     if isinstance(tool, NativeTool):
         return dict(tool.item)
-    if isinstance(tool, (FunctionTool, WebSearchTool)) and tool.native is not None:
+    if isinstance(tool, FunctionTool) and tool.native is not None:
         return dict(tool.native)
+    if isinstance(tool, WebSearchTool) and tool.native is not None:
+        kind = str(tool.native.get("type") or "")
+        if kind in {"web_search", "web_search_preview"}:
+            return dict(tool.native)
+        unsupported = sorted(set(tool.native) - {"type", "name"})
+        if unsupported:
+            raise RequestError(
+                "Codex upstream cannot faithfully represent Anthropic web_search "
+                "options: " + ", ".join(unsupported)
+            )
+        return {"type": "web_search"}
     if isinstance(tool, FunctionTool):
         item = {"type": "function", "name": tool.name, "parameters": tool.parameters}
         if tool.description:
@@ -102,7 +115,9 @@ def _turn_items(turn: Any, cache: ReasoningCache) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     pending: list[Any] = []
     uses = [block for block in turn.blocks if isinstance(block, ToolUse)]
-    has_reasoning = any(isinstance(block, Reasoning) for block in turn.blocks)
+    has_reasoning = any(
+        isinstance(block, (Reasoning, Thinking)) for block in turn.blocks
+    )
     cached = [] if has_reasoning else cache.get([use.id for use in uses if use.id])
     cache_inserted = False
     for block in turn.blocks:
@@ -112,6 +127,18 @@ def _turn_items(turn: Any, cache: ReasoningCache) -> list[dict[str, Any]]:
         _flush_content(items, pending, turn.role)
         if isinstance(block, (Reasoning, NativeResponseItem)):
             items.append(dict(block.item))
+        elif isinstance(block, Thinking):
+            try:
+                bridged = unpack_thinking(block.signature)
+            except ValueError as exc:
+                raise RequestError(str(exc)) from None
+            if bridged is None:
+                raise RequestError(
+                    "Codex upstream cannot faithfully represent Anthropic signed thinking"
+                )
+            if block.text != bridged.thinking:
+                raise RequestError("Codex reasoning thinking text was modified")
+            items.append(dict(bridged.item))
         elif isinstance(block, ToolUse):
             if not cache_inserted:
                 items.extend(cached)
@@ -175,9 +202,13 @@ def build(
         body["tool_choice"] = _tool_choice(request.tool_choice)
         parallel = request.parallel_tool_calls
         body["parallel_tool_calls"] = bool(True if parallel is None else parallel)
-    # Always request the completed encrypted item: models can reason at their
-    # catalog default even when the client omits an explicit effort.
-    body["include"] = ["reasoning.encrypted_content"]
+    if request.thinking_budget is not None:
+        raise RequestError(
+            "Codex upstream cannot faithfully represent an Anthropic thinking budget; "
+            "use output_config.effort"
+        )
+    if request.thinking_mode == "disabled":
+        raise RequestError("Codex upstream cannot guarantee that reasoning is disabled")
     if request.reasoning_effort:
         effort = str(request.reasoning_effort).casefold()
         supported = {str(item).casefold() for item in reasoning_efforts or ()}
@@ -185,5 +216,10 @@ def build(
             raise RequestError(
                 f"unsupported reasoning_effort: {request.reasoning_effort}"
             )
-        body["reasoning"] = {"effort": effort, "summary": "auto"}
+        body["reasoning"] = {"effort": effort}
+        if request.thinking_display != "omitted":
+            body["reasoning"]["summary"] = "auto"
+    # Models can reason at their catalog default even when the client omits an
+    # explicit effort, so always request the completed encrypted item.
+    body["include"] = ["reasoning.encrypted_content"]
     return body, session
