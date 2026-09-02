@@ -30,7 +30,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 # without it (and the system marker) are billed against the API pool and 429.
 CLAUDE_CODE_BETA = "claude-code-20250219"
 # The subscription accepts the Claude Code client user agent.
-USER_AGENT = "claude-cli/2.1.235 (external, sdk-cli)"
+USER_AGENT = "claude-cli/2.1.251 (external, sdk-cli)"
 
 
 class ClaudeUpstreamError(ProviderError):
