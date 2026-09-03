@@ -18,6 +18,7 @@ from typing import Any
 from ...ir import (
     Citation,
     Finish,
+    HostedToolEvent,
     RedactedThinkingDelta,
     StreamEvent,
     TextDelta,
@@ -41,6 +42,7 @@ class MessageEncoder:
         self.usage: Usage | None = None
         self.stop_reason: str | None = None
         self._index = -1
+        self._searches: set[str] = set()
         self._open: dict[str, Any] | None = None
         self._drained = False
 
@@ -161,6 +163,8 @@ class MessageEncoder:
             ]
         if isinstance(event, ToolCallEnd):
             return self._close()
+        if isinstance(event, HostedToolEvent):
+            return self._hosted(event)
         if isinstance(event, Citation):
             if self._open is None or self._open["kind"] != "text":
                 return []
@@ -174,6 +178,44 @@ class MessageEncoder:
             self.stop_reason = event.reason
             return []
         return []
+
+    def _hosted(self, event: HostedToolEvent) -> list[dict[str, Any]]:
+        """A provider-run search as Anthropic's own server-tool blocks.
+
+        Never `tool_use`: that block obliges the client to run the search and
+        return a result, and this one has already run upstream. `_stop()`
+        matches `tool_use` exactly, so `stop_reason` is unaffected.
+        """
+        frames: list[dict[str, Any]] = []
+        if event.id not in self._searches:
+            self._searches.add(event.id)
+            block: dict[str, Any] = {
+                "type": "server_tool_use",
+                "id": event.id,
+                "name": "web_search",
+                "input": {"query": event.query} if event.query else {},
+            }
+            # Left open: the span until the result block is the search, and a
+            # client showing it needs both ends to arrive when they happened.
+            frames = self._open_block("server_tool_use", block)
+        if event.phase == "completed":
+            # Present and empty rather than invented: no upstream forwards the
+            # individual result records through this proxy.
+            frames.extend(
+                self._open_block(
+                    "web_search_tool_result",
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": event.id,
+                        "content": [],
+                    },
+                )
+            )
+        if event.phase in {"completed", "failed"}:
+            # A failure closes the request block and stops there; Anthropic's
+            # error record carries a code this proxy would have to make up.
+            frames.extend(self._close())
+        return frames
 
     def _ensure(self, kind: str, block: dict[str, Any]) -> list[dict[str, Any]]:
         if self._open is not None and self._open["kind"] == kind:

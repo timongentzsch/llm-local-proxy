@@ -462,6 +462,86 @@ class EgressTest(unittest.TestCase):
         self.assertEqual(frames[-2]["type"], "message_delta")
         self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
 
+    def test_hosted_search_stays_a_server_tool_and_never_a_tool_use(self):
+        """A search the provider ran must not read as a call the client owes.
+
+        A `tool_use` block plus a `tool_use` stop reason would send an
+        Anthropic client into a tool round for work already done upstream.
+        """
+        frames = self._stream(
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": {"query": "python 3.14"},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": [],
+                    },
+                },
+            ]
+        )
+        blocks = [
+            f["content_block"] for f in frames if f["type"] == "content_block_start"
+        ]
+        self.assertEqual(
+            [block["type"] for block in blocks],
+            ["server_tool_use", "web_search_tool_result"],
+        )
+        self.assertEqual(blocks[0]["input"], {"query": "python 3.14"})
+        self.assertEqual(blocks[1]["tool_use_id"], "srvtoolu_1")
+        self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
+        # One block open at a time, under monotonic indices.
+        opened = [f["index"] for f in frames if f["type"] == "content_block_start"]
+        closed = [f["index"] for f in frames if f["type"] == "content_block_stop"]
+        self.assertEqual(opened, [0, 1])
+        self.assertEqual(closed, [0, 1])
+
+    def test_a_failed_search_closes_without_an_invented_result(self):
+        frames = self._stream(
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": {},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": {
+                            "type": "web_search_tool_result_error",
+                            "error_code": "unavailable",
+                        },
+                    },
+                },
+            ]
+        )
+        blocks = [
+            f["content_block"]["type"]
+            for f in frames
+            if f["type"] == "content_block_start"
+        ]
+        self.assertEqual(blocks, ["server_tool_use"])
+        self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
+
     def test_message_start_carries_required_usage(self):
         # input_tokens is non-nullable even before anything is known.
         start = self._stream([])[0]

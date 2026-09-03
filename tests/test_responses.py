@@ -303,6 +303,62 @@ class ResponsesEgressTest(unittest.TestCase):
         self.assertEqual(failure["message"], "boom")
         self.assertIn("sequence_number", failure)
 
+    def test_hosted_search_keeps_its_item_open_across_the_wait(self):
+        """`added` and `done` must not arrive together: the gap is the search.
+
+        The `NativeItem` path emits both at once, which is why a hosted search
+        gets its own encoder branch rather than reusing it.
+        """
+        encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
+        added = encoder.feed(
+            {
+                "type": "response.output_item.added",
+                "item": {"type": "web_search_call", "id": "ws_1"},
+            }
+        )
+        self.assertEqual(
+            [event["type"] for event in added], ["response.output_item.added"]
+        )
+        self.assertEqual(
+            added[0]["item"],
+            {"type": "web_search_call", "id": "ws_1", "status": "in_progress"},
+        )
+        searching = encoder.feed(
+            {"type": "response.web_search_call.searching", "item_id": "ws_1"}
+        )
+        self.assertEqual(
+            [(e["type"], e["item_id"]) for e in searching],
+            [("response.web_search_call.searching", "ws_1")],
+        )
+        completed = encoder.feed(
+            {"type": "response.web_search_call.completed", "item_id": "ws_1"}
+        )
+        self.assertEqual(
+            [event["type"] for event in completed],
+            ["response.web_search_call.completed", "response.output_item.done"],
+        )
+        # A repeat of the same terminal state adds nothing to the stream.
+        self.assertEqual(
+            encoder.feed(
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "web_search_call",
+                        "id": "ws_1",
+                        "status": "completed",
+                    },
+                }
+            ),
+            [],
+        )
+        result = encoder.result()
+        self.assertEqual(
+            result["output"],
+            [{"type": "web_search_call", "id": "ws_1", "status": "completed"}],
+        )
+        # Never a call the client is expected to run and answer.
+        self.assertEqual(result["status"], "completed")
+
     def test_claude_signed_thinking_is_exposed_as_replayable_item(self):
         encoder = ResponseEncoder("claude-test", ClaudeDecoder())
         for event in (

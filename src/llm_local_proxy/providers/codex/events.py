@@ -8,6 +8,7 @@ from typing import Any
 from ...ir import (
     Citation,
     Finish,
+    HostedToolEvent,
     NativeItem,
     ReasoningItem,
     StreamEvent,
@@ -17,6 +18,7 @@ from ...ir import (
     ToolCallEnd,
     ToolCallStart,
     Usage,
+    hosted_tool_step,
 )
 from ..reasoning import ReasoningCache
 from .thinking import pack
@@ -33,6 +35,7 @@ class CodexDecoder:
         self.calls: list[str] = []
         self.reasoning_items: list[dict[str, Any]] = []
         self.web_searches: set[str] = set()
+        self._search_phase: dict[str, str] = {}
         self._native_seen: set[str] = set()
         self._thinking = ""
         self._usage: Usage | None = None
@@ -50,8 +53,9 @@ class CodexDecoder:
         if kind == "response.output_text.annotation.added":
             return _citation(event.get("annotation"))
         if kind == "response.output_item.added":
-            self._web_search(event.get("item"))
-            return []
+            return self._web_search(event.get("item"), "started")
+        if kind in _SEARCH_PHASES:
+            return self._hosted(str(event.get("item_id") or ""), _SEARCH_PHASES[kind])
         if kind == "response.output_item.done":
             return self._item(event.get("item"))
         if kind == "response.completed":
@@ -80,8 +84,7 @@ class CodexDecoder:
     def _item(self, item: Any) -> list[StreamEvent]:
         if not isinstance(item, dict):
             return []
-        self._web_search(item)
-        events: list[StreamEvent] = []
+        events: list[StreamEvent] = self._web_search(item, _terminal(item))
         content = item.get("content", [])
         for part in content if isinstance(content, list) else []:
             if isinstance(part, dict):
@@ -137,9 +140,33 @@ class CodexDecoder:
         self._thinking = ""
         return events
 
-    def _web_search(self, item: Any) -> None:
-        if isinstance(item, dict) and item.get("type") == "web_search_call":
-            self.web_searches.add(str(item.get("id") or "web_search"))
+    def _web_search(self, item: Any, phase: str) -> list[StreamEvent]:
+        if not isinstance(item, dict) or item.get("type") != "web_search_call":
+            return []
+        search_id = str(item.get("id") or "web_search")
+        self.web_searches.add(search_id)
+        return self._hosted(search_id, phase)
+
+    def _hosted(self, search_id: str, phase: str) -> list[StreamEvent]:
+        """One lifecycle step, dropped unless it advances this search."""
+        if not search_id or not hosted_tool_step(self._search_phase, search_id, phase):
+            return []
+        return [HostedToolEvent("web_search", search_id, phase)]
+
+
+#: Responses names the middle of a hosted search in its own events; the ends
+#: arrive as ordinary output items.
+_SEARCH_PHASES = {
+    "response.web_search_call.in_progress": "started",
+    "response.web_search_call.searching": "searching",
+    "response.web_search_call.completed": "completed",
+}
+
+
+def _terminal(item: Any) -> str:
+    """How a finished search item ended. Absent status means it simply did."""
+    status = item.get("status") if isinstance(item, dict) else None
+    return "failed" if status in {"failed", "incomplete"} else "completed"
 
 
 def _summary_text(item: dict[str, Any]) -> str:

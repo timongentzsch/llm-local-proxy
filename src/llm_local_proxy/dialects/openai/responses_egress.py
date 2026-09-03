@@ -12,6 +12,7 @@ from ...ir import (
     Citation,
     Finish,
     FunctionTool,
+    HostedToolEvent,
     NativeItem,
     NativeTool,
     ReasoningItem,
@@ -69,6 +70,7 @@ class ResponseEncoder:
         self._reasoning: dict[str, Any] | None = None
         self._reasoning_part_open = False
         self._calls: dict[Any, dict[str, Any]] = {}
+        self._searches: dict[str, dict[str, Any]] = {}
         self._finish_reason = "end_turn"
         self._drained = False
         self._terminal = False
@@ -261,6 +263,8 @@ class ResponseEncoder:
                     item=copy.deepcopy(item),
                 ),
             ]
+        if isinstance(event, HostedToolEvent):
+            return self._hosted(event)
         if isinstance(event, Citation):
             if self._message is None:
                 return []
@@ -300,6 +304,62 @@ class ResponseEncoder:
         if isinstance(event, Finish):
             self._finish_reason = event.reason
         return []
+
+    def _hosted(self, event: HostedToolEvent) -> list[dict[str, Any]]:
+        """A hosted search as the Responses lifecycle a client already knows.
+
+        Deliberately not the `NativeItem` path, which emits `added` and `done`
+        back to back: the gap between them is the whole signal here, and a
+        client showing "searching" needs the item to stay open across it.
+        """
+        item = self._searches.get(event.id)
+        if item is None:
+            chunks = self._close_open_items()
+            item = {
+                "type": "web_search_call",
+                "id": event.id or "ws_" + uuid.uuid4().hex,
+                "status": "in_progress",
+            }
+            self._searches[event.id] = item
+            self.output.append(item)
+            chunks.append(
+                self._event(
+                    "response.output_item.added",
+                    output_index=len(self.output) - 1,
+                    item=copy.deepcopy(item),
+                )
+            )
+        else:
+            chunks = []
+        index = self.output.index(item)
+        if event.phase == "searching":
+            chunks.append(
+                self._event(
+                    "response.web_search_call.searching",
+                    output_index=index,
+                    item_id=item["id"],
+                )
+            )
+            return chunks
+        if event.phase not in {"completed", "failed"}:
+            return chunks
+        item["status"] = event.phase
+        if event.phase == "completed":
+            chunks.append(
+                self._event(
+                    "response.web_search_call.completed",
+                    output_index=index,
+                    item_id=item["id"],
+                )
+            )
+        chunks.append(
+            self._event(
+                "response.output_item.done",
+                output_index=index,
+                item=copy.deepcopy(item),
+            )
+        )
+        return chunks
 
     def _ensure_reasoning(self, *, summary: bool) -> list[dict[str, Any]]:
         if self._reasoning is not None:
