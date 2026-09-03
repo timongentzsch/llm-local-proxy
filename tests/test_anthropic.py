@@ -20,6 +20,7 @@ from llm_local_proxy.ir import Image, Text, Thinking, ToolResult, ToolUse
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
 from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
+from llm_local_proxy.providers.codex.request import build as build_codex
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 BASE = {
@@ -287,6 +288,89 @@ class IngressTest(unittest.TestCase):
         self.assertEqual(request.params["stop"], ["END"])
         self.assertEqual(request.params["top_k"], 5)
 
+    def test_claude_and_codex_both_receive_a_requested_schema(self):
+        schema = {
+            "title": "city",
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        }
+        body = {
+            **BASE,
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        }
+        request = parse(body)
+        self.assertEqual(request.output_format.kind, "json_schema")
+        self.assertEqual(request.output_format.schema, schema)
+
+        upstream, betas = build_claude(
+            request,
+            "claude-sonnet-5",
+            max_output=32768,
+            reasoning_cache=ReasoningCache(),
+        )
+        self.assertEqual(
+            upstream["output_config"],
+            {"format": {"type": "json_schema", "schema": schema}},
+        )
+        self.assertIn("structured-outputs-2025-11-13", betas)
+
+        # Responses demands a label Messages never sends; the schema title is
+        # carried across so the constraint itself survives the crossing.
+        codex, _ = build_codex(request, ReasoningCache())
+        self.assertEqual(
+            codex["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "city",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+
+    def test_deprecated_output_format_is_still_honoured(self):
+        schema = {"type": "object", "properties": {}}
+        request = parse(
+            {**BASE, "output_format": {"type": "json_schema", "schema": schema}}
+        )
+        self.assertEqual(request.output_format.schema, schema)
+        # No title to borrow, so the Responses label falls back to a placeholder.
+        codex, _ = build_codex(request, ReasoningCache())
+        self.assertEqual(codex["text"]["format"]["name"], "response")
+
+    def test_output_config_options_we_cannot_honour_are_refused(self):
+        with self.assertRaisesRegex(RequestError, "task_budget"):
+            parse({**BASE, "output_config": {"task_budget": {"tokens": 10}}})
+        with self.assertRaisesRegex(RequestError, "unsupported output format"):
+            parse({**BASE, "output_config": {"format": {"type": "grammar"}}})
+        with self.assertRaisesRegex(RequestError, "requires schema"):
+            parse({**BASE, "output_config": {"format": {"type": "json_schema"}}})
+
+    def test_effort_and_schema_share_one_output_config(self):
+        request = parse(
+            {
+                **BASE,
+                "output_config": {
+                    "effort": "high",
+                    "format": {"type": "json_schema", "schema": {"type": "object"}},
+                },
+            }
+        )
+        upstream, _ = build_claude(
+            request,
+            "claude-sonnet-5",
+            max_output=32768,
+            reasoning_efforts=["high"],
+            reasoning_cache=ReasoningCache(),
+        )
+        self.assertEqual(upstream["output_config"]["effort"], "high")
+        self.assertEqual(
+            upstream["output_config"]["format"],
+            {"type": "json_schema", "schema": {"type": "object"}},
+        )
+
 
 class RoundTripTest(unittest.TestCase):
     def test_signed_thinking_reaches_claude_verbatim(self):
@@ -460,6 +544,86 @@ class EgressTest(unittest.TestCase):
         self.assertEqual(frames[0]["type"], "message_start")
         self.assertEqual(frames[-1]["type"], "message_stop")
         self.assertEqual(frames[-2]["type"], "message_delta")
+        self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
+
+    def test_hosted_search_stays_a_server_tool_and_never_a_tool_use(self):
+        """A search the provider ran must not read as a call the client owes.
+
+        A `tool_use` block plus a `tool_use` stop reason would send an
+        Anthropic client into a tool round for work already done upstream.
+        """
+        frames = self._stream(
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": {"query": "python 3.14"},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": [],
+                    },
+                },
+            ]
+        )
+        blocks = [
+            f["content_block"] for f in frames if f["type"] == "content_block_start"
+        ]
+        self.assertEqual(
+            [block["type"] for block in blocks],
+            ["server_tool_use", "web_search_tool_result"],
+        )
+        self.assertEqual(blocks[0]["input"], {"query": "python 3.14"})
+        self.assertEqual(blocks[1]["tool_use_id"], "srvtoolu_1")
+        self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
+        # One block open at a time, under monotonic indices.
+        opened = [f["index"] for f in frames if f["type"] == "content_block_start"]
+        closed = [f["index"] for f in frames if f["type"] == "content_block_stop"]
+        self.assertEqual(opened, [0, 1])
+        self.assertEqual(closed, [0, 1])
+
+    def test_a_failed_search_closes_without_an_invented_result(self):
+        frames = self._stream(
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": {},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": {
+                            "type": "web_search_tool_result_error",
+                            "error_code": "unavailable",
+                        },
+                    },
+                },
+            ]
+        )
+        blocks = [
+            f["content_block"]["type"]
+            for f in frames
+            if f["type"] == "content_block_start"
+        ]
+        self.assertEqual(blocks, ["server_tool_use"])
         self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
 
     def test_message_start_carries_required_usage(self):

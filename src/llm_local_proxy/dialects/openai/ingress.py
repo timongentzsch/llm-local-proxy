@@ -15,6 +15,7 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    OutputFormat,
     Text,
     Tool,
     ToolChoice,
@@ -24,6 +25,7 @@ from ...ir import (
     WebSearchTool,
 )
 from ..base import block_text
+from .output import format_of
 from .reasoning import options as reasoning_options
 
 SYSTEM_ROLES = {"system", "developer"}
@@ -36,10 +38,22 @@ PARAMS = (
     "logprobs",
     "top_logprobs",
     "seed",
-    "response_format",
     "logit_bias",
     "stop",
 )
+
+
+def _output_format(value: Any) -> OutputFormat | None:
+    """Read `response_format`, whose schema sits one level deeper than Responses."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RequestError("response_format must be an object")
+    kind = value.get("type")
+    nested = value.get("json_schema") if kind == "json_schema" else {}
+    if kind == "json_schema" and not isinstance(nested, dict):
+        raise RequestError("response_format.json_schema must be an object")
+    return format_of(kind, nested or {})
 
 
 def _text(content: Any) -> str:
@@ -222,4 +236,5 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         stream=bool(body.get("stream", False)),
         session=session or str(body.get("session_id", "")),
         params={name: body[name] for name in PARAMS if name in body},
+        output_format=_output_format(body.get("response_format")),
     )

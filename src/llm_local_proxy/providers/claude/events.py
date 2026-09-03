@@ -8,6 +8,7 @@ from typing import Any
 from ...ir import (
     Citation,
     Finish,
+    HostedToolEvent,
     ReasoningItem,
     RedactedThinkingDelta,
     StreamEvent,
@@ -18,6 +19,7 @@ from ...ir import (
     ToolCallEnd,
     ToolCallStart,
     Usage,
+    hosted_tool_step,
 )
 from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
@@ -38,7 +40,11 @@ class ClaudeDecoder:
         self.reasoning_cache = reasoning_cache
         self.reasoning_blocks: list[dict[str, Any]] = []
         self.calls: list[str] = []
+        #: Search ids, so the same search counted from its request and from
+        #: its result stays one search.
         self.web_searches: set[Any] = set()
+        self._search_phase: dict[str, str] = {}
+        self._open_search = ""
         self._open_call: dict[str, Any] | None = None
         self._open_thinking: dict[str, Any] | None = None
         self._open_redacted: dict[str, Any] | None = None
@@ -109,8 +115,21 @@ class ClaudeDecoder:
             }
             data = self._open_redacted["data"]
             return [RedactedThinkingDelta(data)] if data else []
-        elif kind in {WEB_SEARCH_TOOL, "web_search_tool_result"}:
-            self.web_searches.add(index)
+        elif kind in {"server_tool_use", WEB_SEARCH_TOOL}:
+            # The stream says `server_tool_use`; the versioned spelling is the
+            # tool *definition*, accepted here because both have been seen.
+            if str(block.get("name", "web_search")) != "web_search":
+                return []
+            self._open_search = str(block.get("id") or f"web_search_{index}")
+            given = block.get("input")
+            # Best effort: Claude may stream the query as input_json_delta
+            # instead, and waiting for it would cost the whole visible search.
+            query = str(given.get("query", "")) if isinstance(given, dict) else ""
+            return self._hosted(self._open_search, "searching", query)
+        elif kind == "web_search_tool_result":
+            found = block.get("tool_use_id") or self._open_search
+            search_id = str(found or f"web_search_{index}")
+            return self._hosted(search_id, _result_phase(block.get("content")))
         return []
 
     def _block_stop(self) -> list[StreamEvent]:
@@ -208,6 +227,13 @@ class ClaudeDecoder:
         )
         return events
 
+    def _hosted(self, search_id: str, phase: str, query: str = "") -> list[StreamEvent]:
+        """One lifecycle step, dropped unless it advances this search."""
+        self.web_searches.add(search_id)
+        if not hosted_tool_step(self._search_phase, search_id, phase):
+            return []
+        return [HostedToolEvent("web_search", search_id, phase, query)]
+
     def _merge(self, value: Any) -> None:
         if not isinstance(value, dict):
             return
@@ -250,6 +276,12 @@ class ClaudeDecoder:
             return
         if self.calls:
             self.reasoning_cache.put(self.calls, self.reasoning_blocks)
+
+
+def _result_phase(content: Any) -> str:
+    """An error record is a failed search, not a completed one."""
+    kind = content.get("type") if isinstance(content, dict) else None
+    return "failed" if kind == "web_search_tool_result_error" else "completed"
 
 
 def _citation(value: Any) -> list[StreamEvent]:

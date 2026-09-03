@@ -30,6 +30,8 @@ from .thinking import Outcome, Unpacked, unpack
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
 WEB_SEARCH_TOOL = "web_search_20250305"
+#: Structured outputs remain gated; `output_config.format` needs this header.
+STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-11-13"
 
 #: Chat Completions knobs the Messages API has no equivalent for.
 UNSUPPORTED = (
@@ -38,7 +40,6 @@ UNSUPPORTED = (
     "logprobs",
     "top_logprobs",
     "seed",
-    "response_format",
     "logit_bias",
 )
 
@@ -404,6 +405,19 @@ def build(
         body["tools"] = tools
         body["tool_choice"] = _tool_choice(choice)
 
+    if request.output_format is not None:
+        if request.output_format.kind != "json_schema":
+            # Messages constrains output with a schema or not at all; a bare
+            # "must be JSON" mode would have to be faked in the prompt.
+            raise RequestError(
+                "Claude upstream can constrain output only with a JSON schema; "
+                "json_object has no Messages equivalent"
+            )
+        body["output_config"] = {
+            "format": {"type": "json_schema", "schema": request.output_format.schema}
+        }
+        betas.append(STRUCTURED_OUTPUTS_BETA)
+
     # Anthropic's zero-token prewarm generates nothing. The transport switches
     # just this request to non-streaming and synthesizes the ordinary event
     # lifecycle, so generation-only controls have no work to do here.
@@ -420,7 +434,7 @@ def build(
             )
         # Claude's native effort control is independent of its thinking mode.
         # Do not approximate named effort tiers with fabricated token budgets.
-        body["output_config"] = {"effort": effort}
+        body.setdefault("output_config", {})["effort"] = effort
 
     budget = request.thinking_budget
     display = request.thinking_display or "summarized"

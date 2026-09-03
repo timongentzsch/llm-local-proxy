@@ -13,6 +13,7 @@ from ...ir import (
     Image,
     NativeResponseItem,
     NativeTool,
+    OutputFormat,
     Reasoning,
     Text,
     Thinking,
@@ -28,7 +29,6 @@ from .thinking import unpack as unpack_thinking
 #: Knobs Codex does not expose, and the value of each that means "unset".
 UNSUPPORTED = (
     "logprobs",
-    "response_format",
     "seed",
     "stop",
     "temperature",
@@ -39,7 +39,6 @@ NEUTRAL: dict[str, Any] = {
     "temperature": 1,
     "top_p": 1,
     "logprobs": False,
-    "response_format": {"type": "text"},
 }
 _UNSET = object()
 
@@ -94,6 +93,20 @@ def _tool(tool: Tool) -> dict[str, Any]:
     if tool.context_size:
         item["search_context_size"] = tool.context_size
     return item
+
+
+def _output_format(fmt: OutputFormat) -> dict[str, Any]:
+    """The Responses `text.format` item for a neutral output format."""
+    if fmt.kind == "json_object":
+        return {"type": "json_object"}
+    return {
+        "type": "json_schema",
+        # Responses requires a label Messages never sends; the schema is what
+        # constrains the model, so a placeholder costs the client nothing.
+        "name": fmt.name or "response",
+        "schema": fmt.schema,
+        "strict": fmt.strict,
+    }
 
 
 def _tool_choice(choice: ToolChoice | None) -> Any:
@@ -202,6 +215,8 @@ def build(
         body["tool_choice"] = _tool_choice(request.tool_choice)
         parallel = request.parallel_tool_calls
         body["parallel_tool_calls"] = bool(True if parallel is None else parallel)
+    if request.output_format is not None:
+        body["text"] = {"format": _output_format(request.output_format)}
     if request.thinking_budget is not None:
         raise RequestError(
             "Codex upstream cannot faithfully represent an Anthropic thinking budget; "

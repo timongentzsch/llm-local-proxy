@@ -183,6 +183,17 @@ closes on kind change. `message_start.usage.input_tokens` is non-nullable while
 a Codex stream has no input count until the end, so the opening frame claims
 zero and `message_delta` carries the authoritative totals.
 
+**Hosted tools.** A web search runs at the provider, so its lifecycle is
+carried as `HostedToolEvent` and never as `ToolCallStart`/`ToolCallEnd`, which
+oblige a client to execute something and answer. Responses gets a
+`web_search_call` item held open across the wait -- the gap between
+`output_item.added` and `output_item.done` *is* the search, which is why this
+does not reuse the `NativeItem` path that emits both at once. Anthropic gets
+`server_tool_use` plus `web_search_tool_result`, with `content` present and
+empty because no upstream forwards the individual result records here. Only
+forward phase steps are emitted (`started`, `searching`, `completed`,
+`failed`), since Responses reports a finished search twice.
+
 | Anthropic | Chat Completions |
 | --- | --- |
 | `end_turn`, `stop_sequence`, `pause_turn` | `stop` |
@@ -236,6 +247,11 @@ handler and the SSE reader — and nothing else.
 
 ## Known gaps
 
+- **Live search status needs Responses or Anthropic Messages.** Chat
+  Completions has no standard hosted-tool lifecycle, and inventing a function
+  call there would tell the client to run a search that already ran. Its
+  clients still get the citations and the `web_search_requests` count, but
+  learn that a search happened only after the fact.
 - Streaming, tool calls and `count_tokens` are covered by tests and by a smoke
   test against the real `claude` CLI, but the proxy has no automated test
   against a live subscription; those runs are manual.

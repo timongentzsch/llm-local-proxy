@@ -11,6 +11,7 @@ from ...ir import (
     Image,
     NativeResponseItem,
     NativeTool,
+    OutputFormat,
     Reasoning,
     Text,
     ToolChoice,
@@ -19,6 +20,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
+from .output import format_of
 from .reasoning import options as reasoning_options
 
 
@@ -154,6 +156,41 @@ def _choice(value: Any) -> ToolChoice | None:
     raise RequestError("unsupported tool_choice")
 
 
+#: `include` values this proxy already satisfies. The Codex request always asks
+#: for encrypted reasoning, so naming it changes nothing; every other value asks
+#: for payloads the upstream is never told to produce.
+INCLUDE_SUPPORTED = frozenset({"reasoning.encrypted_content"})
+
+
+def _output_format(value: Any) -> OutputFormat | None:
+    """Read `text` into the neutral IR, refusing options we cannot honour."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RequestError("text must be an object")
+    extra = sorted(set(value) - {"format"})
+    if extra:
+        # Silently ignoring these would return unconstrained output that looks
+        # like a compliant answer, which is the failure this proxy refuses.
+        raise RequestError(f"unsupported text options: {', '.join(extra)}")
+    item = value.get("format")
+    if item is None:
+        return None
+    if not isinstance(item, dict):
+        raise RequestError("text.format must be an object")
+    return format_of(item.get("type"), item)
+
+
+def _check_include(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise RequestError("include must be an array")
+    extra = sorted({str(item) for item in value} - INCLUDE_SUPPORTED)
+    if extra:
+        raise RequestError(f"unsupported include values: {', '.join(extra)}")
+
+
 def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
     if body.get("store") is True:
         raise RequestError(
@@ -163,6 +200,16 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         raise RequestError(
             "previous_response_id is not supported; resend complete input history"
         )
+    if body.get("conversation") is not None:
+        raise RequestError(
+            "conversation is not supported; resend complete input history"
+        )
+    if body.get("background"):
+        raise RequestError(
+            "background is not supported; this proxy streams one response and "
+            "keeps no job to poll"
+        )
+    _check_include(body.get("include"))
     model = body.get("model")
     if not isinstance(model, str) or not model:
         raise RequestError("model is required")
@@ -185,4 +232,5 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         stream=bool(body.get("stream")),
         session=session or str(body.get("prompt_cache_key") or ""),
         params=params,
+        output_format=_output_format(body.get("text")),
     )

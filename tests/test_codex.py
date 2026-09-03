@@ -12,6 +12,7 @@ import unittest
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.errors import RequestError
+from llm_local_proxy.ir import Finish, HostedToolEvent, ToolCallStart
 from llm_local_proxy.providers.codex.app_server import (
     AppServer,
     RpcError,
@@ -37,6 +38,39 @@ def codex_request(body, cache, session="", reasoning_efforts=None):
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_response_format_becomes_a_responses_text_format(self):
+        schema = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        body, _ = codex_request(
+            {
+                "model": "acme-gpt-1",
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "city",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            },
+            ReasoningCache(),
+        )
+        self.assertEqual(
+            body["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "city",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+
     def test_transport_effort_probe_discovers_the_runtime_enum(self):
         values = _effort_values(
             "Invalid value: 'probe'. Supported values are: 'low', 'max', "
@@ -269,6 +303,71 @@ class ProtocolTest(unittest.TestCase):
         result = translator.result()
         self.assertEqual(result["usage"]["server_tool_use"]["web_search_requests"], 1)
         self.assertEqual(result["choices"][0]["message"]["annotations"], [citation])
+
+    def test_search_lifecycle_survives_as_hosted_tool_events(self):
+        """The visible span of a provider-run search, not just its aftermath.
+
+        Timing is the whole point: a client that only learns a search happened
+        once the answer arrives has nothing to show for the wait.
+        """
+        decoder = CodexDecoder(ReasoningCache())
+        phases = []
+        for event in [
+            {
+                "type": "response.output_item.added",
+                "item": {"type": "web_search_call", "id": "ws_1"},
+            },
+            {"type": "response.web_search_call.in_progress", "item_id": "ws_1"},
+            {"type": "response.web_search_call.searching", "item_id": "ws_1"},
+            {"type": "response.web_search_call.completed", "item_id": "ws_1"},
+            # Responses says a search finished twice; a client must not see
+            # two completions, and usage must not count two searches.
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed",
+                },
+            },
+        ]:
+            for decoded in decoder.decode(event):
+                self.assertIsInstance(decoded, HostedToolEvent)
+                self.assertEqual((decoded.tool, decoded.id), ("web_search", "ws_1"))
+                phases.append(decoded.phase)
+        self.assertEqual(phases, ["started", "searching", "completed"])
+        self.assertEqual(len(decoder.web_searches), 1)
+        # A hosted search is not a round the client owes an answer to.
+        finished = decoder.finish()
+        self.assertFalse(any(isinstance(e, ToolCallStart) for e in finished))
+        self.assertEqual(
+            [e.reason for e in finished if isinstance(e, Finish)], ["end_turn"]
+        )
+
+    def test_independent_searches_are_tracked_apart(self):
+        decoder = CodexDecoder(ReasoningCache())
+        for search_id in ("ws_1", "ws_2"):
+            decoder.decode(
+                {
+                    "type": "response.output_item.added",
+                    "item": {"type": "web_search_call", "id": search_id},
+                }
+            )
+        events = decoder.decode(
+            {"type": "response.web_search_call.searching", "item_id": "ws_2"}
+        )
+        self.assertEqual([(e.id, e.phase) for e in events], [("ws_2", "searching")])
+        self.assertEqual(len(decoder.web_searches), 2)
+
+    def test_a_failed_search_item_reports_failure(self):
+        decoder = CodexDecoder(ReasoningCache())
+        events = decoder.decode(
+            {
+                "type": "response.output_item.done",
+                "item": {"type": "web_search_call", "id": "ws_1", "status": "failed"},
+            }
+        )
+        self.assertEqual([(e.phase, e.id) for e in events], [("failed", "ws_1")])
 
     def test_completed_output_can_supply_web_search_count(self):
         translator = ChunkEncoder("acme-gpt-1", CodexDecoder(ReasoningCache()))

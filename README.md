@@ -110,9 +110,15 @@ therefore caps reasoning too.
 whose upstream cannot count. A client that gets the 404 falls back to its own
 estimate knowing it is one, rather than trusting a number the proxy invented.
 
-Unsupported sampling and structured-output parameters fail explicitly instead
-of being silently ignored. Pricing, user-configurable routing and spend history
-are absent on purpose: neither subscription exposes anything equivalent.
+Structured outputs cross every pairing: Chat Completions `response_format`,
+Responses `text.format` and Messages `output_config.format` all carry one JSON
+schema to either upstream. Only the wrapper differs, so a schema written for
+one client constrains the other's model too; Messages names no schema, so the
+schema's own `title` becomes the label Responses requires. Formats an upstream
+cannot enforce — a bare `json_object` against Claude — and unsupported sampling
+parameters fail explicitly instead of being silently ignored. Pricing,
+user-configurable routing and spend history are absent on purpose: neither
+subscription exposes anything equivalent.
 
 Each account keeps its own credentials, usage windows and token ledger. A
 downstream `X-Session-Id` stays on a stable account for prompt-cache locality;

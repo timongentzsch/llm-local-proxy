@@ -172,6 +172,40 @@ class ToolCallEnd:
 
 
 @dataclass
+class HostedToolEvent:
+    """One lifecycle step of a tool the *provider* runs, not the client.
+
+    Deliberately not :class:`ToolCallStart`/:class:`ToolCallEnd`: those oblige
+    the client to execute something and answer with a result, and a hosted
+    search has already been executed upstream. It is progress to show, never a
+    tool round to take.
+    """
+
+    tool: str
+    id: str
+    phase: str
+    #: What the provider searched for, when it said. Carried so an Anthropic
+    #: client sees the `server_tool_use` input its upstream actually sent.
+    query: str = ""
+
+
+#: Ranked so only forward steps are emitted. Providers repeat their terminal
+#: event -- a Responses search completes once as `web_search_call.completed`
+#: and again as `output_item.done` -- and a replayed phase would duplicate the
+#: client's lifecycle and double-count the search.
+_PHASE_RANK = {"started": 0, "searching": 1, "completed": 2, "failed": 2}
+
+
+def hosted_tool_step(seen: dict[str, str], id: str, phase: str) -> bool:
+    """Record `phase` for search `id`; True when it advances the lifecycle."""
+    rank = _PHASE_RANK.get(phase)
+    if rank is None or rank <= _PHASE_RANK.get(seen.get(id, ""), -1):
+        return False
+    seen[id] = phase
+    return True
+
+
+@dataclass
 class Citation:
     url: str
     title: str | None = None
@@ -206,10 +240,27 @@ StreamEvent = (
     | ToolCallStart
     | ToolCallArgs
     | ToolCallEnd
+    | HostedToolEvent
     | Citation
     | Usage
     | Finish
 )
+
+
+@dataclass
+class OutputFormat:
+    """A client's request that output be constrained, not merely prompted.
+
+    Dialect-neutral because each dialect names the same capability its own way
+    (Responses ``text.format``, Messages ``output_config.format``). ``kind`` is
+    ``json_schema`` or ``json_object``; a plain-text format is no constraint at
+    all and is dropped at the edge rather than carried as one.
+    """
+
+    kind: str
+    name: str = ""
+    schema: dict[str, Any] | None = None
+    strict: bool = False
 
 
 @dataclass
@@ -233,3 +284,7 @@ class ChatRequest:
     session: str = ""
     #: As sent; each provider validates what it can honour.
     params: dict[str, Any] = field(default_factory=dict)
+    #: Schema-constrained output when the client asked for one. A provider that
+    #: cannot constrain its upstream must reject this rather than answer with
+    #: unconstrained prose the client will fail to parse.
+    output_format: OutputFormat | None = None

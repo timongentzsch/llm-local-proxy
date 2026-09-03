@@ -9,6 +9,7 @@ from typing import Any
 from ...ir import (
     Citation,
     Finish,
+    HostedToolEvent,
     RedactedThinkingDelta,
     StreamEvent,
     TextDelta,
@@ -178,8 +179,13 @@ class ChunkEncoder:
         if isinstance(event, Finish):
             self._finish = FINISH_REASONS.get(event.reason, "stop")
             return None
-        # No Chat Completions representation; the decoder keeps them.
-        if isinstance(event, (ThinkingSignature, RedactedThinkingDelta)):
+        # No Chat Completions representation; the decoder keeps them. A hosted
+        # search is dropped rather than shown as a function call: the client
+        # never ran it and must not answer it. Its citations and its
+        # `web_search_requests` count still arrive.
+        if isinstance(
+            event, (ThinkingSignature, RedactedThinkingDelta, HostedToolEvent)
+        ):
             return None
         return None
 

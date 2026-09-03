@@ -26,13 +26,40 @@
       "type": "content_block_start",
       "index": 0,
       "content_block": {
+        "type": "server_tool_use",
+        "id": "srvtoolu_1",
+        "name": "web_search",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_stop",
+      "index": 0
+    },
+    {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "web_search_tool_result",
+        "tool_use_id": "srvtoolu_1",
+        "content": []
+      }
+    },
+    {
+      "type": "content_block_stop",
+      "index": 1
+    },
+    {
+      "type": "content_block_start",
+      "index": 2,
+      "content_block": {
         "type": "text",
         "text": ""
       }
     },
     {
       "type": "content_block_delta",
-      "index": 0,
+      "index": 2,
       "delta": {
         "type": "text_delta",
         "text": "Per the source"
@@ -40,7 +67,7 @@
     },
     {
       "type": "content_block_delta",
-      "index": 0,
+      "index": 2,
       "delta": {
         "type": "citations_delta",
         "citation": {
@@ -52,7 +79,7 @@
     },
     {
       "type": "content_block_stop",
-      "index": 0
+      "index": 2
     },
     {
       "type": "message_delta",

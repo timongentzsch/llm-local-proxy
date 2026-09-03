@@ -33,6 +33,38 @@ class ClaudeRoutingTest(unittest.TestCase):
 
 
 class BuildMessagesRequestTest(unittest.TestCase):
+    def test_response_format_becomes_a_native_output_config(self):
+        schema = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        body, betas = claude_request(
+            {
+                **BASE,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "city",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            },
+            "claude-fake-1",
+        )
+        self.assertEqual(
+            body["output_config"],
+            {"format": {"type": "json_schema", "schema": schema}},
+        )
+        self.assertIn("structured-outputs-2025-11-13", betas)
+
+    def test_plain_text_response_format_constrains_nothing(self):
+        body, _ = claude_request(
+            {**BASE, "response_format": {"type": "text"}}, "claude-fake-1"
+        )
+        self.assertNotIn("output_config", body)
+
     def test_system_split_and_defaults(self):
         request, betas = claude_request(
             {
@@ -308,6 +340,78 @@ class ClaudeTranslatorTest(unittest.TestCase):
         self.assertEqual(usage["completion_tokens"], 12)
         self.assertEqual(usage["total_tokens"], 22)
         self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], 3)
+
+    def test_server_tool_use_and_result_bracket_the_search(self):
+        """Claude's own server-tool blocks, which the decoder used to drop.
+
+        The stream says `server_tool_use`; `web_search_20250305` is the tool
+        *definition*'s name, so a decoder keyed only on the versioned spelling
+        saw neither end of the search.
+        """
+        decoder = ClaudeDecoder()
+        started = decoder.decode(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {"query": "python 3.14"},
+                },
+            }
+        )
+        self.assertEqual(
+            [(e.tool, e.id, e.phase, e.query) for e in started],
+            [("web_search", "srvtoolu_1", "searching", "python 3.14")],
+        )
+        done = decoder.decode(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_1",
+                    "content": [{"type": "web_search_result", "url": "https://x"}],
+                },
+            }
+        )
+        self.assertEqual([(e.id, e.phase) for e in done], [("srvtoolu_1", "completed")])
+        # Counted from its request and again from its result: still one search.
+        self.assertEqual(len(decoder.web_searches), 1)
+        self.assertNotIn(
+            "tool_use", [e.reason for e in decoder.finish() if hasattr(e, "reason")]
+        )
+
+    def test_a_search_error_result_is_a_failed_search(self):
+        decoder = ClaudeDecoder()
+        decoder.decode(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {},
+                },
+            }
+        )
+        failed = decoder.decode(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_1",
+                    "content": {
+                        "type": "web_search_tool_result_error",
+                        "error_code": "unavailable",
+                    },
+                },
+            }
+        )
+        self.assertEqual([(e.id, e.phase) for e in failed], [("srvtoolu_1", "failed")])
 
     def test_web_search_citation_becomes_url_citation_annotation(self):
         translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())

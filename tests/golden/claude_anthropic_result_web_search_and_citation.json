@@ -6,6 +6,17 @@
     "model": "claude-sonnet-5",
     "content": [
       {
+        "type": "server_tool_use",
+        "id": "srvtoolu_1",
+        "name": "web_search",
+        "input": {}
+      },
+      {
+        "type": "web_search_tool_result",
+        "tool_use_id": "srvtoolu_1",
+        "content": []
+      },
+      {
         "type": "text",
         "text": "Per the source"
       }

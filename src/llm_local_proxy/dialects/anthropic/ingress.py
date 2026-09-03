@@ -14,6 +14,7 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    OutputFormat,
     Text,
     Thinking,
     Tool,
@@ -33,6 +34,31 @@ WEB_SEARCH_PREFIX = "web_search_"
 REJECTED = ("container", "mcp_servers", "service_tier")
 PARAMS = ("temperature", "top_p", "top_k")
 CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
+
+
+def _output_format(current: Any, deprecated: Any) -> OutputFormat | None:
+    """Read `output_config.format`, or the `output_format` it replaced.
+
+    Messages names no schema and has no unenforced mode, so the neutral record
+    keeps the schema's own title as a label and is always strict.
+    """
+    item = current if current is not None else deprecated
+    if item is None:
+        return None
+    if not isinstance(item, dict):
+        raise RequestError("output format must be an object")
+    if item.get("type") != "json_schema":
+        raise RequestError(f"unsupported output format: {item.get('type')}")
+    schema = item.get("schema")
+    if not isinstance(schema, dict):
+        raise RequestError("output format json_schema requires schema")
+    name = schema.get("title")
+    return OutputFormat(
+        "json_schema",
+        str(name) if isinstance(name, str) and name else "",
+        schema,
+        strict=True,
+    )
 
 
 def _text(value: Any) -> str:
@@ -203,7 +229,15 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
         raise RequestError("thinking.display must be summarized or omitted")
     # The provider validates this against the selected model's live catalog.
     output_config = body.get("output_config")
-    effort = output_config.get("effort") if isinstance(output_config, dict) else None
+    if output_config is not None and not isinstance(output_config, dict):
+        raise RequestError("output_config must be an object")
+    config = output_config or {}
+    extra = sorted(set(config) - {"effort", "format"})
+    if extra:
+        # Dropping these would answer as if the client had never asked.
+        raise RequestError(f"unsupported output_config options: {', '.join(extra)}")
+    effort = config.get("effort")
+    output_format = _output_format(config.get("format"), body.get("output_format"))
 
     return ChatRequest(
         model=model,
@@ -223,4 +257,5 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
             **{name: body[name] for name in PARAMS if name in body},
             **({"stop": body["stop_sequences"]} if "stop_sequences" in body else {}),
         },
+        output_format=output_format,
     )
