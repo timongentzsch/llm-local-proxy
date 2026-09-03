@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.11.28-python3.12-trixie-slim@sha256:3137a0b606f65a74ee0245f43dae219b09e8af98fc37fef20841cbceef35a646
 
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.153.0
 ARG CODEX_INSTALLER_SHA256=ba92dd27e5c06f0d3bbc58bfa4b9cfb6599cd2742fbb1f92a2765e6c07dedb5a
 
 RUN apt-get update \
