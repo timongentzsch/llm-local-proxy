@@ -38,6 +38,39 @@ def codex_request(body, cache, session="", reasoning_efforts=None):
 
 
 class ProtocolTest(unittest.TestCase):
+    def test_response_format_becomes_a_responses_text_format(self):
+        schema = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        body, _ = codex_request(
+            {
+                "model": "acme-gpt-1",
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "city",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            },
+            ReasoningCache(),
+        )
+        self.assertEqual(
+            body["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "city",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+
     def test_transport_effort_probe_discovers_the_runtime_enum(self):
         values = _effort_values(
             "Invalid value: 'probe'. Supported values are: 'low', 'max', "

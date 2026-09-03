@@ -20,6 +20,7 @@ from llm_local_proxy.ir import Image, Text, Thinking, ToolResult, ToolUse
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
 from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
+from llm_local_proxy.providers.codex.request import build as build_codex
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 BASE = {
@@ -286,6 +287,89 @@ class IngressTest(unittest.TestCase):
         request = parse({**BASE, "stop_sequences": ["END"], "top_k": 5})
         self.assertEqual(request.params["stop"], ["END"])
         self.assertEqual(request.params["top_k"], 5)
+
+    def test_claude_and_codex_both_receive_a_requested_schema(self):
+        schema = {
+            "title": "city",
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        }
+        body = {
+            **BASE,
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        }
+        request = parse(body)
+        self.assertEqual(request.output_format.kind, "json_schema")
+        self.assertEqual(request.output_format.schema, schema)
+
+        upstream, betas = build_claude(
+            request,
+            "claude-sonnet-5",
+            max_output=32768,
+            reasoning_cache=ReasoningCache(),
+        )
+        self.assertEqual(
+            upstream["output_config"],
+            {"format": {"type": "json_schema", "schema": schema}},
+        )
+        self.assertIn("structured-outputs-2025-11-13", betas)
+
+        # Responses demands a label Messages never sends; the schema title is
+        # carried across so the constraint itself survives the crossing.
+        codex, _ = build_codex(request, ReasoningCache())
+        self.assertEqual(
+            codex["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "city",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+
+    def test_deprecated_output_format_is_still_honoured(self):
+        schema = {"type": "object", "properties": {}}
+        request = parse(
+            {**BASE, "output_format": {"type": "json_schema", "schema": schema}}
+        )
+        self.assertEqual(request.output_format.schema, schema)
+        # No title to borrow, so the Responses label falls back to a placeholder.
+        codex, _ = build_codex(request, ReasoningCache())
+        self.assertEqual(codex["text"]["format"]["name"], "response")
+
+    def test_output_config_options_we_cannot_honour_are_refused(self):
+        with self.assertRaisesRegex(RequestError, "task_budget"):
+            parse({**BASE, "output_config": {"task_budget": {"tokens": 10}}})
+        with self.assertRaisesRegex(RequestError, "unsupported output format"):
+            parse({**BASE, "output_config": {"format": {"type": "grammar"}}})
+        with self.assertRaisesRegex(RequestError, "requires schema"):
+            parse({**BASE, "output_config": {"format": {"type": "json_schema"}}})
+
+    def test_effort_and_schema_share_one_output_config(self):
+        request = parse(
+            {
+                **BASE,
+                "output_config": {
+                    "effort": "high",
+                    "format": {"type": "json_schema", "schema": {"type": "object"}},
+                },
+            }
+        )
+        upstream, _ = build_claude(
+            request,
+            "claude-sonnet-5",
+            max_output=32768,
+            reasoning_efforts=["high"],
+            reasoning_cache=ReasoningCache(),
+        )
+        self.assertEqual(upstream["output_config"]["effort"], "high")
+        self.assertEqual(
+            upstream["output_config"]["format"],
+            {"type": "json_schema", "schema": {"type": "object"}},
+        )
 
 
 class RoundTripTest(unittest.TestCase):

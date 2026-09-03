@@ -45,6 +45,116 @@ class ResponsesIngressTest(unittest.TestCase):
             parse({**base, "store": True})
         with self.assertRaisesRegex(RequestError, "previous_response_id"):
             parse({**base, "previous_response_id": "resp_old"})
+        with self.assertRaisesRegex(RequestError, "conversation"):
+            parse({**base, "conversation": "conv_1"})
+        with self.assertRaisesRegex(RequestError, "background"):
+            parse({**base, "background": True})
+
+    def test_include_is_accepted_only_where_the_upstream_request_honours_it(self):
+        base = {"model": "gpt-test", "input": "hi"}
+        # Every Codex request already asks for encrypted reasoning, so naming it
+        # is truthful; anything else would be answered without the payload.
+        parse({**base, "include": ["reasoning.encrypted_content"]})
+        with self.assertRaisesRegex(RequestError, "message.output_text.logprobs"):
+            parse({**base, "include": ["message.output_text.logprobs"]})
+
+    def test_structured_output_reaches_codex_as_text_format(self):
+        schema = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+            "additionalProperties": False,
+        }
+        request = parse(
+            {
+                "model": "gpt-test",
+                "input": "capital of France?",
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "city",
+                        "schema": schema,
+                        "strict": True,
+                    }
+                },
+            }
+        )
+        upstream, _ = build_codex(request, ReasoningCache())
+        self.assertEqual(
+            upstream["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "city",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+
+        loose = parse(
+            {
+                "model": "gpt-test",
+                "input": "json please",
+                "text": {"format": {"type": "json_object"}},
+            }
+        )
+        upstream, _ = build_codex(loose, ReasoningCache())
+        self.assertEqual(upstream["text"], {"format": {"type": "json_object"}})
+
+    def test_unconstrained_text_format_adds_no_constraint(self):
+        request = parse(
+            {
+                "model": "gpt-test",
+                "input": "hi",
+                "text": {"format": {"type": "text"}},
+            }
+        )
+        self.assertIsNone(request.output_format)
+        upstream, _ = build_codex(request, ReasoningCache())
+        self.assertNotIn("text", upstream)
+
+    def test_unhonourable_text_options_are_refused_not_dropped(self):
+        base = {"model": "gpt-test", "input": "hi"}
+        with self.assertRaisesRegex(RequestError, "verbosity"):
+            parse({**base, "text": {"verbosity": "low"}})
+        with self.assertRaisesRegex(RequestError, "json_schema output format requires"):
+            parse({**base, "text": {"format": {"type": "json_schema", "name": "r"}}})
+        with self.assertRaisesRegex(RequestError, "unsupported output format type"):
+            parse({**base, "text": {"format": {"type": "grammar"}}})
+
+    def test_claude_receives_a_schema_and_refuses_a_bare_json_mode(self):
+        def responses_body(fmt):
+            return {
+                "model": "claude-test",
+                "input": "capital of France?",
+                "text": {"format": fmt},
+            }
+
+        schema = {"type": "object", "properties": {"city": {"type": "string"}}}
+        request = parse(
+            responses_body(
+                {
+                    "type": "json_schema",
+                    "name": "city",
+                    "schema": schema,
+                    "strict": True,
+                }
+            )
+        )
+        upstream, betas = build_claude(
+            request, "claude-test", reasoning_cache=ReasoningCache()
+        )
+        self.assertEqual(
+            upstream["output_config"],
+            {"format": {"type": "json_schema", "schema": schema}},
+        )
+        self.assertIn("structured-outputs-2025-11-13", betas)
+
+        # Messages constrains with a schema or not at all.
+        loose = parse(responses_body({"type": "json_object"}))
+        with self.assertRaisesRegex(RequestError, "json_object"):
+            build_claude(loose, "claude-test", reasoning_cache=ReasoningCache())
 
     def test_codex_reasoning_and_tool_history_round_trip_verbatim(self):
         body = {

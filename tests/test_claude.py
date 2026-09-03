@@ -33,6 +33,38 @@ class ClaudeRoutingTest(unittest.TestCase):
 
 
 class BuildMessagesRequestTest(unittest.TestCase):
+    def test_response_format_becomes_a_native_output_config(self):
+        schema = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "additionalProperties": False,
+        }
+        body, betas = claude_request(
+            {
+                **BASE,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "city",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
+            },
+            "claude-fake-1",
+        )
+        self.assertEqual(
+            body["output_config"],
+            {"format": {"type": "json_schema", "schema": schema}},
+        )
+        self.assertIn("structured-outputs-2025-11-13", betas)
+
+    def test_plain_text_response_format_constrains_nothing(self):
+        body, _ = claude_request(
+            {**BASE, "response_format": {"type": "text"}}, "claude-fake-1"
+        )
+        self.assertNotIn("output_config", body)
+
     def test_system_split_and_defaults(self):
         request, betas = claude_request(
             {

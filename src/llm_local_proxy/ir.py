@@ -248,6 +248,22 @@ StreamEvent = (
 
 
 @dataclass
+class OutputFormat:
+    """A client's request that output be constrained, not merely prompted.
+
+    Dialect-neutral because each dialect names the same capability its own way
+    (Responses ``text.format``, Messages ``output_config.format``). ``kind`` is
+    ``json_schema`` or ``json_object``; a plain-text format is no constraint at
+    all and is dropped at the edge rather than carried as one.
+    """
+
+    kind: str
+    name: str = ""
+    schema: dict[str, Any] | None = None
+    strict: bool = False
+
+
+@dataclass
 class ChatRequest:
     model: str = ""
     #: Blocks rather than one string so cache breakpoints survive.
@@ -268,3 +284,7 @@ class ChatRequest:
     session: str = ""
     #: As sent; each provider validates what it can honour.
     params: dict[str, Any] = field(default_factory=dict)
+    #: Schema-constrained output when the client asked for one. A provider that
+    #: cannot constrain its upstream must reject this rather than answer with
+    #: unconstrained prose the client will fail to parse.
+    output_format: OutputFormat | None = None
