@@ -66,7 +66,23 @@ class NativeResponseItem:
     item: dict[str, Any]
 
 
-Block = Text | Image | ToolUse | ToolResult | Thinking | Reasoning | NativeResponseItem
+@dataclass
+class NativeAnthropicBlock:
+    """An Anthropic-only content block retained verbatim for replay."""
+
+    item: dict[str, Any]
+
+
+Block = (
+    Text
+    | Image
+    | ToolUse
+    | ToolResult
+    | Thinking
+    | Reasoning
+    | NativeResponseItem
+    | NativeAnthropicBlock
+)
 
 
 @dataclass

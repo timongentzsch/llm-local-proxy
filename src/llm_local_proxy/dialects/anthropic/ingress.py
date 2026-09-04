@@ -14,6 +14,7 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    NativeAnthropicBlock,
     OutputFormat,
     Text,
     Thinking,
@@ -111,6 +112,11 @@ def _block(part: Any) -> Block | None:
         )
     if kind == "redacted_thinking":
         return Thinking(text="", redacted=str(part.get("data", "")))
+    if kind in {"server_tool_use", "web_search_tool_result"}:
+        # Anthropic requires its own hosted-search blocks back verbatim when a
+        # pause_turn response is continued. They are provider work, not a
+        # client tool call/result, so retain their native shape in the IR.
+        return NativeAnthropicBlock(dict(part))
     raise RequestError(f"unsupported content block: {kind}")
 
 

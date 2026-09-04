@@ -16,7 +16,14 @@ from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.http import security
-from llm_local_proxy.ir import Image, Text, Thinking, ToolResult, ToolUse
+from llm_local_proxy.ir import (
+    Image,
+    NativeAnthropicBlock,
+    Text,
+    Thinking,
+    ToolResult,
+    ToolUse,
+)
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
 from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
@@ -373,6 +380,42 @@ class IngressTest(unittest.TestCase):
 
 
 class RoundTripTest(unittest.TestCase):
+    def test_hosted_search_pause_turn_reaches_claude_verbatim(self):
+        search = {
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "current model"},
+        }
+        result = {
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": [
+                {
+                    "type": "web_search_result",
+                    "url": "https://example.com/result",
+                    "title": "Result",
+                    "encrypted_content": "opaque-index",
+                }
+            ],
+        }
+        body = {
+            **BASE,
+            "messages": [
+                {"role": "user", "content": "find it"},
+                {"role": "assistant", "content": [search, result]},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+
+        request = parse(body)
+        self.assertEqual(
+            request.turns[1].blocks,
+            [NativeAnthropicBlock(search), NativeAnthropicBlock(result)],
+        )
+        upstream, _ = build_claude(request, "claude-sonnet-5")
+        self.assertEqual(upstream["messages"][1]["content"], [search, result])
+
     def test_signed_thinking_reaches_claude_verbatim(self):
         """The whole point of the Anthropic lane: signatures must survive."""
         body = {

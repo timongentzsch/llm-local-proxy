@@ -11,6 +11,7 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    NativeAnthropicBlock,
     NativeResponseItem,
     NativeTool,
     OutputFormat,
@@ -140,6 +141,11 @@ def _turn_items(turn: Any, cache: ReasoningCache) -> list[dict[str, Any]]:
         _flush_content(items, pending, turn.role)
         if isinstance(block, (Reasoning, NativeResponseItem)):
             items.append(dict(block.item))
+        elif isinstance(block, NativeAnthropicBlock):
+            raise RequestError(
+                "Codex upstream cannot faithfully represent Anthropic content block: "
+                + str(block.item.get("type", "unknown"))
+            )
         elif isinstance(block, Thinking):
             try:
                 bridged = unpack_thinking(block.signature)
