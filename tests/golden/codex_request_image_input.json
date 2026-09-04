@@ -19,10 +19,10 @@
     ],
     "store": false,
     "stream": true,
-    "prompt_cache_key": "proxy-52abddef33c612ec76570a98",
+    "prompt_cache_key": "proxy-2a3932b0933b44bce6b9d246",
     "include": [
       "reasoning.encrypted_content"
     ]
   },
-  "session": "proxy-52abddef33c612ec76570a98"
+  "session": "proxy-2a3932b0933b44bce6b9d246"
 }

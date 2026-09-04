@@ -188,17 +188,23 @@ def build(
     # Codex caches prefixes implicitly, so breakpoints do not apply.
     instructions = "\n\n".join(block.text for block in request.system)
     items: list[dict[str, Any]] = []
-    first_user = ""
+    # The opening user turn seeds the fallback cache key, and empty text is a
+    # legitimate value for an image-only turn: a sentinel that cannot tell
+    # "empty" from "not seen yet" would re-seed the key from a later turn and
+    # move the whole conversation to a different upstream cache mid-flight.
+    first_user: str | None = None
     for turn in request.turns:
-        if turn.role == "user" and not first_user:
+        if turn.role == "user" and first_user is None:
             first_user = "\n".join(
-                block.text for block in turn.blocks if isinstance(block, Text)
+                block.text if isinstance(block, Text) else block.url
+                for block in turn.blocks
+                if isinstance(block, (Text, Image))
             )
         items.extend(_turn_items(turn, cache))
 
     session = request.session
     if not session:
-        seed = f"{instructions}\0{first_user}".encode()
+        seed = f"{instructions}\0{first_user or ''}".encode()
         session = "proxy-" + hashlib.sha256(seed).hexdigest()[:24]
 
     body: dict[str, Any] = {

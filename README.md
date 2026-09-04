@@ -122,17 +122,31 @@ subscription exposes anything equivalent.
 
 Each account keeps its own credentials, usage windows and token ledger. A
 downstream `X-Session-Id` stays on a stable account for prompt-cache locality;
-Claude Code's native `X-Claude-Code-Session-Id` works the same way. Requests
-without either one round-robin. If an account returns 429 before emitting any
-output, it is cooled locally for five minutes and the same request tries the
-next signed-in account. A terminal authentication failure follows the same safe
-pre-output failover path, marks that slot as requiring reauthentication and
-cools it for one minute. Catalog refreshes rotate between accounts and skip
-cooled stale slots, so one bad login cannot hide a provider's models; the short
-cooldown periodically retries them so a recovered login rejoins automatically.
+Claude Code's native `X-Claude-Code-Session-Id` works the same way. A Codex
+request that carries neither header, and no `prompt_cache_key`, is pinned by
+the key the proxy derives from its instructions and first user turn, so one
+conversation still meets one upstream cache; only catalog refreshes and other
+sessionless Claude traffic round-robin. If an account returns 429 before
+emitting any output, it is cooled locally for five minutes and the same request
+tries the next signed-in account. A terminal authentication failure follows the
+same safe pre-output failover path, marks that slot as requiring
+reauthentication and cools it for one minute. Catalog refreshes rotate between
+accounts and skip cooled stale slots, so one bad login cannot hide a provider's
+models; the short cooldown periodically retries them so a recovered login
+rejoins automatically.
 The proxy never retries after output starts, because that could duplicate a
 partial answer. Claude tokens are refreshed by the proxy itself, so they do not
 contend with Claude Code logins on other machines.
+
+Codex caches prompt prefixes implicitly, so a rewritten early item — a
+refreshed timestamp in the first turn, a reordered tool list — silently costs
+the whole history its discount, and the usage numbers cannot say where the
+match ended. Setting `LLM_PROXY_PREFIX_DEBUG` to a file path (or `-` for
+stderr) logs one line per Codex request naming the first item that differs
+from the previous request under the same cache key, and flags one conversation
+arriving under two keys. It is off by default and records labels, hashes and
+lengths only; `LLM_PROXY_PREFIX_DEBUG_BODIES=1` adds an excerpt of the
+diverging item, which is your own prompt text.
 
 ## Configuration
 
