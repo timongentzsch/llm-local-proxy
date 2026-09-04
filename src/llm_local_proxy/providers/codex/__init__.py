@@ -27,6 +27,7 @@ from .app_server import AppServer, RpcError
 from .auth import CodexAuth
 from .catalog import model_info
 from .events import CodexDecoder
+from .prefix import PrefixProbe
 from .request import build
 from .upstream import Upstream, UpstreamError
 
@@ -48,6 +49,7 @@ class Codex:
             lambda: tuple((account.id, account.auth) for account in self.pool.accounts)
         )
         self.cache = ReasoningCache()
+        self.probe = PrefixProbe.from_env()
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._lock = threading.Lock()
         self._accounts_lock = threading.Lock()
@@ -116,13 +118,17 @@ class Codex:
             (item for item in self._live_catalog() if item.get("id") == canonical), {}
         )
         efforts = model.get("supported_reasoning_efforts")
-        body, _ = build(
+        body, session = build(
             request,
             self.cache,
             reasoning_efforts=efforts if isinstance(efforts, list) else None,
         )
+        self.probe.record(session, body)
+        # The derived key, not the raw header: a client that sends no session
+        # still deserves one account, because round-robin would hand each turn
+        # of the same conversation a different upstream prompt cache.
         events = self.pool.stream(
-            request.session,
+            session,
             lambda account: account.client.events(body),
             lambda: UpstreamError(
                 401,

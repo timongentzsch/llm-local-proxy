@@ -5,6 +5,11 @@ services:
     build: .
     init: true
     restart: unless-stopped
+    # Diagnose Codex prompt-cache misses: one line per request naming the first
+    # item that changed, labels and hashes only. Add
+    # LLM_PROXY_PREFIX_DEBUG_BODIES=1 to capture excerpts of your own prompts.
+    # environment:
+    #   LLM_PROXY_PREFIX_DEBUG: /config/prefix.log
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
