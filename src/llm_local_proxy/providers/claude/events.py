@@ -25,8 +25,9 @@ from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
 from .thinking import pack
 
-#: Passed through; anything else means the turn simply ended.
-PASSTHROUGH_STOP = {"tool_use", "max_tokens"}
+#: Passed through; anything else means the turn simply ended. `pause_turn`
+#: tells an Anthropic client to replay the partial server-tool turn verbatim.
+PASSTHROUGH_STOP = {"tool_use", "max_tokens", "pause_turn"}
 
 
 class ClaudeDecoder:
@@ -129,7 +130,16 @@ class ClaudeDecoder:
         elif kind == "web_search_tool_result":
             found = block.get("tool_use_id") or self._open_search
             search_id = str(found or f"web_search_{index}")
-            return self._hosted(search_id, _result_phase(block.get("content")))
+            content = block.get("content")
+            phase = _result_phase(content)
+            error_code = (
+                str(content.get("error_code") or "")
+                if phase == "failed" and isinstance(content, dict)
+                else ""
+            )
+            return self._hosted(
+                search_id, phase, error_code=error_code, result=content
+            )
         return []
 
     def _block_stop(self) -> list[StreamEvent]:
@@ -227,12 +237,23 @@ class ClaudeDecoder:
         )
         return events
 
-    def _hosted(self, search_id: str, phase: str, query: str = "") -> list[StreamEvent]:
+    def _hosted(
+        self,
+        search_id: str,
+        phase: str,
+        query: str = "",
+        error_code: str = "",
+        result: Any = None,
+    ) -> list[StreamEvent]:
         """One lifecycle step, dropped unless it advances this search."""
         self.web_searches.add(search_id)
         if not hosted_tool_step(self._search_phase, search_id, phase):
             return []
-        return [HostedToolEvent("web_search", search_id, phase, query)]
+        return [
+            HostedToolEvent(
+                "web_search", search_id, phase, query, error_code, result
+            )
+        ]
 
     def _merge(self, value: Any) -> None:
         if not isinstance(value, dict):

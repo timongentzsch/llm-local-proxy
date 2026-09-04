@@ -203,6 +203,10 @@ class HostedToolEvent:
     #: What the provider searched for, when it said. Carried so an Anthropic
     #: client sees the `server_tool_use` input its upstream actually sent.
     query: str = ""
+    #: Provider error code, when a hosted tool returned an error block.
+    error_code: str = ""
+    #: Native result payload when the provider exposes it for exact replay.
+    result: Any = None
 
 
 #: Ranked so only forward steps are emitted. Providers repeat their terminal
