@@ -42,7 +42,7 @@ class MessageEncoder:
         self.usage: Usage | None = None
         self.stop_reason: str | None = None
         self._index = -1
-        self._searches: set[str] = set()
+        self._searches: dict[str, str] = {}
         self._open: dict[str, Any] | None = None
         self._drained = False
 
@@ -187,33 +187,45 @@ class MessageEncoder:
         matches `tool_use` exactly, so `stop_reason` is unaffected.
         """
         frames: list[dict[str, Any]] = []
-        if event.id not in self._searches:
-            self._searches.add(event.id)
-            block: dict[str, Any] = {
-                "type": "server_tool_use",
-                "id": event.id,
-                "name": "web_search",
-                "input": {"query": event.query} if event.query else {},
-            }
-            # Left open: the span until the result block is the search, and a
-            # client showing it needs both ends to arrive when they happened.
-            frames = self._open_block("server_tool_use", block)
-        if event.phase == "completed":
-            # Present and empty rather than invented: no upstream forwards the
-            # individual result records through this proxy.
+        if event.id not in self._searches or event.query:
+            self._searches[event.id] = event.query
+        if event.phase in {"completed", "failed"}:
+            # Do not expose an orphaned server_tool_use when Claude switches
+            # to a client tool call before its hosted search finishes. Once
+            # written into client history Anthropic requires the matching
+            # result, so emit the native pair atomically at the terminal step.
+            query = self._searches.get(event.id, "")
+            frames.extend(
+                self._open_block(
+                    "server_tool_use",
+                    {
+                        "type": "server_tool_use",
+                        "id": event.id,
+                        "name": "web_search",
+                        "input": {"query": query} if query else {},
+                    },
+                )
+            )
+            # The result block is mandatory history for every server-tool use.
+            # Successful source records are not available across every lane;
+            # failed native searches retain their upstream error code.
+            content: Any = event.result if event.result is not None else []
+            if event.phase == "failed" and not isinstance(content, dict):
+                content = {
+                    "type": "web_search_tool_result_error",
+                    "error_code": event.error_code or "unavailable",
+                }
             frames.extend(
                 self._open_block(
                     "web_search_tool_result",
                     {
                         "type": "web_search_tool_result",
                         "tool_use_id": event.id,
-                        "content": [],
+                        "content": content,
                     },
                 )
             )
         if event.phase in {"completed", "failed"}:
-            # A failure closes the request block and stops there; Anthropic's
-            # error record carries a code this proxy would have to make up.
             frames.extend(self._close())
         return frames
 

@@ -22,6 +22,7 @@ from ...ir import (
 )
 from ..reasoning import ReasoningCache
 from .thinking import pack
+from .usage import read_usage
 
 
 class CodexDecoder:
@@ -39,6 +40,8 @@ class CodexDecoder:
         self._native_seen: set[str] = set()
         self._thinking = ""
         self._usage: Usage | None = None
+        self._stop: str | None = None
+        self._incomplete_reason: str | None = None
 
     def decode(self, event: dict[str, Any]) -> list[StreamEvent]:
         kind = event.get("type")
@@ -58,25 +61,32 @@ class CodexDecoder:
             return self._hosted(str(event.get("item_id") or ""), _SEARCH_PHASES[kind])
         if kind == "response.output_item.done":
             return self._item(event.get("item"))
-        if kind == "response.completed":
+        if kind in {"response.completed", "response.incomplete"}:
             response = event.get("response", {})
             if not isinstance(response, dict):
                 return []
             events: list[StreamEvent] = []
             for item in response.get("output", []):
                 events.extend(self._item(item))
-            usage = response.get("usage")
-            if isinstance(usage, dict):
-                self._usage = _usage(usage, len(self.web_searches))
+            self._usage = read_usage(event, len(self.web_searches))
+            if kind == "response.incomplete":
+                reason = (response.get("incomplete_details") or {}).get("reason")
+                self._incomplete_reason = reason or "max_output_tokens"
+                self._stop = "refusal" if reason == "content_filter" else "max_tokens"
             return events
-        if kind in {"response.failed", "response.incomplete", "error"}:
+        if kind in {"response.failed", "error"}:
             detail = event.get("error") or event.get("response") or event
             raise RuntimeError(f"Codex response failed: {detail}")
         return []
 
     def finish(self) -> list[StreamEvent]:
         self.cache.put(self.calls, self.reasoning_items)
-        events: list[StreamEvent] = [Finish("tool_use" if self.calls else "end_turn")]
+        events: list[StreamEvent] = [
+            Finish(
+                self._stop or ("tool_use" if self.calls else "end_turn"),
+                self._incomplete_reason,
+            )
+        ]
         if self._usage is not None:
             events.append(self._usage)
         return events
@@ -194,26 +204,3 @@ def _citation(value: Any) -> list[StreamEvent]:
             value.get("end_index"),
         )
     ]
-
-
-def _usage(value: dict[str, Any], web_searches: int) -> Usage:
-    input_details = value.get("input_tokens_details", {})
-    output_details = value.get("output_tokens_details", {})
-    prompt = int(value.get("input_tokens", 0) or 0)
-    completion = int(value.get("output_tokens", 0) or 0)
-    return Usage(
-        prompt=prompt,
-        completion=completion,
-        total=int(value.get("total_tokens", prompt + completion) or 0),
-        cache_read=int(
-            input_details.get("cached_tokens", 0)
-            if isinstance(input_details, dict)
-            else 0
-        ),
-        thinking=int(
-            output_details.get("reasoning_tokens", 0)
-            if isinstance(output_details, dict)
-            else 0
-        ),
-        web_searches=web_searches,
-    )

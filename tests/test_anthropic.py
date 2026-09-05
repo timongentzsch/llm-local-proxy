@@ -16,7 +16,14 @@ from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.http import security
-from llm_local_proxy.ir import Image, Text, Thinking, ToolResult, ToolUse
+from llm_local_proxy.ir import (
+    Image,
+    NativeAnthropicBlock,
+    Text,
+    Thinking,
+    ToolResult,
+    ToolUse,
+)
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
 from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
@@ -373,6 +380,42 @@ class IngressTest(unittest.TestCase):
 
 
 class RoundTripTest(unittest.TestCase):
+    def test_hosted_search_pause_turn_reaches_claude_verbatim(self):
+        search = {
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "current model"},
+        }
+        result = {
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": [
+                {
+                    "type": "web_search_result",
+                    "url": "https://example.com/result",
+                    "title": "Result",
+                    "encrypted_content": "opaque-index",
+                }
+            ],
+        }
+        body = {
+            **BASE,
+            "messages": [
+                {"role": "user", "content": "find it"},
+                {"role": "assistant", "content": [search, result]},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+
+        request = parse(body)
+        self.assertEqual(
+            request.turns[1].blocks,
+            [NativeAnthropicBlock(search), NativeAnthropicBlock(result)],
+        )
+        upstream, _ = build_claude(request, "claude-sonnet-5")
+        self.assertEqual(upstream["messages"][1]["content"], [search, result])
+
     def test_signed_thinking_reaches_claude_verbatim(self):
         """The whole point of the Anthropic lane: signatures must survive."""
         body = {
@@ -570,7 +613,13 @@ class EgressTest(unittest.TestCase):
                     "content_block": {
                         "type": "web_search_tool_result",
                         "tool_use_id": "srvtoolu_1",
-                        "content": [],
+                        "content": [
+                            {
+                                "type": "web_search_result",
+                                "url": "https://example.com/result",
+                                "encrypted_content": "opaque-index",
+                            }
+                        ],
                     },
                 },
             ]
@@ -584,6 +633,16 @@ class EgressTest(unittest.TestCase):
         )
         self.assertEqual(blocks[0]["input"], {"query": "python 3.14"})
         self.assertEqual(blocks[1]["tool_use_id"], "srvtoolu_1")
+        self.assertEqual(
+            blocks[1]["content"],
+            [
+                {
+                    "type": "web_search_result",
+                    "url": "https://example.com/result",
+                    "encrypted_content": "opaque-index",
+                }
+            ],
+        )
         self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
         # One block open at a time, under monotonic indices.
         opened = [f["index"] for f in frames if f["type"] == "content_block_start"]
@@ -591,7 +650,35 @@ class EgressTest(unittest.TestCase):
         self.assertEqual(opened, [0, 1])
         self.assertEqual(closed, [0, 1])
 
-    def test_a_failed_search_closes_without_an_invented_result(self):
+    def test_pause_turn_survives_an_incomplete_hosted_search(self):
+        frames = self._stream(
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": {"query": "current model"},
+                    },
+                },
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "pause_turn"},
+                    "usage": {"output_tokens": 1},
+                },
+            ]
+        )
+        blocks = [
+            frame["content_block"]
+            for frame in frames
+            if frame["type"] == "content_block_start"
+        ]
+        self.assertEqual(blocks, [])
+        self.assertEqual(frames[-2]["delta"]["stop_reason"], "pause_turn")
+
+    def test_a_failed_search_emits_the_required_matching_result(self):
         frames = self._stream(
             [
                 {
@@ -619,11 +706,20 @@ class EgressTest(unittest.TestCase):
             ]
         )
         blocks = [
-            f["content_block"]["type"]
-            for f in frames
-            if f["type"] == "content_block_start"
+            f["content_block"] for f in frames if f["type"] == "content_block_start"
         ]
-        self.assertEqual(blocks, ["server_tool_use"])
+        self.assertEqual(
+            [block["type"] for block in blocks],
+            ["server_tool_use", "web_search_tool_result"],
+        )
+        self.assertEqual(blocks[1]["tool_use_id"], "srvtoolu_1")
+        self.assertEqual(
+            blocks[1]["content"],
+            {
+                "type": "web_search_tool_result_error",
+                "error_code": "unavailable",
+            },
+        )
         self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
 
     def test_message_start_carries_required_usage(self):

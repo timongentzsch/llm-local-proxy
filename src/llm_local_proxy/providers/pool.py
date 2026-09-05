@@ -14,6 +14,7 @@ from typing import Generic, TypeVar
 
 from ..atomic import atomic_write_json
 from ..errors import RequestError
+from ..streaming import closing_iterator
 from .auth import Auth
 
 T = TypeVar("T")
@@ -156,11 +157,12 @@ class AccountPool(Generic[T]):
         for account in candidates:
             started = False
             try:
-                for event in create(account):
-                    if not started:
-                        started = True
-                        self.clear_account_error(account.id)
-                    yield event
+                with closing_iterator(create(account)) as events:
+                    for event in events:
+                        if not started:
+                            started = True
+                            self.clear_account_error(account.id)
+                        yield event
                 if not started:
                     self.clear_account_error(account.id)
                 return

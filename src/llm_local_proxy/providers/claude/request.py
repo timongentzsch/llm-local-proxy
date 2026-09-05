@@ -13,6 +13,7 @@ from ...ir import (
     ChatRequest,
     FunctionTool,
     Image,
+    NativeAnthropicBlock,
     NativeResponseItem,
     NativeTool,
     Reasoning,
@@ -174,6 +175,8 @@ def _assistant_blocks(
                     "input": _arguments(block.arguments),
                 }
             )
+        elif isinstance(block, NativeAnthropicBlock):
+            blocks.append(dict(block.item))
     uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
     replay = cache.get([use for use in uses if use]) if cache and uses else []
     if native_thinking:

@@ -71,14 +71,16 @@ class ResponseEncoder:
         self._reasoning_part_open = False
         self._calls: dict[Any, dict[str, Any]] = {}
         self._searches: dict[str, dict[str, Any]] = {}
-        self._finish_reason = "end_turn"
+        self._incomplete_reason: str | None = None
         self._drained = False
         self._terminal = False
 
     def _response(self, status: str, *, output: bool) -> dict[str, Any]:
         request = self.request
         tools = [_tool(tool) for tool in request.tools] if request else []
-        incomplete = {"reason": "max_output_tokens"} if status == "incomplete" else None
+        incomplete = (
+            {"reason": self._incomplete_reason} if status == "incomplete" else None
+        )
         return {
             "id": self.id,
             "object": "response",
@@ -121,7 +123,7 @@ class ResponseEncoder:
         if self._terminal:
             return chunks
         self._terminal = True
-        incomplete = self._finish_reason in {"length", "max_tokens"}
+        incomplete = self._incomplete_reason is not None
         status = "incomplete" if incomplete else "completed"
         kind = "response.incomplete" if incomplete else "response.completed"
         chunks.append(self._event(kind, response=self._response(status, output=True)))
@@ -131,11 +133,7 @@ class ResponseEncoder:
         self._drain()
         self._close_open_items()
         self._terminal = True
-        status = (
-            "incomplete"
-            if self._finish_reason in {"length", "max_tokens"}
-            else "completed"
-        )
+        status = "incomplete" if self._incomplete_reason is not None else "completed"
         return self._response(status, output=True)
 
     def _drain(self) -> list[dict[str, Any]]:
@@ -302,7 +300,11 @@ class ResponseEncoder:
             }
             return []
         if isinstance(event, Finish):
-            self._finish_reason = event.reason
+            self._incomplete_reason = event.incomplete_reason or (
+                "max_output_tokens"
+                if event.reason in {"length", "max_tokens"}
+                else None
+            )
         return []
 
     def _hosted(self, event: HostedToolEvent) -> list[dict[str, Any]]:

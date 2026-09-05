@@ -16,11 +16,12 @@ from typing import Any
 
 from ...atomic import atomic_write_json
 from ...errors import ProviderError
-from ...ledger import TokenLedger
+from ...ledger import TokenLedger, track_usage
 from ...status import Limit, window_label
 from .. import transport
 from .auth import OAUTH_BETA, ClaudeAuth, ClaudeAuthError
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
+from .usage import ClaudeUsage
 
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
@@ -235,55 +236,8 @@ class ClaudeUpstream:
         )
         yield from self._tracked(events)
 
-    @staticmethod
-    def _token_usage(event: dict[str, Any]) -> dict[str, int] | None:
-        """Hard per-request token numbers carried by the SSE events."""
-        kind = event.get("type")
-        if kind == "message_start":
-            usage = (event.get("message") or {}).get("usage") or {}
-            return {
-                "input_tokens": usage.get("input_tokens") or 0,
-                "output_tokens": 0,
-                "cache_read": usage.get("cache_read_input_tokens") or 0,
-                "cache_write": usage.get("cache_creation_input_tokens") or 0,
-            }
-        if kind == "message_delta":
-            usage = event.get("usage") or {}
-            return {
-                "input_tokens": 0,
-                "output_tokens": usage.get("output_tokens") or 0,
-                "cache_read": usage.get("cache_read_input_tokens") or 0,
-                "cache_write": usage.get("cache_creation_input_tokens") or 0,
-            }
-        return None
-
     def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-        """Yield events unchanged while accumulating one request's usage.
-
-        Usage arrives in message_start (input + cache) and possibly several
-        message_delta events (cumulative output + later cache updates), so the
-        record is only finalised at message_stop. A stream that is interrupted
-        before message_stop (client disconnect, error) is not recorded.
-        """
-        pending: dict[str, int] | None = None
-        for event in events:
-            yield event
-            if event.get("type") == "message_stop" and pending is not None:
-                self.ledger.add(**pending)
-                pending = None
-                continue
-            usage = self._token_usage(event)
-            if usage is None:
-                continue
-            if pending is None:
-                pending = {
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cache_read": 0,
-                    "cache_write": 0,
-                }
-            for key, value in usage.items():
-                pending[key] = max(pending[key], value)
+        return track_usage(events, self.ledger, ClaudeUsage().read, {"message_stop"})
 
     def ping_usage(self, model: str) -> dict[str, Any] | None:
         """A 1-token call whose only job is to make the edge report usage."""

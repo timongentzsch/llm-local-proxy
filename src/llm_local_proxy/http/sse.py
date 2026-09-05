@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 from ..dialects import Dialect, Frame
+from ..streaming import closing_iterator
 
 SSE_HEARTBEAT_SECONDS = 15
 _DONE = object()
@@ -40,10 +41,11 @@ def with_heartbeats(
 
     def read() -> None:
         try:
-            for event in events:
-                if stopped.is_set():
-                    break
-                items.put(event)
+            with closing_iterator(events):
+                for event in events:
+                    if stopped.is_set():
+                        break
+                    items.put(event)
         except Exception as error:  # noqa: BLE001 - cross the thread boundary
             items.put(error)
         finally:

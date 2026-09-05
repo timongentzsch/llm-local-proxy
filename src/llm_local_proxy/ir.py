@@ -66,7 +66,23 @@ class NativeResponseItem:
     item: dict[str, Any]
 
 
-Block = Text | Image | ToolUse | ToolResult | Thinking | Reasoning | NativeResponseItem
+@dataclass
+class NativeAnthropicBlock:
+    """An Anthropic-only content block retained verbatim for replay."""
+
+    item: dict[str, Any]
+
+
+Block = (
+    Text
+    | Image
+    | ToolUse
+    | ToolResult
+    | Thinking
+    | Reasoning
+    | NativeResponseItem
+    | NativeAnthropicBlock
+)
 
 
 @dataclass
@@ -187,6 +203,10 @@ class HostedToolEvent:
     #: What the provider searched for, when it said. Carried so an Anthropic
     #: client sees the `server_tool_use` input its upstream actually sent.
     query: str = ""
+    #: Provider error code, when a hosted tool returned an error block.
+    error_code: str = ""
+    #: Native result payload when the provider exposes it for exact replay.
+    result: Any = None
 
 
 #: Ranked so only forward steps are emitted. Providers repeat their terminal
@@ -228,6 +248,7 @@ class Usage:
 @dataclass
 class Finish:
     reason: str = "end_turn"
+    incomplete_reason: str | None = None
 
 
 StreamEvent = (
