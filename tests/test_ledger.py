@@ -151,14 +151,14 @@ class TokenCaptureTest(unittest.TestCase):
         seen = list(claude._tracked(iter(events)))
         self.assertEqual(len(seen), 4)
         window = claude.ledger.windows()["7d"]
-        # Cumulative fields take their latest (max) value, and the request is
+        # Cumulative fields take their latest value, and the request is
         # counted exactly once (only flushed at message_stop).
         self.assertEqual(window["input"], 10)
         self.assertEqual(window["output"], 9)
         self.assertEqual(window["cache_read"], 6)
         self.assertEqual(window["cache_write"], 3)
 
-    def test_claude_interrupted_stream_not_recorded(self):
+    def test_claude_interrupted_stream_records_partial_usage(self):
         claude = ClaudeUpstream.__new__(ClaudeUpstream)
         claude.ledger = TokenLedger()
         events = [
@@ -170,7 +170,16 @@ class TokenCaptureTest(unittest.TestCase):
             # no message_stop: client disconnected / error
         ]
         list(claude._tracked(iter(events)))
-        self.assertEqual(claude.ledger.windows()["7d"]["input"], 0)
+        self.assertEqual(
+            claude.ledger.windows()["7d"],
+            {
+                "input": 7,
+                "output": 3,
+                "cache_read": 0,
+                "cache_write": 0,
+                "partial_requests": 1,
+            },
+        )
 
     def test_codex_extracts_completed_usage(self):
         upstream = _upstream_with_ledger()

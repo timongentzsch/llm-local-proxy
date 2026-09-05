@@ -706,9 +706,7 @@ class EgressTest(unittest.TestCase):
             ]
         )
         blocks = [
-            f["content_block"]
-            for f in frames
-            if f["type"] == "content_block_start"
+            f["content_block"] for f in frames if f["type"] == "content_block_start"
         ]
         self.assertEqual(
             [block["type"] for block in blocks],

@@ -18,12 +18,12 @@ from ...ir import (
     ToolCallArgs,
     ToolCallEnd,
     ToolCallStart,
-    Usage,
     hosted_tool_step,
 )
 from ..reasoning import ReasoningCache
 from .request import WEB_SEARCH_TOOL
 from .thinking import pack
+from .usage import ClaudeUsage
 
 #: Passed through; anything else means the turn simply ended. `pause_turn`
 #: tells an Anthropic client to replay the partial server-tool turn verbatim.
@@ -50,19 +50,12 @@ class ClaudeDecoder:
         self._open_thinking: dict[str, Any] | None = None
         self._open_redacted: dict[str, Any] | None = None
         self._stop: str | None = None
-        self._usage = {
-            "input": 0,
-            "cache_read": 0,
-            "cache_creation": 0,
-            "output": 0,
-            "thinking": 0,
-        }
+        self._usage = ClaudeUsage()
 
     def decode(self, event: dict[str, Any]) -> list[StreamEvent]:
         kind = event.get("type")
         if kind == "message_start":
-            message = event.get("message", {})
-            self._merge(message.get("usage") if isinstance(message, dict) else None)
+            self._usage.read(event)
             return []
         if kind == "content_block_start":
             return self._block_start(event)
@@ -74,7 +67,7 @@ class ClaudeDecoder:
             delta = event.get("delta")
             reason = delta.get("stop_reason") if isinstance(delta, dict) else None
             self._stop = reason if reason in PASSTHROUGH_STOP else "end_turn"
-            self._merge(event.get("usage"))
+            self._usage.read(event)
             return []
         if kind == "error":
             detail = event.get("error") or event
@@ -86,7 +79,7 @@ class ClaudeDecoder:
         events: list[StreamEvent] = [
             Finish(self._stop or ("tool_use" if self.calls else "end_turn"))
         ]
-        usage = self._usage_event()
+        usage = self._usage.snapshot(len(self.web_searches))
         if usage is not None:
             events.append(usage)
         return events
@@ -137,9 +130,7 @@ class ClaudeDecoder:
                 if phase == "failed" and isinstance(content, dict)
                 else ""
             )
-            return self._hosted(
-                search_id, phase, error_code=error_code, result=content
-            )
+            return self._hosted(search_id, phase, error_code=error_code, result=content)
         return []
 
     def _block_stop(self) -> list[StreamEvent]:
@@ -250,42 +241,8 @@ class ClaudeDecoder:
         if not hosted_tool_step(self._search_phase, search_id, phase):
             return []
         return [
-            HostedToolEvent(
-                "web_search", search_id, phase, query, error_code, result
-            )
+            HostedToolEvent("web_search", search_id, phase, query, error_code, result)
         ]
-
-    def _merge(self, value: Any) -> None:
-        if not isinstance(value, dict):
-            return
-        for key, name in (
-            ("input", "input_tokens"),
-            ("output", "output_tokens"),
-            ("cache_read", "cache_read_input_tokens"),
-            ("cache_creation", "cache_creation_input_tokens"),
-        ):
-            if isinstance(value.get(name), int):
-                self._usage[key] = value[name]
-        details = value.get("output_tokens_details")
-        if isinstance(details, dict) and isinstance(
-            details.get("thinking_tokens"), int
-        ):
-            self._usage["thinking"] = details["thinking_tokens"]
-
-    def _usage_event(self) -> Usage | None:
-        if not any(self._usage.values()):
-            return None
-        return Usage(
-            # Anthropic reports cache tokens apart from input_tokens.
-            prompt=self._usage["input"]
-            + self._usage["cache_read"]
-            + self._usage["cache_creation"],
-            completion=self._usage["output"],
-            cache_read=self._usage["cache_read"],
-            cache_write=self._usage["cache_creation"],
-            thinking=self._usage["thinking"],
-            web_searches=len(self.web_searches),
-        )
 
     def _cache_reasoning(self) -> None:
         """Persist signed thinking blocks keyed by their tool call ids.

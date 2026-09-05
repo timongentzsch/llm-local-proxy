@@ -134,6 +134,21 @@ reauthentication and cools it for one minute. Catalog refreshes rotate between
 accounts and skip cooled stale slots, so one bad login cannot hide a provider's
 models; the short cooldown periodically retries them so a recovered login
 rejoins automatically.
+
+Token counts come from upstream usage, with one parser per provider shared by
+response translation and the ledger. OpenAI input includes cache reads/writes;
+Anthropic input excludes them. The dashboard sums uncached input, cache reads
+and cache writes for total input, and divides cache reads by that total for
+its hit percentage. Output includes reasoning tokens; these are not added again.
+The rolling 5-hour and 7-day totals cover proxy traffic only, not subscription
+billing or other clients. Existing ledger history keeps its original meaning.
+
+Usage is recorded once, including final counts from truncated or failed Codex
+responses. If a stream ends before final accounting, the latest reported counts
+are retained and the dashboard marks the window as including partial usage.
+Missing tokens are never estimated; a request that reports no usage cannot be
+counted. Truncated output with final usage is not marked as partial accounting.
+
 The proxy never retries after output starts, because that could duplicate a
 partial answer. Claude tokens are refreshed by the proxy itself, so they do not
 contend with Claude Code logins on other machines.

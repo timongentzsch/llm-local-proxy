@@ -371,9 +371,7 @@ class UpstreamRequestTest(unittest.TestCase):
             self.assertEqual(totals["cache_read"], 4)
             self.assertEqual(totals["cache_write"], 2)
 
-    def test_an_interrupted_stream_records_no_usage(self):
-        # Without message_stop the numbers are partial; a half-recorded
-        # request would understate every window it lands in.
+    def test_an_interrupted_stream_records_flagged_partial_usage(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp = pathlib.Path(directory)
             upstream = _upstream(
@@ -384,7 +382,9 @@ class UpstreamRequestTest(unittest.TestCase):
                 tmp=tmp,
             )
             list(upstream.events({"model": "m", "messages": []}))
-            self.assertEqual(upstream.ledger.windows()["5h"]["input"], 0)
+            self.assertEqual(upstream.ledger.windows()["5h"]["input"], 10)
+            self.assertEqual(upstream.ledger.windows()["5h"]["output"], 3)
+            self.assertEqual(upstream.ledger.windows()["5h"]["partial_requests"], 1)
 
     def test_rate_limit_headers_are_captured_from_a_failure_too(self):
         error = _http_error(429, "{}")

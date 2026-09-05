@@ -13,10 +13,13 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from .atomic import atomic_write_json
+from .ir import Usage
+from .streaming import closing_iterator
 
 #: (label, seconds) windows mirroring the subscription utilisation buckets.
 WINDOWS: tuple[tuple[str, int], ...] = (("5h", 5 * 3600), ("7d", 7 * 86400))
@@ -59,6 +62,7 @@ class TokenLedger:
         output_tokens: int = 0,
         cache_read: int = 0,
         cache_write: int = 0,
+        partial: bool = False,
     ) -> None:
         record = {
             "ts": int(time.time()),
@@ -67,12 +71,26 @@ class TokenLedger:
             "cache_read": int(cache_read),
             "cache_write": int(cache_write),
         }
+        if partial:
+            record["partial"] = True
         cutoff = time.time() - MAX_AGE
         with self._lock:
             self._records.append(record)
             self._records = [r for r in self._records if r.get("ts", 0) > cutoff]
             if self.path:
                 atomic_write_json(self.path, self._records)
+
+    def record(self, usage: Usage, *, partial: bool = False) -> None:
+        """Persist canonical usage in the existing provider-native layout."""
+        self.add(
+            input_tokens=usage.prompt
+            if self.input_includes_cache
+            else max(usage.prompt - usage.cache_read - usage.cache_write, 0),
+            output_tokens=usage.completion,
+            cache_read=usage.cache_read,
+            cache_write=usage.cache_write,
+            partial=partial,
+        )
 
     def windows(self) -> dict[str, dict[str, int]]:
         """Summed tokens per window (``{"5h": {...}, "7d": {...}}``)."""
@@ -97,5 +115,38 @@ class TokenLedger:
                 totals["output"] += record.get("output", 0)
                 totals["cache_read"] += record.get("cache_read", 0)
                 totals["cache_write"] += record.get("cache_write", 0)
+            partial = sum(bool(record.get("partial")) for record in window)
+            if partial:
+                totals["partial_requests"] = partial
             result[label] = totals
         return result
+
+
+def track_usage(
+    events: Iterator[dict[str, Any]],
+    ledger: TokenLedger,
+    read: Callable[[dict[str, Any]], Usage | None],
+    terminal_events: set[str],
+) -> Iterator[dict[str, Any]]:
+    """Record one request before its terminal event, or partial usage on exit.
+
+    A terminal response can have incomplete output but authoritative usage.
+    Partial means the stream ended before that final accounting arrived.
+    """
+    pending = None
+    terminal = False
+    with closing_iterator(events):
+        try:
+            for event in events:
+                if not terminal:
+                    usage = read(event)
+                    if usage is not None:
+                        pending = usage
+                    if event.get("type") in terminal_events:
+                        terminal = True
+                        if pending is not None:
+                            ledger.record(pending)
+                yield event
+        finally:
+            if not terminal and pending is not None:
+                ledger.record(pending, partial=True)

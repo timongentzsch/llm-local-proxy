@@ -248,6 +248,7 @@ class Usage:
 @dataclass
 class Finish:
     reason: str = "end_turn"
+    incomplete_reason: str | None = None
 
 
 StreamEvent = (

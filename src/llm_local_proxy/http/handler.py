@@ -20,6 +20,7 @@ from ..dialects import Dialect, resolve
 from ..errors import ProviderError, RequestError
 from ..providers import Provider
 from ..service import Service
+from ..streaming import closing_iterator
 from . import security
 from .sse import SseStream, with_heartbeats
 
@@ -184,8 +185,9 @@ def make_handler(service: Service):
             events, decoder = provider.chat(canonical, request)
             stream = encode(canonical, decoder)
             if not request.stream:
-                for event in events:
-                    stream.feed(event)
+                with closing_iterator(events):
+                    for event in events:
+                        stream.feed(event)
                 return self._json(HTTPStatus.OK, stream.result())
 
             self.send_response(HTTPStatus.OK)
@@ -198,12 +200,13 @@ def make_handler(service: Service):
             start = stream.start()
             sse.send(start, dialect.event_name(start))
             try:
-                for event in with_heartbeats(events):
-                    if event is None:
-                        sse.keepalive()
-                        continue
-                    for chunk in stream.feed(event):
-                        sse.send(chunk, dialect.event_name(chunk))
+                with closing_iterator(with_heartbeats(events)) as heartbeat:
+                    for event in heartbeat:
+                        if event is None:
+                            sse.keepalive()
+                            continue
+                        for chunk in stream.feed(event):
+                            sse.send(chunk, dialect.event_name(chunk))
                 for chunk in stream.finish():
                     sse.send(chunk, dialect.event_name(chunk))
             except (BrokenPipeError, ConnectionResetError):

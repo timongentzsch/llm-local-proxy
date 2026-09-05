@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from ...errors import ProviderError
-from ...ledger import TokenLedger
+from ...ledger import TokenLedger, track_usage
 from .. import transport
 from .app_server import AppServer, RpcError
+from .usage import TERMINAL_EVENTS, read_usage
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -55,20 +56,7 @@ class Upstream:
         return None
 
     def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-        """Yield events unchanged, tallying the final usage of each request."""
-        for event in events:
-            if event.get("type") == "response.completed":
-                usage = (event.get("response") or {}).get("usage") or {}
-                details = usage.get("input_tokens_details") or {}
-                record = {
-                    "input_tokens": usage.get("input_tokens") or 0,
-                    "output_tokens": usage.get("output_tokens") or 0,
-                    "cache_read": details.get("cached_tokens") or 0,
-                    "cache_write": details.get("cache_write_tokens") or 0,
-                }
-                if any(record.values()):
-                    self.ledger.add(**record)
-            yield event
+        return track_usage(events, self.ledger, read_usage, TERMINAL_EVENTS)
 
     def _open(self, body: dict[str, Any], refresh: bool):
         try:

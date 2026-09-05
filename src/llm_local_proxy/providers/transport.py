@@ -4,9 +4,7 @@ Only what is provably identical lives here. The 401-retry envelopes in the
 two upstreams look alike but differ in URL, headers, token source, error
 mapping and whether they capture rate-limit headers, so they stay where they
 are: a shared helper would need four injected callbacks to save ten lines.
-The usage tallies look even more alike and are the least mergeable of all —
-Codex records once at response.completed, Claude accumulates across events
-and commits at message_stop.
+Provider usage parsers share their request lifecycle accounting in ledger.py.
 """
 
 from __future__ import annotations
