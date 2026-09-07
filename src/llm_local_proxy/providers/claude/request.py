@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import uuid
 from collections.abc import Collection
@@ -15,7 +14,6 @@ from ...ir import (
     Image,
     NativeAnthropicBlock,
     NativeResponseItem,
-    NativeTool,
     Reasoning,
     Text,
     Thinking,
@@ -25,6 +23,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
+from ...tools import arguments, render_function
 from ..reasoning import ReasoningCache
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 from .thinking import Outcome, Unpacked, unpack
@@ -45,12 +44,6 @@ UNSUPPORTED = (
 )
 
 
-def _reject_unsupported(params: dict[str, Any]) -> None:
-    for name in UNSUPPORTED:
-        if params.get(name) is not None:
-            raise RequestError(f"unsupported parameter: {name}")
-
-
 def _number(value: Any, name: str, low: float, high: float, closed: bool) -> None:
     ok = (
         isinstance(value, (int, float))
@@ -63,7 +56,9 @@ def _number(value: Any, name: str, low: float, high: float, closed: bool) -> Non
 
 
 def _check(params: dict[str, Any]) -> None:
-    _reject_unsupported(params)
+    for name in UNSUPPORTED:
+        if params.get(name) is not None:
+            raise RequestError(f"unsupported parameter: {name}")
     if params.get("temperature") is not None:
         _number(params["temperature"], "temperature", 0, 1, closed=True)
     if params.get("top_p") is not None:
@@ -90,34 +85,12 @@ def _image(url: str) -> dict[str, Any]:
     raise RequestError("image_url must be a data URL or an http(s) URL")
 
 
-def _arguments(value: Any) -> dict[str, Any]:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value) if value.strip() else {}
-        except json.JSONDecodeError:
-            raise RequestError("tool call arguments must be a JSON object") from None
-    if not isinstance(value, dict):
-        raise RequestError("tool call arguments must be an object")
-    return value
-
-
-def _user_blocks(turn: Turn) -> list[dict[str, Any]]:
-    blocks = []
-    for block in turn.blocks:
-        if isinstance(block, Text):
-            blocks.append({"type": "text", "text": block.text})
-        elif isinstance(block, Image):
-            blocks.append(_image(block.url))
-        elif isinstance(block, ToolResult):
-            item: dict[str, Any] = {
-                "type": "tool_result",
-                "tool_use_id": block.tool_use_id,
-                "content": block.text,
-            }
-            if block.is_error:
-                item["is_error"] = True
-            blocks.append(item)
-    return blocks
+def _text(block: Text) -> dict[str, Any]:
+    return {
+        "type": "text",
+        "text": block.text,
+        **({"cache_control": block.cache} if block.cache is not None else {}),
+    }
 
 
 def _native_thinking(block: Thinking) -> dict[str, Any]:
@@ -126,10 +99,10 @@ def _native_thinking(block: Thinking) -> dict[str, Any]:
     return {"type": "thinking", "thinking": block.text, "signature": block.signature}
 
 
-def _assistant_blocks(
+def _blocks(
     turn: Turn, cache: ReasoningCache | None, dropped: list[Outcome] | None = None
 ) -> list[dict[str, Any]]:
-    """One assistant turn, in the order its blocks actually occurred.
+    """One turn, in the order its blocks actually occurred.
 
     Claude interleaves thinking with the tool calls it precedes, and verifies
     what it gets back, so position is part of the payload: grouping blocks by
@@ -140,6 +113,17 @@ def _assistant_blocks(
     lost = 0
     native_thinking = False
     for block in turn.blocks:
+        if isinstance(block, NativeResponseItem):
+            raise RequestError(
+                "Claude upstream cannot faithfully represent Responses items: "
+                + str(block.item.get("type", "unknown"))
+            )
+        if turn.role != "assistant" and isinstance(
+            block, (Thinking, Reasoning, ToolUse)
+        ):
+            raise RequestError(
+                f"unsupported {turn.role} content: {type(block).__name__}"
+            )
         if isinstance(block, Thinking):
             native_thinking = True
             # A client can hand back a block it was given, including one this
@@ -152,7 +136,7 @@ def _assistant_blocks(
                 if dropped is not None:
                     dropped.append(Outcome.WITHHELD)
         elif isinstance(block, Reasoning):
-            recovered = _responses_reasoning(block.item)
+            recovered = unpack(block.item.get("encrypted_content"))
             if recovered.outcome is Outcome.OK and not _replayable(recovered.block):
                 recovered = Unpacked(Outcome.WITHHELD)
             if recovered.outcome is Outcome.OK:
@@ -163,20 +147,35 @@ def _assistant_blocks(
                 lost += 1
                 if dropped is not None:
                     dropped.append(recovered.outcome)
-        elif isinstance(block, Text) and block.text.strip():
-            # An empty text block is rejected upstream.
-            blocks.append({"type": "text", "text": block.text})
+        elif isinstance(block, Text):
+            if turn.role == "user" or block.text.strip():
+                blocks.append(_text(block))
+        elif isinstance(block, Image) and turn.role == "user":
+            blocks.append(_image(block.url))
+        elif isinstance(block, ToolResult) and turn.role == "user":
+            blocks.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.tool_use_id,
+                    "content": block.text,
+                    **({"is_error": True} if block.is_error else {}),
+                }
+            )
         elif isinstance(block, ToolUse):
             blocks.append(
                 {
                     "type": "tool_use",
                     "id": block.id or "toolu_" + uuid.uuid4().hex[:24],
                     "name": block.name,
-                    "input": _arguments(block.arguments),
+                    "input": arguments(block.arguments, RequestError),
                 }
             )
         elif isinstance(block, NativeAnthropicBlock):
             blocks.append(dict(block.item))
+        else:
+            raise RequestError(
+                f"unsupported {turn.role} content: {type(block).__name__}"
+            )
     uses = [block.id for block in turn.blocks if isinstance(block, ToolUse)]
     replay = cache.get([use for use in uses if use]) if cache and uses else []
     if native_thinking:
@@ -230,25 +229,12 @@ def _replayable(block: dict[str, Any] | None) -> bool:
     return bool(str(block.get("thinking", "")) and str(block.get("signature", "")))
 
 
-def _responses_reasoning(item: dict[str, Any]) -> Unpacked:
-    """Classify the Claude thinking block a Responses reasoning item carries.
-
-    Nothing here refuses the request. A block this build cannot recover has no
-    faithful translation and a client cannot repair it: histories are
-    append-only, so rejecting the item would fail every later turn of that
-    session the same way. Drops are announced, and Claude accepts a turn with
-    no thinking; what it rejects is thinking that came back altered.
-    """
-    return unpack(item.get("encrypted_content"))
-
-
 def _web_tool(tool: WebSearchTool) -> dict[str, Any]:
     if tool.native is None:
         return {"type": WEB_SEARCH_TOOL, "name": "web_search"}
-    kind = str(tool.native.get("type") or "")
-    if kind.startswith("web_search_"):
+    if tool.source == "anthropic":
         return dict(tool.native)
-    if set(tool.native) - {"type"}:
+    if tool.source != "responses" or set(tool.native) - {"type"}:
         raise RequestError(
             "Claude upstream cannot faithfully represent Responses web_search options"
         )
@@ -283,26 +269,10 @@ def build(
 ) -> tuple[dict[str, Any], list[str]]:
     _check(request.params)
 
-    native_items = [
-        block.item
-        for turn in request.turns
-        for block in turn.blocks
-        if isinstance(block, NativeResponseItem)
-    ]
-    if native_items:
-        kinds = sorted({str(item.get("type", "unknown")) for item in native_items})
-        raise RequestError(
-            "Claude upstream cannot faithfully represent Responses items: "
-            + ", ".join(kinds)
-        )
     messages = []
     dropped: list[Outcome] = []
     for turn in request.turns:
-        blocks = (
-            _user_blocks(turn)
-            if turn.role == "user"
-            else _assistant_blocks(turn, reasoning_cache, dropped)
-        )
+        blocks = _blocks(turn, reasoning_cache, dropped)
         if blocks:
             messages.append({"role": turn.role, "content": blocks})
     # Visible rather than silent: the turn still runs, but Claude is no longer
@@ -339,14 +309,15 @@ def build(
     # Must be first to bill against the subscription pool; real clients
     # already send it.
     blocks = [block for block in request.system if block.text.strip()]
-    system: list[dict[str, Any]] = []
-    if not any(block.text.strip() == CLAUDE_CODE_SYSTEM_MARKER for block in blocks):
-        system.append({"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER})
-    for block in blocks:
-        item: dict[str, Any] = {"type": "text", "text": block.text}
-        if block.cache:
-            item["cache_control"] = {"type": "ephemeral"}
-        system.append(item)
+    marker = next(
+        (block for block in blocks if block.text.strip() == CLAUDE_CODE_SYSTEM_MARKER),
+        Text(CLAUDE_CODE_SYSTEM_MARKER),
+    )
+    system = [_text(marker)] + [
+        _text(block)
+        for block in blocks
+        if block.text.strip() != CLAUDE_CODE_SYSTEM_MARKER
+    ]
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -366,47 +337,31 @@ def build(
         body["stop_sequences"] = sequences
 
     betas: list[str] = []
-    native = [tool for tool in request.tools if isinstance(tool, NativeTool)]
-    if native:
-        kinds = sorted({str(tool.item.get("type", "unknown")) for tool in native})
-        raise RequestError(
-            "Claude upstream cannot faithfully represent Responses tools: "
-            + ", ".join(kinds)
-        )
-    function_tools = [tool for tool in request.tools if isinstance(tool, FunctionTool)]
-    for tool in function_tools:
-        if tool.native is not None:
-            unsupported = sorted(
-                set(tool.native)
-                - {"type", "name", "parameters", "description", "strict"}
-            )
-            if unsupported:
+    tools = []
+    for tool in request.tools:
+        if isinstance(tool, FunctionTool):
+            if tool.options.get("defer_loading"):
                 raise RequestError(
-                    "Claude upstream cannot faithfully represent function tool fields: "
-                    + ", ".join(unsupported)
+                    "Anthropic deferred tools require unsupported tool search"
                 )
-    web_tools = [tool for tool in request.tools if isinstance(tool, WebSearchTool)]
-    rendered_web_tools = [_web_tool(tool) for tool in web_tools]
-    tools = [
-        {
-            "name": tool.name,
-            "input_schema": tool.parameters,
-            **({"description": tool.description} if tool.description else {}),
-            **(
-                {"strict": tool.native["strict"]}
-                if tool.native is not None and "strict" in tool.native
-                else {}
-            ),
-        }
-        for tool in function_tools
-    ]
-    if rendered_web_tools:
-        tools.extend(rendered_web_tools)
-        betas.append(WEB_SEARCH_BETA)
+            tools.append(render_function(tool, "anthropic", "input_schema"))
+        elif isinstance(tool, WebSearchTool):
+            tools.append(_web_tool(tool))
+            if WEB_SEARCH_BETA not in betas:
+                betas.append(WEB_SEARCH_BETA)
+        else:
+            raise RequestError(
+                "Claude upstream cannot faithfully represent Responses tools: "
+                + str(tool.item.get("type", "unknown"))
+            )
     choice = request.tool_choice
     if tools and not (choice and choice.kind == "none"):
         body["tools"] = tools
         body["tool_choice"] = _tool_choice(choice)
+        if request.parallel_tool_calls is not None:
+            body["tool_choice"][
+                "disable_parallel_tool_use"
+            ] = not request.parallel_tool_calls
 
     if request.output_format is not None:
         if request.output_format.kind != "json_schema":

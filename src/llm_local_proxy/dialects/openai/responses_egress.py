@@ -10,11 +10,10 @@ from typing import Any
 from ...ir import (
     ChatRequest,
     Citation,
+    Decoder,
     Finish,
-    FunctionTool,
     HostedToolEvent,
     NativeItem,
-    NativeTool,
     ReasoningItem,
     StreamEvent,
     TextDelta,
@@ -23,41 +22,14 @@ from ...ir import (
     ToolCallEnd,
     ToolCallStart,
     Usage,
-    WebSearchTool,
 )
-
-
-def _tool(tool: Any) -> dict[str, Any]:
-    if isinstance(tool, NativeTool):
-        return copy.deepcopy(tool.item)
-    if isinstance(tool, (FunctionTool, WebSearchTool)) and tool.native is not None:
-        return copy.deepcopy(tool.native)
-    if isinstance(tool, FunctionTool):
-        value: dict[str, Any] = {
-            "type": "function",
-            "name": tool.name,
-            "parameters": tool.parameters,
-        }
-        if tool.description:
-            value["description"] = tool.description
-        return value
-    value = {"type": "web_search"}
-    if tool.context_size:
-        value["search_context_size"] = tool.context_size
-    return value
-
-
-def _tool_choice(request: ChatRequest | None) -> Any:
-    choice = request.tool_choice if request else None
-    if choice is None:
-        return "auto"
-    if choice.kind == "tool":
-        return {"type": "function", "name": choice.name}
-    return choice.kind
+from ...tools import responses_choice, responses_tool
 
 
 class ResponseEncoder:
-    def __init__(self, model: str, decoder: Any, request: ChatRequest | None = None):
+    def __init__(
+        self, model: str, decoder: Decoder, request: ChatRequest | None = None
+    ):
         self.id = "resp_" + uuid.uuid4().hex
         self.created = int(time.time())
         self.model = model
@@ -77,7 +49,7 @@ class ResponseEncoder:
 
     def _response(self, status: str, *, output: bool) -> dict[str, Any]:
         request = self.request
-        tools = [_tool(tool) for tool in request.tools] if request else []
+        tools = [responses_tool(tool) for tool in request.tools] if request else []
         incomplete = (
             {"reason": self._incomplete_reason} if status == "incomplete" else None
         )
@@ -88,12 +60,9 @@ class ResponseEncoder:
             "status": status,
             "model": self.model,
             "output": copy.deepcopy(self.output) if output else [],
-            "parallel_tool_calls": bool(
-                True
-                if request is None or request.parallel_tool_calls is None
-                else request.parallel_tool_calls
-            ),
-            "tool_choice": _tool_choice(request),
+            "parallel_tool_calls": request is None
+            or request.parallel_tool_calls is not False,
+            "tool_choice": responses_choice(request.tool_choice if request else None),
             "tools": tools,
             "usage": copy.deepcopy(self.usage) if output else None,
             "error": None,
@@ -302,7 +271,7 @@ class ResponseEncoder:
         if isinstance(event, Finish):
             self._incomplete_reason = event.incomplete_reason or (
                 "max_output_tokens"
-                if event.reason in {"length", "max_tokens"}
+                if event.reason in {"max_tokens", "model_context_window_exceeded"}
                 else None
             )
         return []

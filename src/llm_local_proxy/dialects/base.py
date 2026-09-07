@@ -18,18 +18,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
-from ..ir import ChatRequest
+from ..errors import RequestError
+from ..ir import ChatRequest, Decoder
 
 
 def block_text(parts: list[Any]) -> str:
-    """Join the text blocks of a content list, ignoring every other kind."""
-    return "\n".join(
-        str(part.get("text", ""))
+    """Flatten text-only content without silently discarding other parts."""
+    if any(
+        not isinstance(part, dict)
+        or part.get("type") != "text"
+        or not isinstance(part.get("text"), str)
         for part in parts
-        if isinstance(part, dict) and part.get("type") == "text"
-    )
+    ):
+        raise RequestError("content must contain text blocks")
+    return "\n".join(part["text"] for part in parts)
 
 
 @dataclass(frozen=True, eq=False)
@@ -38,6 +42,15 @@ class Frame:
 
     data: dict[str, Any]
     event: str | None = None
+
+
+class Encoder(Protocol):
+    """Downstream lifecycle consumed by the HTTP layer."""
+
+    def start(self) -> dict[str, Any]: ...
+    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]: ...
+    def finish(self) -> list[dict[str, Any]]: ...
+    def result(self) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, eq=False)
@@ -55,7 +68,7 @@ class Dialect:
     parse: Callable[[dict[str, Any], str], ChatRequest]
     #: (model, provider decoder) -> encoder. Pairing here keeps neither side
     #: naming the other.
-    encode: Callable[[str, Any], Any]
+    encode: Callable[[str, Decoder], Encoder]
     #: Merged provider catalogs -> this dialect's model listing.
     catalog: Callable[[list[dict[str, Any]]], dict[str, Any]]
     #: Payload -> the SSE event name to write, or None for anonymous frames.
@@ -71,4 +84,4 @@ class Dialect:
     #: Optional second OpenAI endpoint using Responses item semantics.
     responses_route: str | None = None
     parse_responses: Callable[[dict[str, Any], str], ChatRequest] | None = None
-    encode_responses: Callable[[str, Any, ChatRequest], Any] | None = None
+    encode_responses: Callable[[str, Decoder, ChatRequest], Encoder] | None = None

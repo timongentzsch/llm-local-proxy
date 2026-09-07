@@ -138,15 +138,12 @@ class AccountPool(Generic[T]):
             self._account_errors[account_id] = str(error) or "authentication failed"
             self._cooldown[account_id] = time.time() + AUTH_FAILURE_COOLDOWN_SECONDS
 
-    @staticmethod
-    def _account_unavailable(error: Exception) -> bool:
-        return bool(getattr(error, "account_unavailable", False))
-
     def stream(
         self,
-        session: str,
+        session: str | None,
         create: Callable[[Account[T]], Iterator[E]],
         no_account: Callable[[], Exception],
+        retry_if: Callable[[Exception], bool] | None = None,
     ) -> Iterator[E]:
         """Fail over on rate limits or unusable auth before output begins."""
 
@@ -167,13 +164,17 @@ class AccountPool(Generic[T]):
                     self.clear_account_error(account.id)
                 return
             except Exception as error:
-                unavailable = self._account_unavailable(error)
-                retryable = getattr(error, "status", None) == 429 or unavailable
+                unavailable = getattr(error, "account_unavailable", False)
+                retryable = (
+                    getattr(error, "status", None) == 429
+                    or unavailable
+                    or (retry_if is not None and retry_if(error))
+                )
                 if started or not retryable:
                     raise
                 if unavailable:
                     self._mark_account_error(account.id, error)
-                else:
+                elif getattr(error, "status", None) == 429:
                     self.mark_rate_limited(account.id)
                 last = error
         assert last is not None
@@ -188,31 +189,13 @@ class AccountPool(Generic[T]):
     ) -> E:
         """Non-streaming equivalent used by token counting and usage probes."""
 
-        candidates = self.candidates(session)
-        if not candidates:
-            raise no_account()
-        last: Exception | None = None
-        for account in candidates:
-            try:
-                result = invoke(account)
-                self.clear_account_error(account.id)
-                return result
-            except Exception as error:
-                unavailable = self._account_unavailable(error)
-                retryable = (
-                    getattr(error, "status", None) == 429
-                    or unavailable
-                    or (retry_if is not None and retry_if(error))
-                )
-                if not retryable:
-                    raise
-                if unavailable:
-                    self._mark_account_error(account.id, error)
-                elif getattr(error, "status", None) == 429:
-                    self.mark_rate_limited(account.id)
-                last = error
-        assert last is not None
-        raise last
+        def create(account: Account[T]) -> Iterator[E]:
+            yield invoke(account)
+
+        with closing_iterator(
+            self.stream(session, create, no_account, retry_if)
+        ) as events:
+            return next(events)
 
     def discover(
         self,

@@ -55,6 +55,29 @@ def _chat(canonical, request):
     SESSIONS.append(request.session)
     if canonical.startswith("claude-fail-"):
         raise ClaudeUpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
+    if canonical == "claude-broken-tool":
+        return iter(
+            [
+                STREAM[0],
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "read",
+                        "input": {},
+                    },
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"path":'},
+                },
+                {"type": "content_block_stop", "index": 0},
+                *STREAM[-2:],
+            ]
+        ), ClaudeDecoder(ReasoningCache())
     if canonical == "claude-burst":
         raise OSError("disk fell over")
     return iter(STREAM), ClaudeDecoder(ReasoningCache())
@@ -110,6 +133,24 @@ class EndpointTest(unittest.TestCase):
         text = response.read().decode()
         connection.close()
         return response.status, text
+
+    def test_broken_tool_arguments_fail_without_successful_completion(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                status, text = self.request(
+                    "POST",
+                    "/anthropic/v1/messages",
+                    {
+                        "model": "claude-broken-tool",
+                        "max_tokens": 128,
+                        "messages": [{"role": "user", "content": "read"}],
+                        "stream": streaming,
+                    },
+                )
+                self.assertEqual(status, 200 if streaming else 502)
+                self.assertIn("tool call arguments must be a JSON object", text)
+                self.assertNotIn('"type": "message_stop"', text)
+                self.assertNotIn('"type": "content_block_stop"', text)
 
     # -- streaming --------------------------------------------------------
 

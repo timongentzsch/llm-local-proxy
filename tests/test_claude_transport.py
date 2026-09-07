@@ -381,7 +381,8 @@ class UpstreamRequestTest(unittest.TestCase):
                 ),
                 tmp=tmp,
             )
-            list(upstream.events({"model": "m", "messages": []}))
+            with self.assertRaisesRegex(RuntimeError, "terminal event"):
+                list(upstream.events({"model": "m", "messages": []}))
             self.assertEqual(upstream.ledger.windows()["5h"]["input"], 10)
             self.assertEqual(upstream.ledger.windows()["5h"]["output"], 3)
             self.assertEqual(upstream.ledger.windows()["5h"]["partial_requests"], 1)

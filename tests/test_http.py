@@ -14,6 +14,7 @@ from llm_local_proxy.dialects import DEFAULT, DIALECTS, OPENAI, Frame, resolve
 from llm_local_proxy.http import security
 from llm_local_proxy.http.handler import api_path
 from llm_local_proxy.http.sse import SseStream, render, with_heartbeats
+from llm_local_proxy.providers.transport import read_events
 
 
 class FramingTest(unittest.TestCase):
@@ -43,6 +44,39 @@ class FramingTest(unittest.TestCase):
             OPENAI.error(400, "nope"),
             {"error": {"message": "nope", "type": "proxy_error"}},
         )
+
+
+class UpstreamFramingTest(unittest.TestCase):
+    def test_multiline_frame_and_terminal_event(self):
+        response = io.BytesIO(
+            b': keepalive\r\nevent: done\r\ndata: {"type":\r\n'
+            b'data: "done", "text": "hi"}\r\n\r\ndata: [DONE]\n\n'
+        )
+        self.assertEqual(
+            list(read_events(response, {"done"})), [{"type": "done", "text": "hi"}]
+        )
+        self.assertTrue(response.closed)
+
+    def test_premature_eof_is_not_a_successful_response(self):
+        for body in (
+            b"",
+            b'data: {"type":"delta"}\n\n',
+            b'data: {"type":"done"}\n',
+            b"data: [DONE]\n\n",
+        ):
+            response = io.BytesIO(body)
+            with (
+                self.subTest(body=body),
+                self.assertRaisesRegex(RuntimeError, "terminal event"),
+            ):
+                list(read_events(response, {"done"}))
+            self.assertTrue(response.closed)
+
+    def test_malformed_json_closes_the_response(self):
+        response = io.BytesIO(b"data: broken\n\n")
+        with self.assertRaises(ValueError):
+            list(read_events(response))
+        self.assertTrue(response.closed)
 
 
 class ResolveTest(unittest.TestCase):
@@ -101,6 +135,30 @@ class HeartbeatTest(unittest.TestCase):
         stream = with_heartbeats(broken(), interval=1)
         with self.assertRaisesRegex(RuntimeError, "upstream failed"):
             next(stream)
+
+
+class OriginValidationTest(unittest.TestCase):
+    def test_malformed_origins_are_rejected_without_crashing(self):
+        for origin in (
+            "http://[",
+            "http://localhost:invalid",
+            "file://localhost:8787",
+            "https://localhost",
+        ):
+            with self.subTest(origin=origin):
+                self.assertFalse(
+                    security.same_origin({"Host": "localhost:8787", "Origin": origin})
+                )
+
+    def test_malformed_hosts_cannot_bypass_the_host_check(self):
+        for host in (
+            "localhost/path",
+            "attacker@localhost",
+            "[::1]junk",
+            "localhost:99999",
+        ):
+            with self.subTest(host=host):
+                self.assertFalse(security.valid_host({"Host": host}, "127.0.0.1"))
 
 
 class AuthTest(unittest.TestCase):

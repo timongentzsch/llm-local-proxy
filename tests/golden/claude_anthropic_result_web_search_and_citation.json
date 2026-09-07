@@ -18,7 +18,14 @@
       },
       {
         "type": "text",
-        "text": "Per the source"
+        "text": "Per the source",
+        "citations": [
+          {
+            "type": "web_search_result_location",
+            "url": "https://example.com/b",
+            "title": "Example B"
+          }
+        ]
       }
     ],
     "stop_reason": "end_turn",

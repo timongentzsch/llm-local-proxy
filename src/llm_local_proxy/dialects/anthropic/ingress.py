@@ -12,7 +12,6 @@ from ...errors import RequestError
 from ...ir import (
     Block,
     ChatRequest,
-    FunctionTool,
     Image,
     NativeAnthropicBlock,
     OutputFormat,
@@ -25,6 +24,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
+from ...tools import definitions, optional_bool, parse_function
 from ..base import block_text
 
 #: The only server tool the proxy can serve; the rest are refused.
@@ -81,12 +81,19 @@ def _image(source: Any) -> Image:
     raise RequestError("image source must be a url or base64 source")
 
 
-def _block(part: Any) -> Block | None:
+def _block(part: Any) -> Block:
     if not isinstance(part, dict):
         raise RequestError("each content block must be an object")
     kind = part.get("type")
+    cache = part.get("cache_control")
+    if cache is not None and not isinstance(cache, dict):
+        raise RequestError("cache_control must be an object")
+    if kind == "text" and set(part) - {"type", "text", "cache_control"}:
+        return NativeAnthropicBlock(dict(part))
+    if cache is not None and kind != "text":
+        return NativeAnthropicBlock(dict(part))
     if kind == "text":
-        return Text(str(part.get("text", "")))
+        return Text(str(part.get("text", "")), cache=part.get("cache_control"))
     if kind == "image":
         return _image(part.get("source"))
     if kind == "tool_use":
@@ -99,6 +106,14 @@ def _block(part: Any) -> Block | None:
         tool_use_id = part.get("tool_use_id")
         if not tool_use_id:
             raise RequestError("tool_result is missing tool_use_id")
+        content = part.get("content")
+        if isinstance(content, list) and any(
+            not isinstance(item, dict)
+            or set(item) - {"type", "text"}
+            or item.get("type") != "text"
+            for item in content
+        ):
+            return NativeAnthropicBlock(dict(part))
         return ToolResult(
             tool_use_id=str(tool_use_id),
             text=_text(part.get("content")),
@@ -124,7 +139,7 @@ def _turn(message: Any) -> Turn:
     if not isinstance(message, dict):
         raise RequestError("each message must be an object")
     role = message.get("role")
-    if role not in {"user", "assistant", "system"}:
+    if not isinstance(role, str) or role not in {"user", "assistant", "system"}:
         raise RequestError(f"unsupported message role: {role}")
     # Spec allows a system role inside messages and Claude Code uses it;
     # neither upstream has a third role, so keep the text in place.
@@ -134,37 +149,22 @@ def _turn(message: Any) -> Turn:
     if isinstance(content, str):
         blocks: list[Block] = [Text(content)] if content else []
     elif isinstance(content, list):
-        blocks = [block for block in map(_block, content) if block is not None]
+        blocks = [_block(part) for part in content]
     else:
         raise RequestError("message content must be a string or array")
     return Turn(role, blocks)
 
 
 def _tools(value: Any) -> list[Tool]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise RequestError("tools must be an array")
     tools: list[Tool] = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise RequestError("invalid tool")
+    for item in definitions(value):
         kind = str(item.get("type") or "")
         if kind.startswith(WEB_SEARCH_PREFIX):
-            tools.append(WebSearchTool(native=dict(item)))
+            tools.append(WebSearchTool(native=dict(item), source="anthropic"))
             continue
-        if kind and not item.get("input_schema"):
+        if kind not in {"", "custom"}:
             raise RequestError(f"unsupported server tool: {kind}")
-        name = item.get("name")
-        if not name:
-            raise RequestError("tool name is required")
-        tools.append(
-            FunctionTool(
-                name=str(name),
-                parameters=item.get("input_schema") or {"type": "object"},
-                description=str(item.get("description") or ""),
-            )
-        )
+        tools.append(parse_function(item, "anthropic", "input_schema"))
     return tools
 
 
@@ -172,27 +172,36 @@ def _tool_choice(value: Any) -> tuple[ToolChoice | None, Any]:
     """The choice, and whether parallel calls were disabled."""
     if value is None:
         return None, None
-    if not isinstance(value, dict) or value.get("type") not in CHOICES:
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("type"), str)
+        or value["type"] not in CHOICES
+    ):
         raise RequestError("unsupported tool_choice")
     parallel = None
-    if value.get("disable_parallel_tool_use"):
-        parallel = False
+    disabled = optional_bool(
+        value.get("disable_parallel_tool_use"), "disable_parallel_tool_use"
+    )
+    if disabled is not None:
+        parallel = not disabled
     kind = CHOICES[value["type"]]
-    return ToolChoice(kind, str(value.get("name") or "")), parallel
+    name = value.get("name", "")
+    if kind == "tool" and (not isinstance(name, str) or not name):
+        raise RequestError("tool_choice requires a name")
+    return ToolChoice(kind, name), parallel
 
 
 def _system(value: Any) -> list[Text]:
     """System blocks in order, preserving cache breakpoints."""
     if isinstance(value, str):
         return [Text(value)] if value else []
-    if not isinstance(value, list):
+    if value is None:
         return []
-    blocks = []
-    for part in value:
-        if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
-            blocks.append(
-                Text(str(part["text"]), cache=bool(part.get("cache_control")))
-            )
+    if not isinstance(value, list):
+        raise RequestError("system must be a string or array")
+    blocks = [_block(part) for part in value]
+    if any(not isinstance(block, Text) for block in blocks):
+        raise RequestError("system content must contain text blocks")
     return blocks
 
 
@@ -228,10 +237,17 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
     turns = [_turn(message) for message in messages]
     choice, parallel = _tool_choice(body.get("tool_choice"))
     thinking = body.get("thinking")
-    mode = thinking.get("type") if isinstance(thinking, dict) else None
+    if thinking is not None and (
+        not isinstance(thinking, dict)
+        or thinking.get("type") not in ("enabled", "disabled", "adaptive")
+    ):
+        raise RequestError("thinking must specify enabled, disabled, or adaptive")
+    mode = thinking.get("type") if thinking else None
     budget = thinking.get("budget_tokens") if mode == "enabled" else None
+    if mode == "enabled" and (not isinstance(budget, int) or isinstance(budget, bool)):
+        raise RequestError("thinking.budget_tokens must be an integer")
     display = thinking.get("display") if isinstance(thinking, dict) else None
-    if display is not None and display not in {"summarized", "omitted"}:
+    if display is not None and display not in ("summarized", "omitted"):
         raise RequestError("thinking.display must be summarized or omitted")
     # The provider validates this against the selected model's live catalog.
     output_config = body.get("output_config")
@@ -257,7 +273,7 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
         thinking_mode=mode if mode in {"adaptive", "disabled"} else "",
         thinking_display=str(display or ""),
         parallel_tool_calls=parallel,
-        stream=bool(body.get("stream", False)),
+        stream=optional_bool(body.get("stream"), "stream") or False,
         session=session,
         params={
             **{name: body[name] for name in PARAMS if name in body},

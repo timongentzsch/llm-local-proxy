@@ -14,12 +14,12 @@ from ...ir import (
     OutputFormat,
     Reasoning,
     Text,
-    ToolChoice,
     ToolResult,
     ToolUse,
     Turn,
     WebSearchTool,
 )
+from ...tools import definitions, optional_bool, parse_choice, parse_function
 from .output import format_of
 from .reasoning import options as reasoning_options
 
@@ -66,6 +66,8 @@ def _input(value: Any, system: list[Text], additional_tools: list[Any]) -> list[
             additional_tools.extend(_tools(item.get("tools")))
         elif kind == "message" or (kind is None and item.get("role")):
             role = item.get("role")
+            if not isinstance(role, str):
+                raise RequestError("message role must be a string")
             blocks = _content(item.get("content", []))
             if role in {"system", "developer"}:
                 system.extend(block for block in blocks if isinstance(block, Text))
@@ -108,30 +110,21 @@ def _input(value: Any, system: list[Text], additional_tools: list[Any]) -> list[
 
 
 def _tools(value: Any) -> list[FunctionTool | WebSearchTool | NativeTool]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise RequestError("tools must be an array")
     tools: list[FunctionTool | WebSearchTool | NativeTool] = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise RequestError("invalid tool")
+    for item in definitions(value):
         kind = item.get("type")
+        if not isinstance(kind, str):
+            raise RequestError("tool type must be a string")
         if kind in {"web_search", "web_search_preview"}:
             tools.append(
                 WebSearchTool(
-                    str(item.get("search_context_size") or ""), native=dict(item)
+                    str(item.get("search_context_size") or ""),
+                    native=dict(item),
+                    source="responses",
                 )
             )
         elif kind == "function" and item.get("name"):
-            tools.append(
-                FunctionTool(
-                    str(item["name"]),
-                    item.get("parameters") or {"type": "object"},
-                    str(item.get("description") or ""),
-                    native=dict(item),
-                )
-            )
+            tools.append(parse_function(item, "responses"))
         elif kind in {"custom", "namespace", "tool_search"}:
             # These newer Responses definitions have no Chat Completions
             # equivalent. Providers that speak Responses can forward them;
@@ -140,20 +133,6 @@ def _tools(value: Any) -> list[FunctionTool | WebSearchTool | NativeTool]:
         else:
             raise RequestError(f"unsupported Responses tool: {kind}")
     return tools
-
-
-def _choice(value: Any) -> ToolChoice | None:
-    if value is None:
-        return None
-    if isinstance(value, str) and value in {"auto", "none", "required"}:
-        return ToolChoice(value)
-    if (
-        isinstance(value, dict)
-        and value.get("type") == "function"
-        and value.get("name")
-    ):
-        return ToolChoice("tool", str(value["name"]))
-    raise RequestError("unsupported tool_choice")
 
 
 #: `include` values this proxy already satisfies. The Codex request always asks
@@ -224,12 +203,14 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         system=system,
         turns=turns,
         tools=[*_tools(body.get("tools")), *additional_tools],
-        tool_choice=_choice(body.get("tool_choice")),
+        tool_choice=parse_choice(body.get("tool_choice")),
         max_tokens=body.get("max_output_tokens"),
         reasoning_effort=effort,
         thinking_display=thinking_display,
-        parallel_tool_calls=body.get("parallel_tool_calls"),
-        stream=bool(body.get("stream")),
+        parallel_tool_calls=optional_bool(
+            body.get("parallel_tool_calls"), "parallel_tool_calls"
+        ),
+        stream=optional_bool(body.get("stream"), "stream") or False,
         session=session or str(body.get("prompt_cache_key") or ""),
         params=params,
         output_format=_output_format(body.get("text")),

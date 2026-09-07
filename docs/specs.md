@@ -5,54 +5,35 @@ files are the ground truth for request validation, response shapes and the
 conformance tests; nothing about the downstream wire format should be asserted
 from memory or from a blog post when it can be read here.
 
-The files are **not** committed: they are third-party artifacts of several
-megabytes, and the Anthropic one carries no licence. Fetch them with
-`scripts/refresh-specs.sh`, which writes `specs/` and reports any hash change.
-A changed hash is a wire contract change, so review it.
+The files are not committed. `scripts/refresh-specs.sh` downloads reviewed,
+immutable snapshots and verifies their SHA-256 checksums before replacing local
+copies. CI requires this step; local conformance tests skip only when the files
+are absent. To review an upgrade, update the script's URL and checksum together,
+run the tests, and record the new provenance here.
 
-`tests/test_conformance.py` checks the proxy against whatever is in `specs/`
-and skips when the directory is absent, so a clone without them still passes.
-
-| File | Bytes | SHA-256 |
+| File | Snapshot | SHA-256 |
 | --- | --- | --- |
-| `openai-openapi.yaml` | 2977302 | `959ef977e1351b7cae23e261fd868dada9c4dd1c95c14bcd0241f9a692b76c6e` |
-| `anthropic-openapi.json` | 2444219 | `717ab2a5efd6263fc76a03b1b361c03d34fe3a0987c2b8f445b6537ede0c991a` |
+| `openai-openapi.yaml` | OpenAI commit `b61ced96515cb6e73794ff459e9e12ca57596c72` | `77a517da92356a777eb9be7ecc978c15adcc2f17ee387c282090e5a890170cf5` |
+| `anthropic-openapi.json` | Stainless snapshot `319861ef873b46e22d6feb51442e743643815093bdd2b3324df52ed202d7ab93` | `717ab2a5efd6263fc76a03b1b361c03d34fe3a0987c2b8f445b6537ede0c991a` |
 
-Fetched 2026-08-31.
+Verified 2026-09-07. Download URLs are pinned in the script.
 
-## openai-openapi.yaml
+OpenAI publishes its MIT-licensed specification in
+[openai/openai-openapi](https://github.com/openai/openai-openapi). Anthropic's
+snapshot is the Stainless generator input previously linked from its first-party
+TypeScript SDK. The SDK no longer exposes `openapi_spec_url` in `.stats.yml`;
+the last reviewed snapshot remains available at its content-addressed URL.
+It is evidence for the implemented contract, not a claim of current API coverage.
 
-- Source: <https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml>
-- OpenAPI 3.1, spec version 2.3.0, MIT licensed, published by OpenAI.
-- Officially maintained and directly downloadable. `POST /v1/chat/completions`
-  is `createChatCompletion`.
+The conformance tests check selected Anthropic enums, required fields, and
+request structure. They are not a complete schema validator. Golden transcripts
+and endpoint tests cover emitted streams and cross-format behavior.
 
-## anthropic-openapi.json
-
-- Source: the `openapi_spec_url` pinned in
-  <https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/.stats.yml>
-  (currently `storage.googleapis.com/stainless-sdk-openapi-specs/anthropic/anthropic-319861ef873b46e22d6feb51442e743643815093bdd2b3324df52ed202d7ab93.yml`).
-- OpenAPI 3.1, 139 paths, 1218 schemas. Served with a `.yml` extension but the
-  body is JSON, hence the local name.
-
-Anthropic publishes **no** official OpenAPI document. This is the Stainless
-input that generates their first-party SDKs: authoritative in practice,
-unannounced as a product, and reachable only through a content-addressed URL
-that changes whenever the spec changes. Treat it as strong evidence, not as a
-contract Anthropic offers.
-
-Two things the schema does **not** cover, for which the prose docs are the
-better source (append `.md` to any docs page for clean markdown; the HTML
-reference is client-rendered and yields only navigation):
-
-- **SSE framing.** The `200` response is typed `application/json` only. The
-  named-event stream, the `ping` event and the `error` event are described in
-  <https://docs.anthropic.com/en/api/messages-streaming.md>, not in the schema.
-  `MessageStreamEvent` unions exactly six members and includes neither `ping`
-  nor `error`.
-- **Semantics of fields**, e.g. that `max_tokens: 0` pre-warms the prompt cache,
-  or that a trailing `assistant` message is a prefill the response continues
-  from. See <https://docs.anthropic.com/en/api/messages.md>.
+For behavior outside the schemas, consult the
+[SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html),
+[Anthropic streaming documentation](https://platform.claude.com/docs/en/api/streaming),
+[stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons),
+and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
 
 ## Not covered by any specification
 

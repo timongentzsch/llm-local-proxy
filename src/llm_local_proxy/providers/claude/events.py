@@ -25,10 +25,6 @@ from .request import WEB_SEARCH_TOOL
 from .thinking import pack
 from .usage import ClaudeUsage
 
-#: Passed through; anything else means the turn simply ended. `pause_turn`
-#: tells an Anthropic client to replay the partial server-tool turn verbatim.
-PASSTHROUGH_STOP = {"tool_use", "max_tokens", "pause_turn"}
-
 
 class ClaudeDecoder:
     """Decodes one Claude response stream.
@@ -49,7 +45,7 @@ class ClaudeDecoder:
         self._open_call: dict[str, Any] | None = None
         self._open_thinking: dict[str, Any] | None = None
         self._open_redacted: dict[str, Any] | None = None
-        self._stop: str | None = None
+        self._stop: Finish | None = None
         self._usage = ClaudeUsage()
 
     def decode(self, event: dict[str, Any]) -> list[StreamEvent]:
@@ -66,7 +62,8 @@ class ClaudeDecoder:
         if kind == "message_delta":
             delta = event.get("delta")
             reason = delta.get("stop_reason") if isinstance(delta, dict) else None
-            self._stop = reason if reason in PASSTHROUGH_STOP else "end_turn"
+            if reason:
+                self._stop = Finish(reason, stop_sequence=delta.get("stop_sequence"))
             self._usage.read(event)
             return []
         if kind == "error":
@@ -75,9 +72,10 @@ class ClaudeDecoder:
         return []
 
     def finish(self) -> list[StreamEvent]:
-        self._cache_reasoning()
+        if self.reasoning_cache is not None:
+            self.reasoning_cache.put(self.calls, self.reasoning_blocks)
         events: list[StreamEvent] = [
-            Finish(self._stop or ("tool_use" if self.calls else "end_turn"))
+            self._stop or Finish("tool_use" if self.calls else "end_turn")
         ]
         usage = self._usage.snapshot(len(self.web_searches))
         if usage is not None:
@@ -243,17 +241,6 @@ class ClaudeDecoder:
         return [
             HostedToolEvent("web_search", search_id, phase, query, error_code, result)
         ]
-
-    def _cache_reasoning(self) -> None:
-        """Persist signed thinking blocks keyed by their tool call ids.
-
-        Only assistant turns that ended in tool calls need them replayed, so
-        this is a no-op unless they exist.
-        """
-        if self.reasoning_cache is None or not self.reasoning_blocks:
-            return
-        if self.calls:
-            self.reasoning_cache.put(self.calls, self.reasoning_blocks)
 
 
 def _result_phase(content: Any) -> str:

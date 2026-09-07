@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from llm_local_proxy.config import load
+from llm_local_proxy.http.server import Server
 
 
 class ConfigTest(unittest.TestCase):
@@ -70,3 +71,15 @@ class ConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IPv6Test(unittest.TestCase):
+    def test_loopback_binding_and_advertised_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text('host="::1"\nport=8787\napi_key=""\n')
+            path.chmod(0o600)
+            config = load(path)
+            self.assertEqual(config.base_url, "http://[::1]:8787/v1")
+            with Server((config.host, 0), object) as server:
+                self.assertEqual(server.server_address[0], "::1")

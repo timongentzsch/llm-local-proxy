@@ -26,22 +26,34 @@ def opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(NoRedirect)
 
 
-def read_events(response: Any) -> Iterator[dict[str, Any]]:
-    """Yield the JSON objects carried by an SSE body.
+def read_events(
+    response: Any, terminal_events: set[str] | None = None
+) -> Iterator[dict[str, Any]]:
+    """Decode complete SSE frames and reject an upstream that ends mid-response.
 
-    Event names and comments are ignored: both upstreams put everything the
-    proxy needs in the data payload, which names its own type.
+    Multiple data lines form one JSON payload. A final unterminated frame is
+    incomplete, even when its bytes happen to form valid JSON.
     """
+    data: list[str] = []
+    terminal = False
     try:
         for raw in response:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if not data or data == "[DONE]":
-                continue
-            event = json.loads(data)
-            if isinstance(event, dict):
+            line = raw.decode("utf-8").rstrip("\r\n")
+            if line.startswith("data:"):
+                data.append(line[5:].removeprefix(" "))
+            elif not line and data:
+                payload = "\n".join(data)
+                data.clear()
+                if payload == "[DONE]":
+                    break
+                if not payload:
+                    continue
+                event = json.loads(payload)
+                if not isinstance(event, dict):
+                    raise ValueError("upstream SSE payload must be an object")
+                terminal |= event.get("type") in (terminal_events or ())
                 yield event
+        if terminal_events and not terminal:
+            raise RuntimeError("upstream stream ended before its terminal event")
     finally:
         response.close()

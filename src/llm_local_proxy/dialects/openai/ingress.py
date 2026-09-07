@@ -13,17 +13,16 @@ from ...errors import RequestError
 from ...ir import (
     Block,
     ChatRequest,
-    FunctionTool,
     Image,
     OutputFormat,
     Text,
     Tool,
-    ToolChoice,
     ToolResult,
     ToolUse,
     Turn,
     WebSearchTool,
 )
+from ...tools import definitions, optional_bool, parse_choice, parse_function
 from ..base import block_text
 from .output import format_of
 from .reasoning import options as reasoning_options
@@ -77,7 +76,7 @@ def _content(value: Any, role: str) -> list[Block]:
     blocks: list[Block] = []
     for part in value:
         if not isinstance(part, dict):
-            continue
+            raise RequestError("message content parts must be objects")
         kind = part.get("type")
         if kind == "text":
             blocks.append(Text(str(part.get("text", ""))))
@@ -137,14 +136,8 @@ def _add_tool_result(turns: list[Turn], message: dict[str, Any]) -> None:
 
 
 def _tools(value: Any) -> list[Tool]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise RequestError("tools must be an array")
     tools: list[Tool] = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise RequestError("invalid tool")
+    for item in definitions(value):
         if item.get("type") == "openrouter:web_search":
             parameters = item.get("parameters")
             size = (
@@ -153,7 +146,11 @@ def _tools(value: Any) -> list[Tool]:
                 else None
             )
             tools.append(
-                WebSearchTool(size if size in {"low", "medium", "high"} else "")
+                WebSearchTool(
+                    size
+                    if isinstance(size, str) and size in {"low", "medium", "high"}
+                    else ""
+                )
             )
             continue
         function = item.get("function")
@@ -161,28 +158,8 @@ def _tools(value: Any) -> list[Tool]:
             raise RequestError(
                 "only function and openrouter:web_search tools are supported"
             )
-        if not function.get("name"):
-            raise RequestError("function tool name is required")
-        tools.append(
-            FunctionTool(
-                name=str(function["name"]),
-                parameters=function.get("parameters") or {"type": "object"},
-                description=str(function.get("description") or ""),
-            )
-        )
+        tools.append(parse_function(function, "chat_completions"))
     return tools
-
-
-def _tool_choice(value: Any) -> ToolChoice | None:
-    if value is None:
-        return None
-    if isinstance(value, str) and value in {"auto", "none", "required"}:
-        return ToolChoice(value)
-    if isinstance(value, dict) and value.get("type") == "function":
-        function = value.get("function", {})
-        if isinstance(function, dict) and function.get("name"):
-            return ToolChoice("tool", str(function["name"]))
-    raise RequestError("unsupported tool_choice")
 
 
 def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
@@ -198,6 +175,8 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         if not isinstance(message, dict):
             raise RequestError("each message must be an object")
         role = message.get("role")
+        if not isinstance(role, str):
+            raise RequestError("message role must be a string")
         if role in SYSTEM_ROLES:
             text = _text(message.get("content"))
             if text:
@@ -228,12 +207,14 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         system=[Text("\n\n".join(system))] if system else [],
         turns=turns,
         tools=_tools(body.get("tools")),
-        tool_choice=_tool_choice(body.get("tool_choice")),
+        tool_choice=parse_choice(body.get("tool_choice"), nested=True),
         max_tokens=body.get("max_tokens", body.get("max_completion_tokens")),
         reasoning_effort=effort,
         thinking_display=thinking_display,
-        parallel_tool_calls=body.get("parallel_tool_calls"),
-        stream=bool(body.get("stream", False)),
+        parallel_tool_calls=optional_bool(
+            body.get("parallel_tool_calls"), "parallel_tool_calls"
+        ),
+        stream=optional_bool(body.get("stream"), "stream") or False,
         session=session or str(body.get("session_id", "")),
         params={name: body[name] for name in PARAMS if name in body},
         output_format=_output_format(body.get("response_format")),

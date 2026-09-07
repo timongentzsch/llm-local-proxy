@@ -7,7 +7,14 @@
     "content": [
       {
         "type": "text",
-        "text": "Cited"
+        "text": "Cited",
+        "citations": [
+          {
+            "type": "web_search_result_location",
+            "url": "https://example.com/a",
+            "title": "Example A"
+          }
+        ]
       }
     ],
     "stop_reason": "end_turn",

@@ -35,7 +35,9 @@ class Upstream:
 
     def events(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         response = self._open(body, refresh=False)
-        return self._tracked(transport.read_events(response))
+        return self._tracked(
+            transport.read_events(response, TERMINAL_EVENTS | {"error"})
+        )
 
     def reasoning_efforts(self, model: str) -> set[str] | None:
         """Discover the transport enum without running a generation."""

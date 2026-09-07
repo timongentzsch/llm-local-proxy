@@ -4,23 +4,21 @@ A downstream request is parsed once into :class:`ChatRequest`; each provider
 renders its own upstream body from that. Without it the proxy would need one
 converter per (dialect, provider) pair.
 
-The shape follows Anthropic's message model rather than the intersection of
-the formats it serves: typed content blocks, tool results as blocks inside a
-user turn, signed thinking. That model is the superset, and an IR built from
-the intersection would have to drop exactly those.
+Common semantics use typed fields. Content without a lossless mapping uses
+explicit opaque wire-format records; adapters must preserve or reject them.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 
 @dataclass
 class Text:
     text: str
-    #: Prompt-cache breakpoint; honoured by Claude, ignored by Codex.
-    cache: bool = False
+    #: Native prompt-cache options, including TTL; ignored by Codex.
+    cache: dict[str, Any] | None = None
 
 
 @dataclass
@@ -96,13 +94,17 @@ class FunctionTool:
     name: str
     parameters: dict[str, Any]
     description: str = ""
-    native: dict[str, Any] | None = None
+    strict: bool | None = None
+    #: Extra fields belong to a wire format, not to a particular provider.
+    source: str = ""
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class WebSearchTool:
     context_size: str = ""
     native: dict[str, Any] | None = None
+    source: str = ""
 
 
 @dataclass
@@ -249,6 +251,7 @@ class Usage:
 class Finish:
     reason: str = "end_turn"
     incomplete_reason: str | None = None
+    stop_sequence: str | None = None
 
 
 StreamEvent = (
@@ -266,6 +269,13 @@ StreamEvent = (
     | Usage
     | Finish
 )
+
+
+class Decoder(Protocol):
+    """Translate upstream wire events into the shared response vocabulary."""
+
+    def decode(self, event: dict[str, Any]) -> list[StreamEvent]: ...
+    def finish(self) -> list[StreamEvent]: ...
 
 
 @dataclass
@@ -300,7 +310,7 @@ class ChatRequest:
     thinking_mode: str = ""
     #: Claude thinking visibility: "summarized" or "omitted".
     thinking_display: str = ""
-    parallel_tool_calls: Any = None
+    parallel_tool_calls: bool | None = None
     stream: bool = False
     session: str = ""
     #: As sent; each provider validates what it can honour.

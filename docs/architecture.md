@@ -19,7 +19,7 @@ model and effort names do not.
 
 | Axis | Members | Adding one costs |
 | --- | --- | --- |
-| **Dialect** — downstream wire format | OpenAI Chat Completions, Anthropic Messages | one package, one registry line |
+| **Dialect** — downstream wire format | OpenAI Chat Completions and Responses, Anthropic Messages | one package, one registry line |
 | **Provider** — upstream subscription | Codex, Claude | one package, one registry line |
 | **Auth** — credential lifecycle | account slots behind the `Auth` ABC | nothing outside that provider |
 
@@ -31,23 +31,32 @@ would need a converter for every provider. With them it is N + M.
 **IR** is the compiler term *intermediate representation*: parse once into a
 neutral in-memory shape, emit each target from it.
 
-`ChatRequest` (`ir.py`) is **Anthropic-shaped**, not a lowest common
-denominator. Anthropic's message model is the superset — typed content blocks,
-tool results inside a user turn, signed thinking, cache breakpoints — so an IR
-built from the intersection would have to discard exactly the things a proxy
-must not lose. Shaping it after the superset costs the Chat Completions path
-nothing, because that path never had those fields.
+`ChatRequest` (`ir.py`) carries shared semantics in typed fields, including
+function schemas, optional strictness and parallel-call control. Wire-specific
+function options retain their source format. The shared tool helpers preserve
+those options on compatible targets and reject unsupported translations.
+Adding a provider does not require another ingress parser or a tool registry.
+
+Opaque Responses items and Anthropic blocks are deliberate escape hatches for
+content without a lossless mapping, including signed replay and rich tool
+results. They must be preserved on compatible routes or explicitly rejected;
+they are not permission to interpret one provider's payload in shared routing.
+
+`Decoder` and `Encoder` protocols define the stream boundary; the HTTP layer
+handles the common `ProviderError` and does not import provider implementations.
+JSON dictionaries remain appropriate for raw wire events and opaque extensions.
 
 `StreamEvent` is the response vocabulary: `TextDelta`, `ThinkingDelta`,
 `ThinkingSignature`, `ToolCallStart`/`Args`/`End`, `Citation`, `Usage`,
-`Finish`. Finish reasons use Anthropic's seven-value enum, the richer of the
-two; the Chat Completions encoder narrows them to four.
+`Finish`. Finish carries the stop reason and matched stop sequence. Reasons use
+Anthropic's seven-value enum; Chat Completions narrows them to four.
 
 ## Layout
 
 ```
 src/llm_local_proxy/
   ir.py            # ChatRequest, content blocks, StreamEvent
+  tools.py         # shared tool validation and wire serialization
   errors.py        # downstream request and provider failure boundaries
   service.py       # registry, merged catalog, status
   config.py  atomic.py  ledger.py  status.py
@@ -74,6 +83,7 @@ src/llm_local_proxy/
     transport.py   # no-redirect handler + SSE reader
     codex/         # app_server auth upstream request events catalog
     claude/        # auth upstream request events catalog subscription
+  streaming.py     # iterator lifecycle shared across layers
   static/index.html
 ```
 
@@ -189,8 +199,8 @@ oblige a client to execute something and answer. Responses gets a
 `web_search_call` item held open across the wait -- the gap between
 `output_item.added` and `output_item.done` *is* the search, which is why this
 does not reuse the `NativeItem` path that emits both at once. Anthropic gets
-`server_tool_use` plus `web_search_tool_result`, with `content` present and
-empty because no upstream forwards the individual result records here. Only
+`server_tool_use` plus `web_search_tool_result`, with `content` preserving native result records when available; cross-provider
+searches use an empty result list. Only
 forward phase steps are emitted (`started`, `searching`, `completed`,
 `failed`), since Responses reports a finished search twice.
 
@@ -206,11 +216,12 @@ forward phase steps are emitted (`started`, `searching`, `completed`,
 1. **The subscription marker [empirical].** Must be the first system block or
    the request bills against the API pool and 429s. A real Claude Code client
    already sends it, so it is deduplicated rather than prepended blindly.
-2. **Cache breakpoints.** `system` is a block list, not a joined string.
-   Flattening it drops `cache_control` and every turn re-pays full input.
+2. **Cache breakpoints.** Text blocks retain the complete `cache_control`
+   object, including TTL. Rich native blocks retain cache options verbatim.
 3. **Signatures.** On anthropic→claude, thinking blocks are forwarded verbatim
    and the `ReasoningCache` is bypassed: the client holds them. On
-   anthropic→codex they are dropped and the encrypted-reasoning cache is keyed
+   anthropic→codex only proxy-enveloped Codex reasoning can be replayed; foreign
+   Claude signatures are rejected. The encrypted-reasoning cache is keyed
    by tool call id. On the openai→claude routes a block is only replayable
    when its text arrived [empirical]. The proxy explicitly requests summarized
    display so ordinary turns carry both text and signature. If a client asks
@@ -219,8 +230,8 @@ forward phase steps are emitted (`started`, `searching`, `completed`,
    string left here, so such a block is neither packed nor replayed and its turn
    goes up without thinking.
 4. **`tool_result` images** are representable to Claude but not to Codex.
-5. **Betas [empirical].** The client's `anthropic-beta` header is unioned with
-   the required Claude Code betas through an allowlist.
+5. **Betas [empirical].** The provider supplies its subscription betas and adds
+   feature betas for the tools and output format in the parsed request.
 
 ## What is deliberately not shared
 
@@ -230,20 +241,20 @@ looks duplicated:
 - **The two `_open` retry envelopes** differ in URL, headers, token source and
   error mapping, and only Claude records rate-limit headers. A shared helper
   would need four callbacks to save ten lines.
-- **The two usage tallies** are the trap: the most similar-looking code here
-  and the least mergeable. Codex records once at `response.completed`; Claude
-  accumulates across events, merges with `max()`, and commits at
-  `message_stop`.
-- **The two `_tools` parsers** share five guard lines, then diverge in tool
-  shape, server-tool detection and error text.
+- **Usage parsing** remains specific to each upstream's event vocabulary;
+  persistence and stream cleanup share `track_usage`. Codex reports terminal
+  totals, while Claude reports cumulative updates across events.
+- **Tool kind dispatch** belongs to each wire parser; common function fields,
+  validation, and Responses serialization share `tools.py`.
 - **No `Translator` base class.** The provider decoders share a target type,
   not an implementation; a common ABC would assert a similarity that is not
   there.
 - **No plugin loader.** `REGISTRY` and `DIALECTS` are Python tuples.
-- **No codegen** from the specs: three endpoints implemented against 96 paths.
+- **No codegen**: the proxy implements a small subset of the upstream APIs.
 
-`providers/transport.py` holds what *is* provably identical — the no-redirect
-handler and the SSE reader — and nothing else.
+`providers/transport.py` shares the no-redirect handler and SSE reader. The
+reader joins multiline data frames, closes its response on every exit, and
+rejects EOF before the terminal event supplied by the provider.
 
 ## Known gaps
 
@@ -258,5 +269,5 @@ handler and the SSE reader — and nothing else.
 - `pause_turn` is forwarded to Anthropic clients and narrowed to `stop` for
   Chat Completions ones. The proxy does not itself continue a paused
   server-tool turn.
-- The Codex→Anthropic encoder is exact but numbers content blocks in Codex's
-  ordering rather than a model's natural one.
+- Native Responses output items require the Responses endpoint. Other
+  encoders fail explicitly when an item has no lossless representation.

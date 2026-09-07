@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from importlib.resources import files
@@ -17,7 +18,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..dialects import Dialect, resolve
+from ..dialects.base import Encoder
 from ..errors import ProviderError, RequestError
+from ..ir import ChatRequest, Decoder
 from ..providers import Provider
 from ..service import Service
 from ..streaming import closing_iterator
@@ -180,7 +183,12 @@ def make_handler(service: Service):
                 "X-Claude-Code-Session-Id", ""
             )
 
-        def _generate(self, dialect: Dialect, request: Any, encode: Any) -> None:
+        def _generate(
+            self,
+            dialect: Dialect,
+            request: ChatRequest,
+            encode: Callable[[str, Decoder], Encoder],
+        ) -> None:
             provider, canonical = self._route(request.model)
             events, decoder = provider.chat(canonical, request)
             stream = encode(canonical, decoder)

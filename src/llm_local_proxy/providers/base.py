@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
-from ..ir import ChatRequest
+from ..ir import ChatRequest, Decoder
 from ..status import ProviderStatus
 from .auth import Auth
 
@@ -45,7 +45,7 @@ class Provider:
     #: None when the model does not belong to it (used to route requests).
     match: Callable[[str], str | None]
     #: (canonical model, parsed request) -> (upstream events, decoder).
-    chat: Callable[[str, ChatRequest], tuple[Iterator[Any], Any]]
+    chat: Callable[[str, ChatRequest], tuple[Iterator[dict[str, Any]], Decoder]]
     #: Model catalog entries to merge into the /v1/models listing.
     models: Callable[[], list[dict[str, Any]]]
     #: The provider's card for /api/status, normalised so every provider

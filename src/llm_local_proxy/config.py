@@ -28,7 +28,11 @@ class Config:
     @property
     def origin(self) -> str:
         host = "127.0.0.1" if self.host in {"0.0.0.0", "::"} else self.host
-        return f"http://{host}:{self.port}"
+        return (
+            f"http://[{host}]:{self.port}"
+            if ":" in host
+            else f"http://{host}:{self.port}"
+        )
 
 
 def _config_root() -> Path:

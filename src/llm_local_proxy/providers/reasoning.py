@@ -1,11 +1,7 @@
-"""Reasoning carried between a tool call and its result.
+"""Bounded replay cache for clients that cannot carry signed reasoning.
 
-Both upstreams refuse a tool result whose originating reasoning is missing,
-and neither downstream format has anywhere to put it: Codex returns an
-encrypted blob and Claude a signed thinking block, both opaque and both
-required verbatim on the next turn. So the proxy holds them here, keyed by
-the tool call ids they belong to, rather than asking clients to round-trip
-something they cannot read.
+Responses and Anthropic clients can replay their native opaque blocks directly.
+Chat Completions cannot, so providers retain those blocks by tool-call id.
 """
 
 from __future__ import annotations

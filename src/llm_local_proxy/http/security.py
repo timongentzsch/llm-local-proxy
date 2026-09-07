@@ -19,17 +19,19 @@ CREDENTIALS = (("Authorization", "bearer"), ("x-api-key", ""))
 
 
 def request_host(headers: Mapping[str, str]) -> tuple[str, int]:
-    value = headers.get("Host", "")
-    if value.startswith("["):
-        host = value[1 : value.find("]")] if "]" in value else ""
-        suffix = value[value.find("]") + 1 :] if "]" in value else ""
-        port = suffix[1:] if suffix.startswith(":") else ""
-    else:
-        host, separator, port = value.rpartition(":")
-        if not separator:
-            host, port = value, ""
     try:
-        return host, int(port) if port else 80
+        parsed = urlparse("//" + headers.get("Host", ""))
+        suffix = parsed.netloc.partition("]")[2]
+        if suffix and not suffix.startswith(":"):
+            return "", 0
+        if (
+            parsed.username is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            return "", 0
+        return parsed.hostname or "", parsed.port or 80
     except ValueError:
         return "", 0
 
@@ -43,9 +45,16 @@ def same_origin(headers: Mapping[str, str]) -> bool:
     origin = headers.get("Origin")
     if not origin:
         return True
-    parsed = urlparse(origin)
-    _, port = request_host(headers)
-    return parsed.hostname in LOOPBACK and (parsed.port or 80) == port
+    try:
+        parsed = urlparse(origin)
+        _, port = request_host(headers)
+        return (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname in LOOPBACK
+            and (parsed.port or (443 if parsed.scheme == "https" else 80)) == port
+        )
+    except ValueError:
+        return False
 
 
 def authorized(headers: Mapping[str, str], api_key: str) -> bool:

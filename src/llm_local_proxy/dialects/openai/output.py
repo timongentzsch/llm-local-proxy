@@ -6,6 +6,7 @@ from typing import Any
 
 from ...errors import RequestError
 from ...ir import OutputFormat
+from ...tools import optional_bool
 
 
 def format_of(kind: Any, fields: dict[str, Any]) -> OutputFormat | None:
@@ -25,4 +26,9 @@ def format_of(kind: Any, fields: dict[str, Any]) -> OutputFormat | None:
     name, schema = fields.get("name"), fields.get("schema")
     if not isinstance(name, str) or not name or not isinstance(schema, dict):
         raise RequestError("json_schema output format requires name and schema")
-    return OutputFormat("json_schema", name, schema, bool(fields.get("strict")))
+    return OutputFormat(
+        "json_schema",
+        name,
+        schema,
+        optional_bool(fields.get("strict"), "strict") or False,
+    )

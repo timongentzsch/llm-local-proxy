@@ -6,15 +6,15 @@ import time
 import uuid
 from typing import Any
 
+from ...errors import ProviderError
 from ...ir import (
     Citation,
+    Decoder,
     Finish,
-    HostedToolEvent,
-    RedactedThinkingDelta,
+    NativeItem,
     StreamEvent,
     TextDelta,
     ThinkingDelta,
-    ThinkingSignature,
     ToolCallArgs,
     ToolCallEnd,
     ToolCallStart,
@@ -39,7 +39,7 @@ class ChunkEncoder:
     Holds only wire shaping; upstream specifics live in the decoder.
     """
 
-    def __init__(self, model: str, decoder: Any):
+    def __init__(self, model: str, decoder: Decoder):
         self.id = "chatcmpl-" + uuid.uuid4().hex
         self.created = int(time.time())
         self.model = model
@@ -129,6 +129,10 @@ class ChunkEncoder:
         return chunks
 
     def _one(self, event: StreamEvent) -> dict[str, Any] | None:
+        if isinstance(event, NativeItem):
+            raise ProviderError(
+                "native Responses output requires the Responses endpoint"
+            )
         if isinstance(event, TextDelta):
             self.content += event.text
             return self.chunk({"content": event.text})
@@ -179,14 +183,7 @@ class ChunkEncoder:
         if isinstance(event, Finish):
             self._finish = FINISH_REASONS.get(event.reason, "stop")
             return None
-        # No Chat Completions representation; the decoder keeps them. A hosted
-        # search is dropped rather than shown as a function call: the client
-        # never ran it and must not answer it. Its citations and its
-        # `web_search_requests` count still arrive.
-        if isinstance(
-            event, (ThinkingSignature, RedactedThinkingDelta, HostedToolEvent)
-        ):
-            return None
+        # Signed reasoning and hosted tool lifecycles have no Chat representation.
         return None
 
     def _citation(self, event: Citation) -> dict[str, Any] | None:

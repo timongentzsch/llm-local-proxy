@@ -232,7 +232,9 @@ class ClaudeUpstream:
                 _report_block_shape(retried, outgoing)
                 raise
         events = (
-            _message_events(response) if prewarm else transport.read_events(response)
+            _message_events(response)
+            if prewarm
+            else transport.read_events(response, {"message_stop", "error"})
         )
         yield from self._tracked(events)
 

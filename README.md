@@ -50,6 +50,15 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic ANTHROPIC_AUTH_TOKEN=$KEY \
 | `/anthropic` | `v1/messages`, `v1/messages/count_tokens`, `v1/models` |
 | `/v1` | alias of `/openai/v1` |
 
+Function tools preserve explicit `strict` and parallel-call settings across all
+three API endpoints and both providers. Native function options are retained
+when the target speaks that format; unsupported cross-format options return
+400 instead of disappearing. Anthropic deferred tool loading is rejected until
+its tool-search lifecycle is supported. Malformed tool-call arguments fail
+translation instead of becoming an empty call. Rich Anthropic tool results
+round-trip on the native route and are rejected on incompatible routes. Native
+cache breakpoints retain their TTL, and tool definitions keep their input order.
+
 Streaming, images, function tools, web search, parallel calls, reasoning effort
 and token usage work on both. The Responses route carries reasoning as opaque
 items, so a client that resends its complete `input` continues tool loops
@@ -106,7 +115,7 @@ Messages API requires a limit — so Claude receives the requested value or the
 model's maximum, and that limit also bounds any thinking budget. A small limit
 therefore caps reasoning too.
 
-`count_tokens` is exact for `claude-*` models and returns `404` for Codex ones,
+`count_tokens` is exact for models routed to Claude and returns `404` for Codex ones,
 whose upstream cannot count. A client that gets the 404 falls back to its own
 estimate knowing it is one, rather than trusting a number the proxy invented.
 
@@ -149,8 +158,9 @@ are retained and the dashboard marks the window as including partial usage.
 Missing tokens are never estimated; a request that reports no usage cannot be
 counted. Truncated output with final usage is not marked as partial accounting.
 
-The proxy never retries after output starts, because that could duplicate a
-partial answer. Claude tokens are refreshed by the proxy itself, so they do not
+A stream that ends before its terminal event fails explicitly; it is never
+reported as a complete answer. The proxy never retries after output starts,
+because that could duplicate a partial answer. Claude tokens are refreshed by the proxy itself, so they do not
 contend with Claude Code logins on other machines.
 
 Codex caches prompt prefixes implicitly, so a rewritten early item — a
@@ -206,16 +216,24 @@ supplied — never publish it on all interfaces.
 ## Development
 
 ```sh
-uv sync
-uv run python -m unittest discover -s tests -v
+uv sync --locked
+./scripts/refresh-specs.sh
+PYTHONPATH=src uv run python -m unittest discover -s tests -v
 uv run ruff check src tests
 uv run ruff format --check src tests
 ```
 
+Tool replay tests must include populated arguments (nested values, booleans,
+nulls, and Unicode) across each dialect/provider pairing; `{}` alone cannot
+catch invalid JSON serialization. Live checks should verify call arguments,
+result replay, usage and terminal events, using a stable session ID. HTTP 200
+and container health alone do not establish protocol correctness.
+
 [docs/architecture.md](docs/architecture.md) describes the dialect, provider
 and auth axes and the wire contract each endpoint honours.
 [docs/specs.md](docs/specs.md) covers the OpenAI and Anthropic specifications
-those contracts are tested against; `scripts/refresh-specs.sh` fetches them.
+those contracts are tested against. CI verifies pinned spec downloads and runs
+the suite on Python 3.11–3.14.
 
 Codex app-server owns login, refresh, models and account limits. Keeping the
 binary avoids reimplementing undocumented ChatGPT authentication, at the cost
@@ -229,9 +247,10 @@ used by Anthropic's Claude Code. Not affiliated with, endorsed by, or supported
 by OpenAI or Anthropic.
 
 It runs entirely on your machine against your own authenticated accounts. No
-keys are intercepted, no authentication is bypassed and no credentials leave
-your device: Codex login is delegated to the official binary, and Claude tokens
-come from the same OAuth flow the first-party client uses.
+keys are intercepted and no authentication is bypassed. Credentials are stored
+locally and sent to their provider for authentication; the proxy does not send
+them to an intermediary. Codex login is delegated to the official binary, and
+Claude tokens come from the OAuth flow its first-party client uses.
 
 It does speak two undocumented interfaces — the Codex app-server JSON-RPC
 surface and the Claude subscription Messages transport, including the client

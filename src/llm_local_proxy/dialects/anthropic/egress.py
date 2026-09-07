@@ -11,14 +11,16 @@ authoritative totals arrive in message_delta.
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
+from ...errors import ProviderError
 from ...ir import (
     Citation,
+    Decoder,
     Finish,
     HostedToolEvent,
+    NativeItem,
     RedactedThinkingDelta,
     StreamEvent,
     TextDelta,
@@ -29,18 +31,20 @@ from ...ir import (
     ToolCallStart,
     Usage,
 )
+from ...tools import arguments
 
 
 class MessageEncoder:
     """Turns one provider's decoded stream into Anthropic Messages output."""
 
-    def __init__(self, model: str, decoder: Any):
+    def __init__(self, model: str, decoder: Decoder):
         self.id = "msg_" + uuid.uuid4().hex[:24]
         self.model = model
         self.decoder = decoder
         self.blocks: list[dict[str, Any]] = []
         self.usage: Usage | None = None
         self.stop_reason: str | None = None
+        self.stop_sequence: str | None = None
         self._index = -1
         self._searches: dict[str, str] = {}
         self._open: dict[str, Any] | None = None
@@ -58,7 +62,10 @@ class MessageEncoder:
         frames.append(
             {
                 "type": "message_delta",
-                "delta": {"stop_reason": self._stop(), "stop_sequence": None},
+                "delta": {
+                    "stop_reason": self._stop(),
+                    "stop_sequence": self.stop_sequence,
+                },
                 "usage": _usage(self.usage),
             }
         )
@@ -92,7 +99,7 @@ class MessageEncoder:
             return []
         block = self._open["block"]
         if self._open["kind"] == "tool_use":
-            block["input"] = _arguments(self._open["json"])
+            block["input"] = arguments(self._open["json"])
         self.blocks.append(block)
         self._open = None
         return [{"type": "content_block_stop", "index": self._index}]
@@ -107,6 +114,10 @@ class MessageEncoder:
         return frames
 
     def _one(self, event: StreamEvent) -> list[dict[str, Any]]:
+        if isinstance(event, NativeItem):
+            raise ProviderError(
+                "native Responses output requires the Responses endpoint"
+            )
         if isinstance(event, TextDelta):
             frames = self._ensure("text", {"type": "text", "text": ""})
             self._open["block"]["text"] += event.text
@@ -168,14 +179,18 @@ class MessageEncoder:
         if isinstance(event, Citation):
             if self._open is None or self._open["kind"] != "text":
                 return []
-            return [
-                self._delta({"type": "citations_delta", "citation": _citation(event)})
-            ]
+            citation = _citation(event)
+            citations = self._open["block"].setdefault("citations", [])
+            if citation in citations:
+                return []
+            citations.append(citation)
+            return [self._delta({"type": "citations_delta", "citation": citation})]
         if isinstance(event, Usage):
             self.usage = event
             return []
         if isinstance(event, Finish):
             self.stop_reason = event.reason
+            self.stop_sequence = event.stop_sequence
             return []
         return []
 
@@ -225,7 +240,6 @@ class MessageEncoder:
                     },
                 )
             )
-        if event.phase in {"completed", "failed"}:
             frames.extend(self._close())
         return frames
 
@@ -261,18 +275,11 @@ class MessageEncoder:
             "model": self.model,
             "content": [] if streaming else self.blocks,
             "stop_reason": None if streaming else self._stop(),
-            "stop_sequence": None,
+            "stop_sequence": None if streaming else self.stop_sequence,
             "stop_details": None,
             "container": None,
             "usage": _usage(None if streaming else self.usage, full=True),
         }
-
-
-def _arguments(raw: str) -> dict[str, Any]:
-    try:
-        return json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError:
-        return {}
 
 
 def _citation(event: Citation) -> dict[str, Any]:

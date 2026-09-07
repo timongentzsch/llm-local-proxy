@@ -251,34 +251,48 @@ class UsageAccountingTest(unittest.TestCase):
         self.assertEqual(client.ledger.windows()["5h"]["partial_requests"], 1)
 
     def test_cancellation_closes_pool_and_records_partial_on_worker(self):
-        client = upstream("claude")
-        release, closed = Event(), Event()
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                client = upstream(provider)
+                first = (
+                    CLAUDE_EVENTS[0]
+                    if provider == "claude"
+                    else {"type": "response.output_text.delta", "delta": "started"}
+                )
+                release, closed = Event(), Event()
 
-        def delayed():
-            try:
-                yield CLAUDE_EVENTS[0]
-                release.wait(2)
-                yield {"type": "ping"}
-            finally:
-                closed.set()
+                def delayed(first=first, release=release, closed=closed):
+                    try:
+                        yield first
+                        release.wait(2)
+                        yield {"type": "ping"}
+                    finally:
+                        closed.set()
 
-        class Auth:
-            def signed_in(self):
-                return True
+                class Auth:
+                    def signed_in(self):
+                        return True
 
-        source = delayed()  # retained references must not defer finalization
-        tracked = client._tracked(source)
-        pool = AccountPool([Account("1", Auth(), client)])
-        pooled = pool.stream("audit", lambda _: tracked, RuntimeError)
-        heartbeat = with_heartbeats(pooled)
-        try:
-            self.assertEqual(next(heartbeat), CLAUDE_EVENTS[0])
-            heartbeat.close()
-        finally:
-            release.set()
-        self.assertTrue(closed.wait(2))
-        self.assertEqual(client.ledger.windows()["5h"]["partial_requests"], 1)
-        self.assertEqual(client.ledger.windows()["5h"]["output"], 1)
+                source = delayed()  # retained references must not defer finalization
+                tracked = client._tracked(source)
+                pool = AccountPool([Account("1", Auth(), client)])
+                pooled = pool.stream(
+                    "audit", lambda _, tracked=tracked: tracked, RuntimeError
+                )
+                heartbeat = with_heartbeats(pooled)
+                try:
+                    self.assertEqual(next(heartbeat), first)
+                    heartbeat.close()
+                finally:
+                    release.set()
+                self.assertTrue(closed.wait(2))
+                if provider == "claude":
+                    self.assertEqual(
+                        client.ledger.windows()["5h"]["partial_requests"], 1
+                    )
+                    self.assertEqual(client.ledger.windows()["5h"]["output"], 1)
+                else:
+                    self.assertEqual(client.ledger._records, [])
 
     def test_unknown_usage_creates_no_phantom_record(self):
         for provider in ("claude", "codex"):
