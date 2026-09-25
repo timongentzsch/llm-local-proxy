@@ -51,6 +51,7 @@ class ClaudeDecoder:
         self._open_call: dict[str, Any] | None = None
         self._open_thinking: dict[str, Any] | None = None
         self._thinking_id = ""
+        self._text_span = ""
         self._open_redacted: dict[str, Any] | None = None
         self._stop: Finish | None = None
         self._usage = ClaudeUsage()
@@ -93,6 +94,8 @@ class ClaudeDecoder:
         block = event.get("content_block")
         kind = block.get("type") if isinstance(block, dict) else None
         index = event.get("index")
+        if kind == "text":
+            self._text_span = str(index)
         if kind == "tool_use":
             call_id = str(block.get("id") or "toolu_" + uuid.uuid4().hex[:24])
             flat = str(block.get("name", ""))
@@ -194,7 +197,7 @@ class ClaudeDecoder:
         kind = delta.get("type")
         if kind == "text_delta":
             text = str(delta.get("text", ""))
-            return [TextDelta(text)] if text else []
+            return [TextDelta(text, self._text_span)] if text else []
         if kind == "thinking_delta":
             text = str(delta.get("thinking", ""))
             if self._open_thinking is not None and text:
@@ -217,7 +220,7 @@ class ClaudeDecoder:
             self._open_call["arguments"] += piece
             return [ToolCallArgs(self._open_call["index"], piece)]
         if kind == "citations_delta":
-            return _citation(delta.get("citation"))
+            return _citation(delta.get("citation"), self._text_span)
         return []
 
     def _close_call(self) -> list[StreamEvent]:
@@ -265,11 +268,12 @@ def _result_phase(content: Any) -> str:
     return "failed" if kind == "web_search_tool_result_error" else "completed"
 
 
-def _citation(value: Any) -> list[StreamEvent]:
+def _citation(value: Any, span: str) -> list[StreamEvent]:
     # Web citations carry a url; citations into documents and search results
     # the client supplied carry a location instead.
     if not isinstance(value, dict):
         return []
     url = value.get("url")
     title = value.get("title") if isinstance(value.get("title"), str) else None
-    return [Citation(url if isinstance(url, str) else "", title, native=dict(value))]
+    url = url if isinstance(url, str) else ""
+    return [Citation(url, title, native=dict(value), span=span)]

@@ -110,7 +110,7 @@ class MessageEncoder(Encoder):
                 "native Responses output requires the Responses endpoint"
             )
         if isinstance(event, TextDelta):
-            frames = self._ensure("text", {"type": "text", "text": ""})
+            frames = self._text(event.span)
             self._open["block"]["text"] += event.text
             return frames + [self._delta({"type": "text_delta", "text": event.text})]
         if isinstance(event, ThinkingDelta):
@@ -168,14 +168,21 @@ class MessageEncoder(Encoder):
         if isinstance(event, HostedToolEvent):
             return self._hosted(event)
         if isinstance(event, Citation):
-            if self._open is None or self._open["kind"] != "text":
+            # A citation can open its block before the text it cites arrives.
+            if event.span:
+                frames = self._text(event.span)
+            elif self._open is None or self._open["kind"] != "text":
                 return []
+            else:
+                frames = []
             citation = _citation(event)
             citations = self._open["block"].setdefault("citations", [])
             if citation in citations:
-                return []
+                return frames
             citations.append(citation)
-            return [self._delta({"type": "citations_delta", "citation": citation})]
+            return frames + [
+                self._delta({"type": "citations_delta", "citation": citation})
+            ]
         if isinstance(event, Usage):
             self.usage = event
             return []
@@ -232,6 +239,14 @@ class MessageEncoder(Encoder):
                 )
             )
             frames.extend(self._close())
+        return frames
+
+    def _text(self, span: str) -> list[dict[str, Any]]:
+        """The text block for `span`; a new span is a new block, as upstream."""
+        if self._open and self._open["kind"] == "text" and self._open["span"] == span:
+            return []
+        frames = self._open_block("text", {"type": "text", "text": ""})
+        self._open["span"] = span
         return frames
 
     def _ensure(self, kind: str, block: dict[str, Any]) -> list[dict[str, Any]]:

@@ -178,6 +178,9 @@ class ToolChoice:
 @dataclass
 class TextDelta:
     text: str
+    #: The upstream text block this belongs to, for formats that keep block
+    #: boundaries (a cited passage is its own block); "" when there are none.
+    span: str = ""
 
 
 @dataclass
@@ -290,6 +293,8 @@ class Citation:
     #: The Anthropic-format citation as issued. An upstream that verifies it on
     #: replay needs it whole, so an Anthropic client must receive it whole.
     native: dict[str, Any] | None = None
+    #: The text block it cites, as in :class:`TextDelta`.
+    span: str = ""
 
 
 @dataclass

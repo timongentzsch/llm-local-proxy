@@ -294,24 +294,32 @@ class ClaudeTranslatorTest(unittest.TestCase):
             "start_char_index": 0,
             "end_char_index": 5,
         }
+
+        def text_block(index, *deltas):
+            return [
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                *(
+                    {"type": "content_block_delta", "index": index, "delta": delta}
+                    for delta in deltas
+                ),
+                {"type": "content_block_stop", "index": index},
+            ]
+
+        # As Claude streams it: the cited passage is its own block, and its
+        # citation arrives before its text.
         events = [
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            },
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": "heron"},
-            },
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "citations_delta", "citation": citation},
-            },
+            *text_block(0, {"type": "text_delta", "text": "The word is "}),
+            *text_block(
+                1,
+                {"type": "citations_delta", "citation": citation},
+                {"type": "text_delta", "text": "heron"},
+            ),
         ]
-        # The OpenAI formats cite only URLs.
+        # The OpenAI formats cite only URLs and keep the text as one.
         chat = ChunkEncoder("claude-fake-1", ClaudeDecoder())
         chunks = [chunk for event in events for chunk in chat.feed(event)]
         self.assertNotIn("annotations", str(chunks))
@@ -319,11 +327,19 @@ class ClaudeTranslatorTest(unittest.TestCase):
         for event in events:
             responses.feed(event)
         text = responses.result()["output"][0]["content"][0]
+        self.assertEqual(text["text"], "The word is heron")
         self.assertEqual(text["annotations"], [])
+        # Anthropic clients get the blocks as issued, the citation on its own.
         messages = MessageEncoder("claude-fake-1", ClaudeDecoder())
         for event in events:
             messages.feed(event)
-        self.assertEqual(messages.result()["content"][0]["citations"], [citation])
+        self.assertEqual(
+            messages.result()["content"],
+            [
+                {"type": "text", "text": "The word is "},
+                {"type": "text", "text": "heron", "citations": [citation]},
+            ],
+        )
 
 
 class ClaudeReasoningCaptureTest(unittest.TestCase):
