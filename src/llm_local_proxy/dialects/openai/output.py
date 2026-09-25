@@ -9,6 +9,18 @@ from ...ir import OutputFormat
 from ...tools import optional_bool
 
 
+def enum_value(value: Any, allowed: frozenset[str], name: str) -> str:
+    """An optional string option restricted to its specified values."""
+    if value is None:
+        return ""
+    if value not in allowed:
+        raise RequestError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    return value
+
+
+VERBOSITY = frozenset({"low", "medium", "high"})
+
+
 def format_of(kind: Any, fields: dict[str, Any]) -> OutputFormat | None:
     """One output format, however its dialect wrapped the schema.
 

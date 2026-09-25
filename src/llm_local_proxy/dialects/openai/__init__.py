@@ -1,14 +1,15 @@
-"""The OpenAI Chat Completions dialect.
+"""The OpenAI dialect: Chat Completions and stateless Responses.
 
-Specified by ``specs/openai-openapi.yaml`` (``createChatCompletion``). This is
-the proxy's default dialect and owns the bare ``/v1`` paths.
+Specified by openai/openai-openapi (``createChatCompletion``,
+``createResponse``). This is the proxy's default dialect and owns the bare
+``/v1`` paths.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..base import Dialect
+from ..base import Dialect, Route
 from .egress import ChunkEncoder
 from .ingress import parse
 from .responses_egress import ResponseEncoder
@@ -29,17 +30,14 @@ OPENAI = Dialect(
     name="openai",
     prefix="/openai",
     base_path="/openai/v1",
-    chat_route="/v1/chat/completions",
-    parse=parse,
-    encode=ChunkEncoder,
+    routes={
+        "/v1/chat/completions": Route(
+            parse, lambda model, decoder, request: ChunkEncoder(model, decoder)
+        ),
+        "/v1/responses": Route(parse_responses, ResponseEncoder, named=True),
+    },
     catalog=_catalog,
-    # Chat Completions streams anonymous data: frames.
-    event_name=lambda data: None,
     error=_error,
     # A comment frame: ignored by every SSE client, costs no tokens.
     keepalive=b": keepalive\n\n",
-    terminator=b"data: [DONE]\n\n",
-    responses_route="/v1/responses",
-    parse_responses=parse_responses,
-    encode_responses=ResponseEncoder,
 )

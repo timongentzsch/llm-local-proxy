@@ -1,0 +1,96 @@
+{
+  "request": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "hi"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "mcp__codex_apps__codex_document_control___get_document__97702ab1",
+            "input": {
+              "session": "ß"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "{}"
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+      }
+    ],
+    "tools": [
+      {
+        "name": "exec_command",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "cmd": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Run a command.",
+        "strict": false
+      },
+      {
+        "name": "mcp__codex_apps__codex_document_control___get_document__97702ab1",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Schemas for a session.",
+        "strict": false
+      },
+      {
+        "type": "web_search_20250305",
+        "name": "web_search"
+      }
+    ],
+    "tool_choice": {
+      "type": "auto",
+      "disable_parallel_tool_use": false
+    },
+    "output_config": {
+      "effort": "low"
+    },
+    "thinking": {
+      "type": "adaptive",
+      "display": "summarized"
+    }
+  },
+  "betas": [
+    "web-search-2025-03-05"
+  ]
+}

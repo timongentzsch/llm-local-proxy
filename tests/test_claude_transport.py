@@ -63,6 +63,16 @@ class UpstreamErrorTest(unittest.TestCase):
         self.assertFalse(forbidden.account_unavailable)
         self.assertFalse(malformed.account_unavailable)
 
+    def test_missing_scope_marks_the_account_unavailable(self):
+        error = _upstream_error(
+            _http_error(
+                403,
+                '{"type":"error","error":{"type":"permission_error","message":'
+                '"OAuth token does not meet scope requirement any_of(user:inference)"}}',
+            )
+        )
+        self.assertTrue(error.account_unavailable)
+
 
 class BlockShapeReportTest(unittest.TestCase):
     """The diagnostic runs inside an error path and must not raise there."""
@@ -126,21 +136,18 @@ ENABLED = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
 
 
 class ThinkingFallbackTest(unittest.TestCase):
-    def test_rejected_budget_falls_back(self):
-        error = ClaudeUpstreamError(400, "thinking.enabled: not permitted")
-        self.assertTrue(_thinking_rejected(error, ENABLED))
-
-    def test_unrelated_400_is_not_retried(self):
-        error = ClaudeUpstreamError(400, "messages: must not be empty")
-        self.assertFalse(_thinking_rejected(error, ENABLED))
-
-    def test_other_statuses_are_not_retried(self):
-        error = ClaudeUpstreamError(429, "thinking")
-        self.assertFalse(_thinking_rejected(error, ENABLED))
-
-    def test_adaptive_request_is_never_retried(self):
-        error = ClaudeUpstreamError(400, "thinking")
-        self.assertFalse(_thinking_rejected(error, {"thinking": {"type": "adaptive"}}))
+    def test_only_a_rejected_explicit_budget_falls_back(self):
+        adaptive = {"thinking": {"type": "adaptive"}}
+        cases = (
+            (400, "thinking.enabled: not permitted", ENABLED, True),
+            (400, "messages: must not be empty", ENABLED, False),
+            (429, "thinking", ENABLED, False),
+            (400, "thinking", adaptive, False),
+        )
+        for status, message, body, expected in cases:
+            with self.subTest(status=status, message=message):
+                error = ClaudeUpstreamError(status, message)
+                self.assertIs(_thinking_rejected(error, body), expected)
 
 
 class UsageStoreTest(unittest.TestCase):
@@ -171,6 +178,9 @@ class UsageStoreTest(unittest.TestCase):
         reloaded = UsageStore(path)
         value = reloaded.get()
         self.assertEqual(value["anthropic-ratelimit-unified-5h-utilization"], "0.1")
+        reloaded.clear()
+        self.assertIsNone(reloaded.get())
+        self.assertIsNone(UsageStore(path).get())
 
     def test_limits_normalize_headers_into_dashboard_bars(self):
         store = UsageStore()
@@ -178,7 +188,7 @@ class UsageStoreTest(unittest.TestCase):
             _headers(
                 **{
                     "anthropic-ratelimit-unified-5h-utilization": "0.57",
-                    "anthropic-ratelimit-unified-5h-reset": "1787234400",
+                    "anthropic-ratelimit-unified-5h-reset": "4102444800",
                     "anthropic-ratelimit-unified-7d-utilization": "0.28",
                     "anthropic-ratelimit-unified-fallback-percentage": "0.5",
                     "anthropic-ratelimit-unified-overage-status": "rejected",
@@ -188,9 +198,23 @@ class UsageStoreTest(unittest.TestCase):
         limits = {limit.label: limit for limit in store.limits()}
         self.assertEqual(sorted(limits), ["5 hour", "weekly"])
         self.assertAlmostEqual(limits["5 hour"].used_percent, 57.0)
-        self.assertEqual(limits["5 hour"].resets_at, "1787234400")
+        self.assertEqual(limits["5 hour"].resets_at, "4102444800")
         self.assertIsNone(limits["weekly"].resets_at)
         self.assertIsNotNone(store.updated_at())
+
+    def test_limits_hide_windows_whose_reset_has_passed(self):
+        store = UsageStore()
+        store.update(
+            _headers(
+                **{
+                    "anthropic-ratelimit-unified-5h-utilization": "0.36",
+                    "anthropic-ratelimit-unified-5h-reset": "1000",
+                    "anthropic-ratelimit-unified-7d-utilization": "0.33",
+                    "anthropic-ratelimit-unified-7d-reset": "4102444800",
+                }
+            )
+        )
+        self.assertEqual([limit.label for limit in store.limits()], ["weekly"])
 
     def test_limits_are_empty_without_usage(self):
         self.assertEqual(UsageStore().limits(), ())

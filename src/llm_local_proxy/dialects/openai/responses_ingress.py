@@ -14,13 +14,15 @@ from ...ir import (
     OutputFormat,
     Reasoning,
     Text,
+    Tool,
+    ToolNamespace,
     ToolResult,
     ToolUse,
     Turn,
     WebSearchTool,
 )
 from ...tools import definitions, optional_bool, parse_choice, parse_function
-from .output import format_of
+from .output import VERBOSITY, enum_value, format_of
 from .reasoning import options as reasoning_options
 
 
@@ -82,11 +84,13 @@ def _input(value: Any, system: list[Text], additional_tools: list[Any]) -> list[
             call_id = item.get("call_id") or item.get("id")
             if not call_id or not item.get("name"):
                 raise RequestError("function_call requires call_id and name")
-            _append(
-                turns,
-                "assistant",
-                [ToolUse(str(call_id), str(item["name"]), item.get("arguments", "{}"))],
+            call = ToolUse(
+                str(call_id),
+                str(item["name"]),
+                item.get("arguments", "{}"),
+                str(item.get("namespace") or ""),
             )
+            _append(turns, "assistant", [call])
         elif kind == "function_call_output":
             call_id = item.get("call_id")
             if not call_id:
@@ -109,8 +113,8 @@ def _input(value: Any, system: list[Text], additional_tools: list[Any]) -> list[
     return turns
 
 
-def _tools(value: Any) -> list[FunctionTool | WebSearchTool | NativeTool]:
-    tools: list[FunctionTool | WebSearchTool | NativeTool] = []
+def _tools(value: Any) -> list[Tool]:
+    tools: list[Tool] = []
     for item in definitions(value):
         kind = item.get("type")
         if not isinstance(kind, str):
@@ -125,7 +129,19 @@ def _tools(value: Any) -> list[FunctionTool | WebSearchTool | NativeTool]:
             )
         elif kind == "function" and item.get("name"):
             tools.append(parse_function(item, "responses"))
-        elif kind in {"custom", "namespace", "tool_search"}:
+        elif kind == "namespace":
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise RequestError("namespace tool requires a name")
+            members = _tools(item.get("tools"))
+            if any(
+                not isinstance(tool, (FunctionTool, NativeTool)) for tool in members
+            ):
+                raise RequestError(
+                    f"namespace {name} may hold only function and custom tools"
+                )
+            tools.append(ToolNamespace(name, members, dict(item)))
+        elif kind in {"custom", "tool_search"}:
             # These newer Responses definitions have no Chat Completions
             # equivalent. Providers that speak Responses can forward them;
             # other providers reject them rather than silently weakening tools.
@@ -139,25 +155,27 @@ def _tools(value: Any) -> list[FunctionTool | WebSearchTool | NativeTool]:
 #: for encrypted reasoning, so naming it changes nothing; every other value asks
 #: for payloads the upstream is never told to produce.
 INCLUDE_SUPPORTED = frozenset({"reasoning.encrypted_content"})
+REASONING_CONTEXTS = frozenset({"auto", "current_turn", "all_turns"})
 
 
-def _output_format(value: Any) -> OutputFormat | None:
+def _text(value: Any) -> tuple[OutputFormat | None, str]:
     """Read `text` into the neutral IR, refusing options we cannot honour."""
     if value is None:
-        return None
+        return None, ""
     if not isinstance(value, dict):
         raise RequestError("text must be an object")
-    extra = sorted(set(value) - {"format"})
+    extra = sorted(set(value) - {"format", "verbosity"})
     if extra:
         # Silently ignoring these would return unconstrained output that looks
         # like a compliant answer, which is the failure this proxy refuses.
         raise RequestError(f"unsupported text options: {', '.join(extra)}")
+    verbosity = enum_value(value.get("verbosity"), VERBOSITY, "text.verbosity")
     item = value.get("format")
     if item is None:
-        return None
+        return None, verbosity
     if not isinstance(item, dict):
         raise RequestError("text.format must be an object")
-    return format_of(item.get("type"), item)
+    return format_of(item.get("type"), item), verbosity
 
 
 def _check_include(value: Any) -> None:
@@ -196,7 +214,14 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
     system = [Text(str(instructions))] if instructions else []
     additional_tools: list[Any] = []
     turns = _input(body.get("input", ""), system, additional_tools)
-    effort, thinking_display = reasoning_options(body.get("reasoning"))
+    reasoning = body.get("reasoning")
+    effort, thinking_display = reasoning_options(reasoning)
+    context = enum_value(
+        reasoning.get("context") if isinstance(reasoning, dict) else None,
+        REASONING_CONTEXTS,
+        "reasoning.context",
+    )
+    output_format, verbosity = _text(body.get("text"))
     params = {key: body[key] for key in ("temperature", "top_p", "stop") if key in body}
     return ChatRequest(
         model=model,
@@ -207,11 +232,13 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         max_tokens=body.get("max_output_tokens"),
         reasoning_effort=effort,
         thinking_display=thinking_display,
+        reasoning_context=context,
+        verbosity=verbosity,
         parallel_tool_calls=optional_bool(
             body.get("parallel_tool_calls"), "parallel_tool_calls"
         ),
         stream=optional_bool(body.get("stream"), "stream") or False,
         session=session or str(body.get("prompt_cache_key") or ""),
         params=params,
-        output_format=_output_format(body.get("text")),
+        output_format=output_format,
     )

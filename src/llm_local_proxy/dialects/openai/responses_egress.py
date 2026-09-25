@@ -24,16 +24,17 @@ from ...ir import (
     Usage,
 )
 from ...tools import responses_choice, responses_tool
+from ..base import Encoder
 
 
-class ResponseEncoder:
+class ResponseEncoder(Encoder):
     def __init__(
         self, model: str, decoder: Decoder, request: ChatRequest | None = None
     ):
+        super().__init__(decoder)
         self.id = "resp_" + uuid.uuid4().hex
         self.created = int(time.time())
         self.model = model
-        self.decoder = decoder
         self.request = request
         self.output: list[dict[str, Any]] = []
         self.usage: dict[str, Any] | None = None
@@ -44,7 +45,6 @@ class ResponseEncoder:
         self._calls: dict[Any, dict[str, Any]] = {}
         self._searches: dict[str, dict[str, Any]] = {}
         self._incomplete_reason: str | None = None
-        self._drained = False
         self._terminal = False
 
     def _response(self, status: str, *, output: bool) -> dict[str, Any]:
@@ -83,9 +83,6 @@ class ResponseEncoder:
         self._terminal = True
         return self._event("error", code="upstream_error", message=message, param=None)
 
-    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._encode(self.decoder.decode(event))
-
     def finish(self) -> list[dict[str, Any]]:
         chunks = self._drain()
         chunks.extend(self._close_open_items())
@@ -105,22 +102,16 @@ class ResponseEncoder:
         status = "incomplete" if self._incomplete_reason is not None else "completed"
         return self._response(status, output=True)
 
-    def _drain(self) -> list[dict[str, Any]]:
-        if self._drained:
-            return []
-        self._drained = True
-        return self._encode(self.decoder.finish())
-
-    def _encode(self, events: list[StreamEvent]) -> list[dict[str, Any]]:
-        chunks: list[dict[str, Any]] = []
-        for event in events:
-            chunks.extend(self._one(event))
-        return chunks
-
     def _one(self, event: StreamEvent) -> list[dict[str, Any]]:
         if isinstance(event, ThinkingDelta):
             chunks = self._complete_message()
-            chunks.extend(self._ensure_reasoning(summary=True))
+            if (
+                self._reasoning is not None
+                and event.item_id
+                and event.item_id != self._reasoning["id"]
+            ):
+                chunks.extend(self._complete_reasoning_open())
+            chunks.extend(self._ensure_reasoning(summary=True, item_id=event.item_id))
             assert self._reasoning is not None
             summary = self._reasoning["summary"][0]
             summary["text"] += event.text
@@ -182,6 +173,7 @@ class ResponseEncoder:
                 "type": "function_call",
                 "id": "fc_" + uuid.uuid4().hex,
                 "call_id": event.id,
+                **({"namespace": event.namespace} if event.namespace else {}),
                 "name": event.name,
                 "arguments": event.arguments,
                 "status": "in_progress",
@@ -332,12 +324,12 @@ class ResponseEncoder:
         )
         return chunks
 
-    def _ensure_reasoning(self, *, summary: bool) -> list[dict[str, Any]]:
+    def _ensure_reasoning(self, *, summary: bool, item_id: str) -> list[dict[str, Any]]:
         if self._reasoning is not None:
             return []
         item = {
             "type": "reasoning",
-            "id": "rs_" + uuid.uuid4().hex,
+            "id": item_id or "rs_" + uuid.uuid4().hex,
             "summary": [],
         }
         self._reasoning = item
@@ -382,7 +374,8 @@ class ResponseEncoder:
                 ),
             ]
         item = self._reasoning
-        item.update(copy.deepcopy(opaque))
+        # `added` already announced this item's id; `done` must match it.
+        item.update({**copy.deepcopy(opaque), "id": item["id"]})
         index = self.output.index(item)
         chunks: list[dict[str, Any]] = []
         summary = item.get("summary")

@@ -2,6 +2,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from dataclasses import asdict
 from urllib.parse import parse_qs, urlparse
 
 from llm_local_proxy.providers.claude.auth import (
@@ -87,6 +88,31 @@ class ClaudeAuthTest(unittest.TestCase):
         self.assertEqual(seen["refresh_token"], "rt")
         self.assertEqual(seen["scope"], "user:profile user:inference")
 
+    def test_grant_without_inference_is_refused_and_never_stored(self):
+        auth = ClaudeAuth(pathlib.Path(tempfile.mkdtemp()) / "credentials.json")
+        state = parse_qs(urlparse(auth.login_start()["url"]).query)["state"][0]
+        auth._token_request = lambda fields: {
+            "access_token": "at",
+            "refresh_token": "rt",
+            "scopes": ["org:create_api_key", "user:profile"],
+        }
+        auth._profile_request = lambda token: {}
+        with self.assertRaisesRegex(ClaudeAuthError, "inference") as caught:
+            auth.finish(f"https://x/callback?code=abc&state={state}")
+        self.assertEqual(caught.exception.status, 403)
+        self.assertFalse(auth.path.exists())
+
+    def test_stored_grant_without_inference_is_unusable_without_refreshing(self):
+        auth = ClaudeAuth(pathlib.Path(tempfile.mkdtemp()) / "credentials.json")
+        auth.path.write_text(
+            '{"access_token":"at","refresh_token":"rt","expires_at":1,'
+            '"scopes":["org:create_api_key","user:profile"]}'
+        )
+        auth._token_request = lambda fields: self.fail("refreshed a dead grant")
+        with self.assertRaisesRegex(ClaudeAuthError, "inference") as caught:
+            auth.access_token()
+        self.assertEqual(caught.exception.status, 403)
+
     def test_login_survives_restart(self):
         root = pathlib.Path(tempfile.mkdtemp())
         started = ClaudeAuth(root / "credentials.json").login_start()["url"]
@@ -142,7 +168,7 @@ class ClaudeAuthTest(unittest.TestCase):
         # The dashboard and /api/status must not leak tokens or expiries;
         # status() only reports sign-in state and non-secret identity metadata.
         auth = ClaudeAuth(pathlib.Path(tempfile.mkdtemp()) / "credentials.json")
-        status = auth.status().payload()
+        status = asdict(auth.status())
         self.assertFalse(status["signed_in"])
         # Seed a full credential set and re-check.
         path = auth.path
@@ -152,7 +178,7 @@ class ClaudeAuthTest(unittest.TestCase):
             '"subscription_type":"pro","email":"person@example.com"}'
         )
         path.chmod(0o600)
-        status = auth.status().payload()
+        status = asdict(auth.status())
         self.assertTrue(status["signed_in"])
         self.assertEqual(status["account"], "person@example.com · pro")
         for secret in (

@@ -1,0 +1,80 @@
+{
+  "request": {
+    "model": "gpt-5.6-sol",
+    "instructions": "",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "hi"
+          }
+        ]
+      },
+      {
+        "type": "function_call",
+        "call_id": "call_1",
+        "namespace": "mcp__codex_apps__codex_document_control",
+        "name": "_get_document_tool_schemas",
+        "arguments": "{\"session\":\"ß\"}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "{}"
+      }
+    ],
+    "store": false,
+    "stream": true,
+    "prompt_cache_key": "session-1",
+    "tools": [
+      {
+        "type": "namespace",
+        "name": "mcp__codex_apps__codex_document_control",
+        "description": "Document sessions.",
+        "tools": [
+          {
+            "type": "function",
+            "name": "_get_document_tool_schemas",
+            "description": "Schemas for a session.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "type": "namespace",
+        "name": "collaboration",
+        "description": "Agents.",
+        "tools": [
+          {
+            "type": "custom",
+            "name": "apply_patch"
+          }
+        ]
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": false,
+    "text": {
+      "verbosity": "low"
+    },
+    "reasoning": {
+      "effort": "low",
+      "summary": "auto",
+      "context": "all_turns"
+    },
+    "include": [
+      "reasoning.encrypted_content"
+    ]
+  },
+  "session": "session-1"
+}

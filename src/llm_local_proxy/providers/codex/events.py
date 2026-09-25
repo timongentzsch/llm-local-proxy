@@ -52,7 +52,9 @@ class CodexDecoder:
             text = str(event.get("delta", ""))
             if text:
                 self._thinking += text
-            return [ThinkingDelta(text)] if text else []
+            return (
+                [ThinkingDelta(text, str(event.get("item_id") or ""))] if text else []
+            )
         if kind == "response.output_text.annotation.added":
             return _citation(event.get("annotation"))
         if kind == "response.output_item.added":
@@ -108,10 +110,11 @@ class CodexDecoder:
                 return events
             name = str(item.get("name", ""))
             arguments = str(item.get("arguments", "{}"))
+            namespace = str(item.get("namespace") or "")
             index = len(self.calls)
             self.calls.append(call_id)
-            events.append(ToolCallStart(index, call_id, name, arguments))
-            events.append(ToolCallEnd(index, call_id, name, arguments))
+            events.append(ToolCallStart(index, call_id, name, arguments, namespace))
+            events.append(ToolCallEnd(index, call_id, name, arguments, namespace))
             return events
         if item.get("type") in {"message", "web_search_call"}:
             return events
@@ -140,7 +143,7 @@ class CodexDecoder:
         summary = _summary_text(kept)
         if summary and not self._thinking:
             self._thinking = summary
-            events.append(ThinkingDelta(summary))
+            events.append(ThinkingDelta(summary, str(kept.get("id") or "")))
         events.extend(
             [
                 ReasoningItem(dict(kept)),

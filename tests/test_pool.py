@@ -7,15 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from llm_local_proxy.errors import RequestError
-from llm_local_proxy.providers.auth import MultiAuth
+from llm_local_proxy.providers.base import ProviderContext
 from llm_local_proxy.providers.pool import (
     AUTH_FAILURE_COOLDOWN_SECONDS,
     Account,
     AccountPool,
     AccountStore,
-    stored_account_ids,
+    PooledProvider,
 )
-from llm_local_proxy.status import ProviderStatus
+from llm_local_proxy.status import AccountStatus
 
 
 class _Auth:
@@ -25,14 +25,14 @@ class _Auth:
     def signed_in(self):
         return self.value
 
-    def login_start(self, account_id=""):
+    def login_start(self):
         return {"url": "https://example.test/login"}
 
-    def logout(self, account_id=""):
+    def logout(self):
         self.value = False
 
     def status(self):
-        return ProviderStatus(signed_in=self.value)
+        return AccountStatus(signed_in=self.value)
 
 
 class _Error(RuntimeError):
@@ -132,15 +132,15 @@ class AccountPoolTest(unittest.TestCase):
                 raise _Error(401, account_unavailable=True)
             return account.client
 
-        self.assertEqual(pool.discover(discover, RuntimeError), "two")
+        self.assertEqual(pool.call(None, discover, RuntimeError), "two")
         self.assertEqual(pool.account_error("1"), "status 401")
-        self.assertEqual(pool.discover(discover, RuntimeError), "two")
+        self.assertEqual(pool.call(None, discover, RuntimeError), "two")
         stale = False
         after_cooldown = time.time() + AUTH_FAILURE_COOLDOWN_SECONDS
         with patch(
             "llm_local_proxy.providers.pool.time.time", return_value=after_cooldown
         ):
-            self.assertEqual(pool.discover(discover, RuntimeError), "one")
+            self.assertEqual(pool.call(None, discover, RuntimeError), "one")
         self.assertEqual(starts, ["1", "2", "2", "1"])
         self.assertEqual(pool.account_error("1"), "")
 
@@ -171,31 +171,38 @@ class AccountStoreTest(unittest.TestCase):
             self.assertEqual(store.add(), "2")
             self.assertEqual(AccountStore(Path(directory), "claude").ids()[-1], "2")
 
-    def test_canonical_credentials_seed_the_first_registry(self):
+
+class PooledProviderTest(unittest.TestCase):
+    class Fake(PooledProvider[str]):
+        name = "fake"
+
+        def new_account(self, slot):
+            return Account(slot, _Auth(False), slot)
+
+    def provider(self, directory):
+        context = ProviderContext(config=None, directory=Path(directory))
+        return self.Fake(context)
+
+    def test_slots_logins_and_logouts_target_one_account(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "accounts" / "claude"
-            credential = root / "7" / "credentials.json"
-            credential.parent.mkdir(parents=True)
-            credential.write_text("{}")
-            ids = stored_account_ids(root, "credentials.json")
-            self.assertEqual(ids, ("7",))
-            self.assertEqual(AccountStore(Path(directory), "claude", ids).ids(), ("7",))
-
-
-class MultiAuthTest(unittest.TestCase):
-    def test_login_and_logout_target_one_slot(self):
-        first, second = _Auth(), _Auth(False)
-        accounts = (("1", first), ("2", second))
-        auth = MultiAuth(lambda: accounts)
-        self.assertEqual(auth.login_start("2")["account"], "2")
-        auth.logout("1")
-        self.assertFalse(first.signed_in())
-        self.assertFalse(second.signed_in())
-
-    def test_login_without_a_target_is_rejected(self):
-        auth = MultiAuth(lambda: (("1", _Auth()), ("2", _Auth(False))))
-        with self.assertRaisesRegex(RequestError, "unknown account"):
-            auth.login_start()
+            fake = self.provider(directory)
+            routes = fake.provider(match=None, chat=None, models=list).routes
+            self.assertEqual(routes["accounts"]({"action": "add"})["account"], "1")
+            with self.assertRaisesRegex(RequestError, "existing unsigned account"):
+                routes["accounts"]({"action": "add"})
+            self.assertEqual(routes["login"]({"account": "1"})["account"], "1")
+            for route in ("login", "logout"):
+                with self.assertRaisesRegex(RequestError, "account is required"):
+                    routes[route]({})
+            fake.pool.get("1").auth.value = True
+            with self.assertRaisesRegex(RequestError, "sign out before removing"):
+                routes["accounts"]({"action": "remove", "account": "1"})
+            fake._catalog = (time.time(), [{"id": "cached"}])
+            routes["logout"]({"account": "1"})
+            self.assertFalse(fake.pool.get("1").auth.signed_in())
+            self.assertIsNone(fake._catalog)
+            routes["accounts"]({"action": "remove", "account": "1"})
+            self.assertEqual(self.provider(directory).store.ids(), ())
 
 
 if __name__ == "__main__":

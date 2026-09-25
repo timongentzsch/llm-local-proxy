@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from importlib.resources import files
@@ -18,27 +17,13 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..dialects import Dialect, resolve
-from ..dialects.base import Encoder
+from ..dialects.base import Route
 from ..errors import ProviderError, RequestError
-from ..ir import ChatRequest, Decoder
 from ..providers import Provider
 from ..service import Service
 from ..streaming import closing_iterator
 from . import security
 from .sse import SseStream, with_heartbeats
-
-
-def api_path(path: str) -> str:
-    """Map the dashboard's /api/v1/... alias onto the real /v1/... route."""
-    prefix = "/api/v1/"
-    return f"/v1/{path[len(prefix) :]}" if path.startswith(prefix) else path
-
-
-def _account(body: dict[str, Any]) -> str:
-    account = body.get("account")
-    if not isinstance(account, str) or not account:
-        raise RequestError("account is required")
-    return account
 
 
 def make_handler(service: Service):
@@ -50,7 +35,7 @@ def make_handler(service: Service):
             if not self._valid_host():
                 return self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "bad host"})
             parsed = urlparse(self.path)
-            dialect, path = resolve(api_path(parsed.path))
+            dialect, path = resolve(parsed.path)
             if path == "/":
                 page = (
                     files("llm_local_proxy")
@@ -64,6 +49,9 @@ def make_handler(service: Service):
                 return self._reply(
                     HTTPStatus.OK, page.encode(), "text/html; charset=utf-8"
                 )
+            if path == "/favicon.ico":
+                # Browsers ask for it unprompted; a 401 here is console noise.
+                return self._reply(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
             if path == "/healthz":
                 healthy = service.healthy()
                 return self._json(
@@ -76,8 +64,10 @@ def make_handler(service: Service):
                 if path == "/api/status":
                     return self._json(HTTPStatus.OK, service.status())
                 if path == "/v1/models":
-                    models = service.models()["data"]
-                    query = parse_qs(parsed.query).get("q", [""])[0].casefold()
+                    params = parse_qs(parsed.query)
+                    refresh = params.get("refresh", [""])[0] in {"1", "true"}
+                    models = service.models(refresh=refresh)["data"]
+                    query = params.get("q", [""])[0].casefold()
                     if query:
                         models = [
                             model
@@ -97,7 +87,7 @@ def make_handler(service: Service):
         def do_POST(self) -> None:
             if not self._valid_host():
                 return self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "bad host"})
-            dialect, path = resolve(api_path(urlparse(self.path).path))
+            dialect, path = resolve(urlparse(self.path).path)
             if not self._authorized():
                 return self._unauthorized(dialect)
             if not self._same_origin():
@@ -107,27 +97,14 @@ def make_handler(service: Service):
                 provider_route = self._provider_route(path)
                 if provider_route:
                     provider, route = provider_route
-                    if route == "login":
-                        account = _account(body)
-                        return self._json(
-                            HTTPStatus.OK, provider.auth.login_start(account)
-                        )
-                    if route == "logout":
-                        account = _account(body)
-                        provider.auth.logout(account)
-                        service.invalidate_models()
-                        return self._json(HTTPStatus.OK, {"ok": True})
                     handler = provider.routes.get(route)
                     if handler is None:
                         return self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                     return self._json(HTTPStatus.OK, handler(body))
-                if path == dialect.chat_route:
-                    return self._chat(dialect, body)
-                if dialect.responses_route and path == dialect.responses_route:
-                    return self._responses(dialect, body)
-                if dialect.count_route and path == dialect.count_route:
-                    return self._count_tokens(dialect, body)
-                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                route = dialect.routes.get(path)
+                if route is None:
+                    return self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                self._serve(dialect, route, body)
             except RequestError as error:
                 self._api_error(dialect, HTTPStatus.BAD_REQUEST, str(error))
             except ProviderError as error:
@@ -143,55 +120,34 @@ def make_handler(service: Service):
                     return provider, parts[3]
             return None
 
-        def _count_tokens(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            request = dialect.parse_count(body, self._session_id())
-            provider, canonical = self._route(request.model)
-            if provider.count_tokens is None:
-                # Truthful for a provider whose upstream cannot count: the
-                # client falls back to its own estimate knowing it is one.
-                return self._api_error(
-                    dialect,
-                    HTTPStatus.NOT_FOUND,
-                    f"{provider.name} cannot count tokens for {canonical}",
-                )
-            self._json(HTTPStatus.OK, provider.count_tokens(canonical, request))
-
         def _route(self, model: str) -> tuple[Provider, str]:
             routed = service.route(model)
             if routed is None:
                 raise RequestError(f"no provider handles model: {model}")
             return routed
 
-        def _responses(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            if dialect.parse_responses is None or dialect.encode_responses is None:
-                raise RequestError("Responses API is not supported by this dialect")
-            request = dialect.parse_responses(body, self._session_id())
-            return self._generate(
-                dialect,
-                request,
-                lambda model, decoder: dialect.encode_responses(
-                    model, decoder, request
-                ),
-            )
-
-        def _chat(self, dialect: Dialect, body: dict[str, Any]) -> None:
-            request = dialect.parse(body, self._session_id())
-            return self._generate(dialect, request, dialect.encode)
-
         def _session_id(self) -> str:
             return self.headers.get("X-Session-Id", "") or self.headers.get(
                 "X-Claude-Code-Session-Id", ""
             )
 
-        def _generate(
-            self,
-            dialect: Dialect,
-            request: ChatRequest,
-            encode: Callable[[str, Decoder], Encoder],
-        ) -> None:
+        def _serve(self, dialect: Dialect, route: Route, body: dict[str, Any]) -> None:
+            request = route.parse(body, self._session_id())
             provider, canonical = self._route(request.model)
+            if route.encode is None:
+                if provider.count_tokens is None:
+                    # Truthful for a provider whose upstream cannot count: the
+                    # client falls back to its own estimate knowing it is one.
+                    return self._api_error(
+                        dialect,
+                        HTTPStatus.NOT_FOUND,
+                        f"{provider.name} cannot count tokens for {canonical}",
+                    )
+                return self._json(
+                    HTTPStatus.OK, provider.count_tokens(canonical, request)
+                )
             events, decoder = provider.chat(canonical, request)
-            stream = encode(canonical, decoder)
+            stream = route.encode(canonical, decoder, request)
             if not request.stream:
                 with closing_iterator(events):
                     for event in events:
@@ -204,9 +160,8 @@ def make_handler(service: Service):
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
-            sse = SseStream(self.wfile, dialect)
-            start = stream.start()
-            sse.send(start, dialect.event_name(start))
+            sse = SseStream(self.wfile, dialect.keepalive, route.named)
+            sse.send(stream.start())
             try:
                 with closing_iterator(with_heartbeats(events)) as heartbeat:
                     for event in heartbeat:
@@ -214,18 +169,17 @@ def make_handler(service: Service):
                             sse.keepalive()
                             continue
                         for chunk in stream.feed(event):
-                            sse.send(chunk, dialect.event_name(chunk))
+                            sse.send(chunk)
                 for chunk in stream.finish():
-                    sse.send(chunk, dialect.event_name(chunk))
+                    sse.send(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 return
             except (RuntimeError, OSError, ValueError) as error:
                 try:
-                    if hasattr(stream, "error"):
-                        failure = stream.error(str(error))
-                    else:
-                        failure = dialect.error(HTTPStatus.BAD_GATEWAY, str(error))
-                    sse.send(failure, dialect.event_name(failure))
+                    sse.send(
+                        stream.error(str(error))
+                        or dialect.error(HTTPStatus.BAD_GATEWAY, str(error))
+                    )
                 except (BrokenPipeError, ConnectionResetError):
                     return
             try:

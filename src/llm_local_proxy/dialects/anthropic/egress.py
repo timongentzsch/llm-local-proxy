@@ -32,15 +32,16 @@ from ...ir import (
     Usage,
 )
 from ...tools import arguments
+from ..base import Encoder
 
 
-class MessageEncoder:
+class MessageEncoder(Encoder):
     """Turns one provider's decoded stream into Anthropic Messages output."""
 
     def __init__(self, model: str, decoder: Decoder):
+        super().__init__(decoder)
         self.id = "msg_" + uuid.uuid4().hex[:24]
         self.model = model
-        self.decoder = decoder
         self.blocks: list[dict[str, Any]] = []
         self.usage: Usage | None = None
         self.stop_reason: str | None = None
@@ -48,13 +49,9 @@ class MessageEncoder:
         self._index = -1
         self._searches: dict[str, str] = {}
         self._open: dict[str, Any] | None = None
-        self._drained = False
 
     def start(self) -> dict[str, Any]:
         return {"type": "message_start", "message": self._message(streaming=True)}
-
-    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._encode(self.decoder.decode(event))
 
     def finish(self) -> list[dict[str, Any]]:
         frames = self._drain()
@@ -106,12 +103,6 @@ class MessageEncoder:
 
     def _delta(self, delta: dict[str, Any]) -> dict[str, Any]:
         return {"type": "content_block_delta", "index": self._index, "delta": delta}
-
-    def _encode(self, events: list[StreamEvent]) -> list[dict[str, Any]]:
-        frames: list[dict[str, Any]] = []
-        for event in events:
-            frames.extend(self._one(event))
-        return frames
 
     def _one(self, event: StreamEvent) -> list[dict[str, Any]]:
         if isinstance(event, NativeItem):
@@ -258,12 +249,6 @@ class MessageEncoder:
             if any(b["type"] == "tool_use" for b in self.blocks)
             else "end_turn"
         )
-
-    def _drain(self) -> list[dict[str, Any]]:
-        if self._drained:
-            return []
-        self._drained = True
-        return self._encode(self.decoder.finish())
 
     def _message(self, streaming: bool) -> dict[str, Any]:
         # Every field below is required by the schema; the nullable ones must

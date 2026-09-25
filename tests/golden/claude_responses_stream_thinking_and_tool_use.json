@@ -1,0 +1,211 @@
+{
+  "stream": [
+    {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_0000000000000000000000000000000f",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "in_progress",
+        "model": "claude-sonnet-5",
+        "output": [],
+        "parallel_tool_calls": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "type": "function",
+            "name": "get_weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Look up weather"
+          }
+        ],
+        "usage": null,
+        "error": null,
+        "incomplete_details": null
+      }
+    },
+    {
+      "type": "response.output_item.added",
+      "sequence_number": 1,
+      "output_index": 0,
+      "item": {
+        "type": "reasoning",
+        "id": "rs_00000000000000000000000000000002",
+        "summary": []
+      }
+    },
+    {
+      "type": "response.reasoning_summary_part.added",
+      "sequence_number": 2,
+      "item_id": "rs_00000000000000000000000000000002",
+      "output_index": 0,
+      "summary_index": 0,
+      "part": {
+        "type": "summary_text",
+        "text": ""
+      }
+    },
+    {
+      "type": "response.reasoning_summary_text.delta",
+      "sequence_number": 3,
+      "item_id": "rs_00000000000000000000000000000002",
+      "output_index": 0,
+      "summary_index": 0,
+      "delta": "Let me check"
+    },
+    {
+      "type": "response.reasoning_summary_text.done",
+      "sequence_number": 4,
+      "item_id": "rs_00000000000000000000000000000002",
+      "output_index": 0,
+      "summary_index": 0,
+      "text": "Let me check"
+    },
+    {
+      "type": "response.reasoning_summary_part.done",
+      "sequence_number": 5,
+      "item_id": "rs_00000000000000000000000000000002",
+      "output_index": 0,
+      "summary_index": 0,
+      "part": {
+        "type": "summary_text",
+        "text": "Let me check"
+      }
+    },
+    {
+      "type": "response.output_item.done",
+      "sequence_number": 6,
+      "output_index": 0,
+      "item": {
+        "type": "reasoning",
+        "id": "rs_00000000000000000000000000000002",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "Let me check"
+          }
+        ],
+        "encrypted_content": "llpv2-claude-thinking:eyJibG9jayI6eyJzaWduYXR1cmUiOiJTSUctMSIsInRoaW5raW5nIjoiTGV0IG1lIGNoZWNrIiwidHlwZSI6InRoaW5raW5nIn0sIm4iOjB9"
+      }
+    },
+    {
+      "type": "response.output_item.added",
+      "sequence_number": 7,
+      "output_index": 1,
+      "item": {
+        "type": "function_call",
+        "id": "fc_00000000000000000000000000000003",
+        "call_id": "toolu_1",
+        "name": "get_weather",
+        "arguments": "",
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "response.function_call_arguments.delta",
+      "sequence_number": 8,
+      "item_id": "fc_00000000000000000000000000000003",
+      "output_index": 1,
+      "delta": "{\"city\":"
+    },
+    {
+      "type": "response.function_call_arguments.delta",
+      "sequence_number": 9,
+      "item_id": "fc_00000000000000000000000000000003",
+      "output_index": 1,
+      "delta": "\"Berlin\"}"
+    },
+    {
+      "type": "response.function_call_arguments.done",
+      "sequence_number": 10,
+      "item_id": "fc_00000000000000000000000000000003",
+      "output_index": 1,
+      "name": "get_weather",
+      "arguments": "{\"city\":\"Berlin\"}"
+    },
+    {
+      "type": "response.output_item.done",
+      "sequence_number": 11,
+      "output_index": 1,
+      "item": {
+        "type": "function_call",
+        "id": "fc_00000000000000000000000000000003",
+        "call_id": "toolu_1",
+        "name": "get_weather",
+        "arguments": "{\"city\":\"Berlin\"}",
+        "status": "completed"
+      }
+    },
+    {
+      "type": "response.completed",
+      "sequence_number": 12,
+      "response": {
+        "id": "resp_0000000000000000000000000000000f",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "completed",
+        "model": "claude-sonnet-5",
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "rs_00000000000000000000000000000002",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Let me check"
+              }
+            ],
+            "encrypted_content": "llpv2-claude-thinking:eyJibG9jayI6eyJzaWduYXR1cmUiOiJTSUctMSIsInRoaW5raW5nIjoiTGV0IG1lIGNoZWNrIiwidHlwZSI6InRoaW5raW5nIn0sIm4iOjB9"
+          },
+          {
+            "type": "function_call",
+            "id": "fc_00000000000000000000000000000003",
+            "call_id": "toolu_1",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Berlin\"}",
+            "status": "completed"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "type": "function",
+            "name": "get_weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Look up weather"
+          }
+        ],
+        "usage": {
+          "input_tokens": 130,
+          "output_tokens": 42,
+          "total_tokens": 172,
+          "input_tokens_details": {
+            "cached_tokens": 30,
+            "cache_write_tokens": 10
+          },
+          "output_tokens_details": {
+            "reasoning_tokens": 15
+          }
+        },
+        "error": null,
+        "incomplete_details": null
+      }
+    }
+  ]
+}

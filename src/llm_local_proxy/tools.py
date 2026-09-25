@@ -7,11 +7,16 @@ are rejected on a different format unless an adapter explicitly maps them.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+from dataclasses import replace
 from typing import Any
 
 from .errors import RequestError
-from .ir import FunctionTool, NativeTool, Tool, ToolChoice, WebSearchTool
+from .ir import FunctionTool, NativeTool, Tool, ToolChoice, ToolNamespace, WebSearchTool
+
+#: The longest tool name Anthropic accepts (`^[a-zA-Z0-9_-]{1,64}$`).
+MAX_TOOL_NAME = 64
 
 
 def definitions(value: Any) -> list[dict[str, Any]]:
@@ -80,8 +85,51 @@ def arguments(value: Any, error: type[ValueError] = ValueError) -> dict[str, Any
     return value
 
 
+def qualified_name(namespace: str, name: str) -> str:
+    """One flat, deterministic tool name for a namespaced tool.
+
+    Too-long names keep a readable prefix and end in a hash of the full name,
+    so a request and every later replay of it agree without shared state.
+    """
+    if not namespace:
+        return name
+    full = f"{namespace}__{name}"
+    if len(full) <= MAX_TOOL_NAME:
+        return full
+    digest = hashlib.sha1(full.encode()).hexdigest()[:8]
+    return f"{full[: MAX_TOOL_NAME - 9]}_{digest}"
+
+
+def flatten(tools: list[Tool]) -> tuple[list[Tool], dict[str, tuple[str, str]]]:
+    """Namespaced tools as plain function tools, for targets without namespaces.
+
+    Returns the flat tool list and ``{qualified name: (namespace, name)}`` to
+    restore calls. A member that is not a function tool, or two tools that
+    would share a name, cannot be represented and is refused.
+    """
+    flat: list[Tool] = []
+    names: dict[str, tuple[str, str]] = {}
+    for tool in tools:
+        members = tool.tools if isinstance(tool, ToolNamespace) else [tool]
+        namespace = tool.name if isinstance(tool, ToolNamespace) else ""
+        for member in members:
+            if namespace and not isinstance(member, FunctionTool):
+                raise RequestError(
+                    f"namespace {namespace} contains a non-function tool: "
+                    + str(member.item.get("type", "unknown"))
+                )
+            if isinstance(member, FunctionTool):
+                name = qualified_name(namespace, member.name)
+                if name in names:
+                    raise RequestError(f"duplicate tool name: {name}")
+                names[name] = (namespace, member.name)
+                member = replace(member, name=name)
+            flat.append(member)
+    return flat, {key: value for key, value in names.items() if value[0]}
+
+
 def responses_tool(tool: Tool) -> dict[str, Any]:
-    if isinstance(tool, NativeTool):
+    if isinstance(tool, (NativeTool, ToolNamespace)):
         return copy.deepcopy(tool.item)
     if isinstance(tool, WebSearchTool) and tool.native is not None:
         if tool.source == "responses":

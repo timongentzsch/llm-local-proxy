@@ -1,0 +1,28 @@
+{
+  "request": {
+    "model": "gpt-5.6-sol",
+    "instructions": "",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is this?"
+          },
+          {
+            "type": "input_image",
+            "image_url": "data:image/png;base64,AAAA"
+          }
+        ]
+      }
+    ],
+    "store": false,
+    "stream": true,
+    "prompt_cache_key": "proxy-2a3932b0933b44bce6b9d246",
+    "include": [
+      "reasoning.encrypted_content"
+    ]
+  },
+  "session": "proxy-2a3932b0933b44bce6b9d246"
+}

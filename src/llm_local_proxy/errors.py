@@ -9,6 +9,19 @@ class ProviderError(RuntimeError):
     status = 502
 
 
+class UpstreamError(ProviderError):
+    """An upstream HTTP failure, keeping its status for the client.
+
+    ``account_unavailable`` marks a failure of the credentials rather than the
+    request, so the account pool may retry it on another login.
+    """
+
+    def __init__(self, status: int, message: str, *, account_unavailable: bool = False):
+        super().__init__(message)
+        self.status = status
+        self.account_unavailable = account_unavailable
+
+
 class RequestError(ValueError):
     """A downstream request the proxy will not serve.
 

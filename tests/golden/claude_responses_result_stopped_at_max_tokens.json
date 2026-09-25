@@ -1,0 +1,58 @@
+{
+  "result": {
+    "id": "resp_0000000000000000000000000000000f",
+    "object": "response",
+    "created_at": 1700000000,
+    "status": "incomplete",
+    "model": "claude-sonnet-5",
+    "output": [
+      {
+        "type": "message",
+        "id": "msg_00000000000000000000000000000002",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Truncated",
+            "annotations": [],
+            "logprobs": []
+          }
+        ]
+      }
+    ],
+    "parallel_tool_calls": true,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "type": "function",
+        "name": "get_weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Look up weather"
+      }
+    ],
+    "usage": {
+      "input_tokens": 130,
+      "output_tokens": 42,
+      "total_tokens": 172,
+      "input_tokens_details": {
+        "cached_tokens": 30,
+        "cache_write_tokens": 10
+      },
+      "output_tokens_details": {
+        "reasoning_tokens": 15
+      }
+    },
+    "error": null,
+    "incomplete_details": {
+      "reason": "max_output_tokens"
+    }
+  }
+}

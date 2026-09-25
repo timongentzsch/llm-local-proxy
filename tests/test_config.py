@@ -80,6 +80,6 @@ class IPv6Test(unittest.TestCase):
             path.write_text('host="::1"\nport=8787\napi_key=""\n')
             path.chmod(0o600)
             config = load(path)
-            self.assertEqual(config.base_url, "http://[::1]:8787/v1")
+            self.assertEqual(config.origin, "http://[::1]:8787")
             with Server((config.host, 0), object) as server:
                 self.assertEqual(server.server_address[0], "::1")

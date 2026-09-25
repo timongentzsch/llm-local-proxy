@@ -10,7 +10,7 @@ Adding a dialect is one package plus one entry here.
 from __future__ import annotations
 
 from .anthropic import ANTHROPIC
-from .base import Dialect, Frame
+from .base import Dialect
 from .openai import OPENAI
 
 DIALECTS: tuple[Dialect, ...] = (OPENAI, ANTHROPIC)
@@ -19,7 +19,7 @@ DIALECTS: tuple[Dialect, ...] = (OPENAI, ANTHROPIC)
 #: it did before /openai existed.
 DEFAULT = OPENAI
 
-__all__ = ["ANTHROPIC", "DEFAULT", "DIALECTS", "OPENAI", "Dialect", "Frame", "resolve"]
+__all__ = ["ANTHROPIC", "DEFAULT", "DIALECTS", "OPENAI", "Dialect", "resolve"]
 
 
 def resolve(path: str) -> tuple[Dialect, str]:

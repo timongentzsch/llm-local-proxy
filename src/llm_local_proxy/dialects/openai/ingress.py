@@ -24,7 +24,7 @@ from ...ir import (
 )
 from ...tools import definitions, optional_bool, parse_choice, parse_function
 from ..base import block_text
-from .output import format_of
+from .output import VERBOSITY, enum_value, format_of
 from .reasoning import options as reasoning_options
 
 SYSTEM_ROLES = {"system", "developer"}
@@ -211,6 +211,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         max_tokens=body.get("max_tokens", body.get("max_completion_tokens")),
         reasoning_effort=effort,
         thinking_display=thinking_display,
+        verbosity=enum_value(body.get("verbosity"), VERBOSITY, "verbosity"),
         parallel_tool_calls=optional_bool(
             body.get("parallel_tool_calls"), "parallel_tool_calls"
         ),

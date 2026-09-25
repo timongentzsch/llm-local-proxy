@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..base import Dialect
+from ..base import Dialect, Route
 from .egress import MessageEncoder
 from .ingress import parse, parse_count
 
@@ -70,15 +70,15 @@ ANTHROPIC = Dialect(
     prefix="/anthropic",
     # A client appends /v1/messages to this itself.
     base_path="/anthropic",
-    chat_route="/v1/messages",
-    parse=parse,
-    encode=MessageEncoder,
+    routes={
+        "/v1/messages": Route(
+            parse,
+            lambda model, decoder, request: MessageEncoder(model, decoder),
+            named=True,
+        ),
+        "/v1/messages/count_tokens": Route(parse_count),
+    },
     catalog=_catalog,
-    event_name=lambda data: data.get("type"),
     error=_error,
     keepalive=b'event: ping\ndata: {"type":"ping"}\n\n',
-    # No [DONE] sentinel; message_stop ends the stream.
-    terminator=None,
-    count_route="/v1/messages/count_tokens",
-    parse_count=parse_count,
 )

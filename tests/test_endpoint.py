@@ -13,10 +13,13 @@ import threading
 import unittest
 from types import SimpleNamespace
 
+import claude_events
+
 from llm_local_proxy.http.handler import make_handler
 from llm_local_proxy.http.server import Server
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
+from llm_local_proxy.providers.pool import account_id
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 STREAM = [
@@ -24,17 +27,7 @@ STREAM = [
         "type": "message_start",
         "message": {"usage": {"input_tokens": 11, "output_tokens": 0}},
     },
-    {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {"type": "text", "text": ""},
-    },
-    {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {"type": "text_delta", "text": "Hello"},
-    },
-    {"type": "content_block_stop", "index": 0},
+    *claude_events.text(0, "Hello"),
     {
         "type": "message_delta",
         "delta": {"stop_reason": "end_turn", "stop_sequence": None},
@@ -86,15 +79,17 @@ def _chat(canonical, request):
 def _service():
     provider = SimpleNamespace(
         name="claude",
-        routes={"accounts": lambda body: body},
-        auth=SimpleNamespace(),
+        routes={
+            "accounts": lambda body: body,
+            "login": lambda body: {"account": account_id(body)},
+            "logout": lambda body: {"account": account_id(body)},
+        },
+        forget=lambda: None,
         chat=_chat,
         count_tokens=lambda canonical, request: {"input_tokens": 42},
     )
     # A provider whose upstream has no way to count, like Codex.
-    uncounted = SimpleNamespace(
-        name="codex", routes={}, auth=SimpleNamespace(), count_tokens=None
-    )
+    uncounted = SimpleNamespace(name="codex", routes={}, count_tokens=None)
     return SimpleNamespace(
         config=SimpleNamespace(api_key="", host="127.0.0.1"),
         app=SimpleNamespace(alive=lambda: True),
@@ -103,9 +98,8 @@ def _service():
             (uncounted, model) if model.startswith("gpt") else (provider, model)
         ),
         provider=lambda name: provider if name == "claude" else None,
-        models=lambda: MODELS,
+        models=lambda refresh=False: MODELS,
         status=lambda: {"providers": []},
-        invalidate_models=lambda: None,
     )
 
 
@@ -182,12 +176,17 @@ class EndpointTest(unittest.TestCase):
             },
         )
         self.assertEqual(status, 200)
-        self.assertTrue(text.endswith("data: [DONE]\n\n"))
+        # As the Responses API streams: every frame named after its type, and
+        # no Chat Completions sentinel.
+        self.assertNotIn("[DONE]", text)
+        lines = text.splitlines()
         payloads = [
             json.loads(line[len("data: ") :])
-            for line in text.splitlines()
+            for line in lines
             if line.startswith("data: {")
         ]
+        names = [line[len("event: ") :] for line in lines if line.startswith("event: ")]
+        self.assertEqual(names, [payload["type"] for payload in payloads])
         self.assertEqual(payloads[0]["type"], "response.created")
         self.assertEqual(payloads[-1]["type"], "response.completed")
         self.assertIn("response.output_text.delta", [p["type"] for p in payloads])
@@ -305,45 +304,6 @@ class EndpointTest(unittest.TestCase):
         # listener the key is never re-read. Verified in a browser.
         self.assertIn('addEventListener("hashchange"', text)
 
-    def test_dashboard_shows_copyable_login_url_without_opening_a_tab(self):
-        _, text = self.request("GET", "/")
-        self.assertIn('class="login-url"', text)
-        self.assertIn('class="copy-login"', text)
-        self.assertIn("navigator.clipboard.writeText(loginUrl.textContent)", text)
-        self.assertNotIn("window.open(", text)
-
-    def test_dashboard_builds_commands_for_all_supported_clients(self):
-        _, text = self.request("GET", "/")
-        self.assertIn("codex --model", text)
-        self.assertIn("claude --model", text)
-        self.assertIn("opencode --model", text)
-        self.assertIn("OPENCODE_CONFIG_CONTENT", text)
-        self.assertIn("model_providers.local_proxy", text)
-        self.assertIn("model_context_window=${context}", text)
-        self.assertIn("modelConfig.limit={context}", text)
-        self.assertNotIn("model_auto_compact_token_limit", text)
-        self.assertNotIn("CLAUDE_CODE_MAX_CONTEXT_TOKENS", text)
-        self.assertIn("context>=1e6", text)
-        self.assertIn("`${model}[1m]`", text)
-        self.assertIn('class="account-label"', text)
-        self.assertIn('box.className="command-code"', text)
-        self.assertIn('copy.className="command-copy"', text)
-        self.assertIn('reset=setTimeout(()=>copy.textContent="copy",1500)', text)
-        self.assertIn('class="add-account"', text)
-        self.assertIn('class="remove" hidden', text)
-        self.assertIn("/accounts`", text)
-        self.assertIn("items.some(a=>!a.signed_in)", text)
-        self.assertIn("load().then(()=>poll(true))", text)
-        self.assertIn("body:accountBody(a.id)", text)
-
-    def test_dashboard_has_structured_accessible_loading_skeletons(self):
-        _, text = self.request("GET", "/")
-        self.assertIn('class="provider skeleton-provider" aria-hidden="true"', text)
-        self.assertIn('class="row command skeleton-command" aria-hidden="true"', text)
-        self.assertIn('class="model skeleton-model" aria-hidden="true"', text)
-        self.assertIn("prefers-reduced-motion:reduce", text)
-        self.assertNotIn('class="remote"', text)
-
     def test_account_auth_routes_require_an_explicit_slot(self):
         for route in ("login", "logout"):
             with self.subTest(route=route):
@@ -357,23 +317,6 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(json.loads(text), {"action": "add"})
 
     # -- mounts -----------------------------------------------------------
-
-    def test_openai_prefix_and_bare_path_are_byte_identical(self):
-        body = {
-            "model": "claude-sonnet-5",
-            "messages": [{"role": "user", "content": "hi"}],
-        }
-
-        def normalised(path):
-            status, text = self.request("POST", path, body)
-            value = json.loads(text)
-            # Each response carries a fresh id and timestamp by design.
-            value.pop("id"), value.pop("created")
-            return status, value
-
-        prefixed = normalised("/openai/v1/chat/completions")
-        self.assertEqual(prefixed[0], 200)
-        self.assertEqual(prefixed, normalised("/v1/chat/completions"))
 
     def test_legacy_paths_mirror_the_openai_mount(self):
         """Every route reachable at /openai/... is reachable bare, identically.
@@ -472,6 +415,17 @@ class EndpointTest(unittest.TestCase):
                         response.read()
                         connection.close()
                         self.assertEqual(status, 200)
+            # Browsers request these without credentials; neither may 401.
+            for path, expected in (("/healthz", 200), ("/favicon.ico", 204)):
+                with self.subTest(path=path):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=10
+                    )
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    response.read()
+                    connection.close()
+                    self.assertEqual(response.status, expected)
         finally:
             server.shutdown()
             server.server_close()

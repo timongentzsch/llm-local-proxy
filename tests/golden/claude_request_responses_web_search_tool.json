@@ -1,0 +1,39 @@
+{
+  "request": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Latest news?"
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+      }
+    ],
+    "tools": [
+      {
+        "type": "web_search_20250305",
+        "name": "web_search"
+      }
+    ],
+    "tool_choice": {
+      "type": "auto"
+    }
+  },
+  "betas": [
+    "web-search-2025-03-05"
+  ]
+}

@@ -23,7 +23,7 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
-from ...tools import arguments, render_function
+from ...tools import arguments, flatten, qualified_name, render_function
 from ..reasoning import ReasoningCache
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 from .thinking import Outcome, Unpacked, unpack
@@ -55,10 +55,15 @@ def _number(value: Any, name: str, low: float, high: float, closed: bool) -> Non
         raise RequestError(f"{name} must be a number between {low:g} and {high:g}")
 
 
-def _check(params: dict[str, Any]) -> None:
+def _check(request: ChatRequest) -> None:
+    params = request.params
     for name in UNSUPPORTED:
         if params.get(name) is not None:
             raise RequestError(f"unsupported parameter: {name}")
+    if request.verbosity:
+        raise RequestError("unsupported parameter: verbosity")
+    if request.reasoning_context not in {"", "auto"}:
+        raise RequestError("unsupported parameter: reasoning.context")
     if params.get("temperature") is not None:
         _number(params["temperature"], "temperature", 0, 1, closed=True)
     if params.get("top_p") is not None:
@@ -166,7 +171,7 @@ def _blocks(
                 {
                     "type": "tool_use",
                     "id": block.id or "toolu_" + uuid.uuid4().hex[:24],
-                    "name": block.name,
+                    "name": qualified_name(block.namespace, block.name),
                     "input": arguments(block.arguments, RequestError),
                 }
             )
@@ -234,7 +239,11 @@ def _web_tool(tool: WebSearchTool) -> dict[str, Any]:
         return {"type": WEB_SEARCH_TOOL, "name": "web_search"}
     if tool.source == "anthropic":
         return dict(tool.native)
-    if tool.source != "responses" or set(tool.native) - {"type"}:
+    # Live access is Claude's only search mode; it is also the Responses default.
+    options = {
+        k: v for k, v in tool.native.items() if (k, v) != ("external_web_access", True)
+    }
+    if tool.source != "responses" or set(options) - {"type"}:
         raise RequestError(
             "Claude upstream cannot faithfully represent Responses web_search options"
         )
@@ -267,7 +276,7 @@ def build(
     reasoning_efforts: Collection[str] | None = None,
     reasoning_cache: ReasoningCache | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    _check(request.params)
+    _check(request)
 
     messages = []
     dropped: list[Outcome] = []
@@ -338,7 +347,7 @@ def build(
 
     betas: list[str] = []
     tools = []
-    for tool in request.tools:
+    for tool in flatten(request.tools)[0]:
         if isinstance(tool, FunctionTool):
             if tool.options.get("defer_loading"):
                 raise RequestError(

@@ -132,6 +132,7 @@ def _turn_items(turn: Turn, cache: ReasoningCache) -> list[dict[str, Any]]:
                 {
                     "type": "function_call",
                     "call_id": block.id,
+                    **({"namespace": block.namespace} if block.namespace else {}),
                     "name": block.name,
                     "arguments": encoded,
                 }
@@ -194,6 +195,8 @@ def build(
         body["parallel_tool_calls"] = request.parallel_tool_calls is not False
     if request.output_format is not None:
         body["text"] = {"format": _output_format(request.output_format)}
+    if request.verbosity:
+        body.setdefault("text", {})["verbosity"] = request.verbosity
     if request.thinking_budget is not None:
         raise RequestError(
             "Codex upstream cannot faithfully represent an Anthropic thinking budget; "
@@ -211,6 +214,8 @@ def build(
         body["reasoning"] = {"effort": effort}
         if request.thinking_display != "omitted":
             body["reasoning"]["summary"] = "auto"
+    if request.reasoning_context:
+        body.setdefault("reasoning", {})["context"] = request.reasoning_context
     # Models can reason at their catalog default even when the client omits an
     # explicit effort, so always request the completed encrypted item.
     body["include"] = ["reasoning.encrypted_content"]

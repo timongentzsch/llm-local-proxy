@@ -1,11 +1,9 @@
 """Provider registry building blocks.
 
-A :class:`Provider` wires one upstream's auth, model matching, chat handling,
-model catalog and any extra HTTP routes into a single object the server can
-iterate. Adding a provider then means constructing one ``Provider`` for it
-(rather than editing ``server.py``'s dispatch): give it a ``match`` for its
-model names, a ``chat`` handler, its catalog and status contribution, and an
-:class:`~llm_local_proxy.auth.Auth` implementation.
+A :class:`Provider` wires one upstream's model matching, chat handling, model
+catalog, status and HTTP routes into a single object the server can iterate.
+Subscription providers build theirs with
+:meth:`~llm_local_proxy.providers.pool.PooledProvider.provider`.
 """
 
 from __future__ import annotations
@@ -18,7 +16,6 @@ from typing import Any
 from ..config import Config
 from ..ir import ChatRequest, Decoder
 from ..status import ProviderStatus
-from .auth import Auth
 
 
 @dataclass(frozen=True)
@@ -28,19 +25,12 @@ class ProviderContext:
     config: Config
     #: Where credentials and token ledgers are persisted.
     directory: Path
-    #: Drops cached catalogs, e.g. after a login changes what is visible.
-    invalidate: Callable[[], None]
 
 
 @dataclass(frozen=True, eq=False)
 class Provider:
     #: Route prefix and card name on the status page (e.g. "codex", "claude").
     name: str
-    #: OAuth access for the status page and the /api/<name>/login|logout endpoints.
-    auth: Auth
-    #: "device_code" shows login_start's code; "paste_code" POSTs one back to
-    #: the provider's "code" route, which such a provider must register.
-    login_flow: str
     #: Maps a requested model id to a canonical name for this provider, or
     #: None when the model does not belong to it (used to route requests).
     match: Callable[[str], str | None]
@@ -51,12 +41,13 @@ class Provider:
     #: The provider's card for /api/status, normalised so every provider
     #: renders through the same dashboard component.
     status: Callable[[], ProviderStatus]
-    #: POST handlers at /api/<name>/<route>. "login" and "logout" are
-    #: reserved and always reach auth directly.
+    #: POST handlers at /api/<name>/<route>, including login and logout.
     routes: Mapping[str, Callable[[dict[str, Any]], Any]]
     #: None when the upstream cannot count exactly; callers then get a 404
     #: rather than an estimate they would wrongly trust.
     count_tokens: Callable[[str, ChatRequest], dict[str, Any]] | None = None
+    #: Drops the cached catalog, e.g. after a login changes what is visible.
+    forget: Callable[[], None] = lambda: None
     #: Defaults suit a provider that is just an HTTPS client.
     healthy: Callable[[], bool] = lambda: True
     #: Release anything long-lived. Called once at shutdown.

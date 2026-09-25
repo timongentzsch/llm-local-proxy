@@ -8,20 +8,26 @@ import shutil
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from ..atomic import atomic_write_json
-from ..errors import RequestError
+from ..errors import ProviderError, RequestError
+from ..status import AccountStatus, ProviderStatus
 from ..streaming import closing_iterator
 from .auth import Auth
+from .base import Provider, ProviderContext
+from .reasoning import ReasoningCache
 
 T = TypeVar("T")
 E = TypeVar("E")
 
 RATE_LIMIT_COOLDOWN_SECONDS = 300
 AUTH_FAILURE_COOLDOWN_SECONDS = 60
+CATALOG_TTL_SECONDS = 60
+#: What a failing account or catalog degrades to instead of a whole-page error.
+DEGRADES = (ProviderError, OSError, ValueError)
 
 
 @dataclass(frozen=True)
@@ -83,23 +89,13 @@ class AccountPool(Generic[T]):
         """Refuse another slot while an existing one still needs a login."""
 
         for account in self.accounts:
-            try:
-                signed_in = account.auth.signed_in()
-            except (OSError, RuntimeError, ValueError):
-                signed_in = False
-            if not signed_in:
+            if not _signed_in(account.auth):
                 raise RequestError(
                     "sign in or remove the existing unsigned account first"
                 )
 
     def candidates(self, session: str | None = None) -> tuple[Account[T], ...]:
-        signed_in = []
-        for account in self.accounts:
-            try:
-                if account.auth.signed_in():
-                    signed_in.append(account)
-            except (OSError, RuntimeError, ValueError):
-                continue
+        signed_in = [account for account in self.accounts if _signed_in(account.auth)]
         if not signed_in:
             return ()
         now = time.time()
@@ -197,16 +193,6 @@ class AccountPool(Generic[T]):
         ) as events:
             return next(events)
 
-    def discover(
-        self,
-        invoke: Callable[[Account[T]], E],
-        no_account: Callable[[], Exception],
-        retry_if: Callable[[Exception], bool] | None = None,
-    ) -> E:
-        """Read shared metadata from a rotating, first-success account."""
-
-        return self.call(None, invoke, no_account, retry_if)
-
 
 def account_file(directory: Path, provider: str, account_id: str, name: str) -> Path:
     """Return the canonical private state path for one provider account."""
@@ -217,14 +203,9 @@ def account_file(directory: Path, provider: str, account_id: str, name: str) -> 
 class AccountStore:
     """Persistent, uncapped slot ids shared by every pooled provider."""
 
-    def __init__(self, directory: Path, provider: str, initial: Sequence[str] = ()):
+    def __init__(self, directory: Path, provider: str):
         self.path = directory / "accounts" / provider / "slots.json"
         self._lock = threading.Lock()
-        ids = tuple(dict.fromkeys(initial))
-        if not self.path.exists() and ids:
-            if any(not item.isdigit() or int(item) < 1 for item in ids):
-                raise ValueError("initial account ids must be positive integers")
-            self._write(ids)
 
     def ids(self) -> tuple[str, ...]:
         with self._lock:
@@ -276,14 +257,153 @@ def remove_account_state(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def stored_account_ids(directory: Path, filename: str) -> tuple[str, ...]:
-    """Find canonical credential stores when creating the first registry."""
+def account_id(body: dict[str, Any]) -> str:
+    value = body.get("account")
+    if not isinstance(value, str) or not value:
+        raise RequestError("account is required")
+    return value
 
-    if not directory.exists():
-        return ()
-    ids = {
-        item.parent.name
-        for item in directory.glob(f"*/{filename}")
-        if item.is_file() and item.parent.name.isdigit() and int(item.parent.name) > 0
-    }
-    return tuple(sorted(ids, key=int))
+
+class PooledProvider(Generic[T]):
+    """What every subscription provider shares: slots, logins, catalog, status.
+
+    A subclass supplies how to build one account, read the catalog through
+    it, and describe it; the slot lifecycle, catalog cache and the
+    "reauthentication required" overlay are identical for every upstream.
+    """
+
+    name = ""
+    retry_if: Callable[[Exception], bool] | None = None
+
+    def __init__(self, context: ProviderContext):
+        self.context = context
+        self.store = AccountStore(context.directory, self.name)
+        self.pool = AccountPool([self.new_account(i) for i in self.store.ids()])
+        self.cache = ReasoningCache()
+        self._catalog: tuple[float, list[dict[str, Any]]] | None = None
+        self._lock = threading.Lock()
+        self._accounts_lock = threading.Lock()
+
+    # -- supplied by each provider -------------------------------------------
+
+    def new_account(self, slot: str) -> Account[T]:
+        raise NotImplementedError
+
+    def fetch_catalog(self, account: Account[T]) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def account_status(self, account: Account[T]) -> AccountStatus:
+        raise NotImplementedError
+
+    def no_account(self) -> ProviderError:
+        raise NotImplementedError
+
+    def state_dirs(self, slot: str) -> list[Path]:
+        return [self.context.directory / "accounts" / self.name / slot]
+
+    def closed(self, account: Account[T]) -> None:
+        """Release what a removed slot holds beyond its files."""
+
+    # -- shared --------------------------------------------------------------
+
+    def provider(self, **fields: Any) -> Provider:
+        routes = {
+            "login": self.login,
+            "logout": self.logout,
+            "accounts": self.manage_accounts,
+            **fields.pop("routes", {}),
+        }
+        return Provider(
+            name=self.name,
+            status=self.status,
+            forget=self.forget,
+            routes=routes,
+            **fields,
+        )
+
+    def signed_in(self) -> bool:
+        return any(_signed_in(account.auth) for account in self.pool.accounts)
+
+    def login(self, body: dict[str, Any]) -> dict[str, Any]:
+        slot = account_id(body)
+        return {**self.pool.get(slot).auth.login_start(), "account": slot}
+
+    def logout(self, body: dict[str, Any]) -> dict[str, Any]:
+        self.pool.get(account_id(body)).auth.logout()
+        self.forget()
+        return {"ok": True}
+
+    def manage_accounts(self, body: dict[str, Any]) -> dict[str, Any]:
+        action = body.get("action")
+        if action == "add":
+            with self._accounts_lock:
+                self.pool.require_no_unsigned()
+                slot = self.store.add()
+                try:
+                    self.pool.add(self.new_account(slot))
+                except Exception:
+                    self.store.remove(slot)
+                    for path in self.state_dirs(slot):
+                        remove_account_state(path)
+                    raise
+        elif action == "remove":
+            slot = account_id(body)
+            with self._accounts_lock:
+                account = self.pool.get(slot)
+                if account.auth.signed_in():
+                    raise RequestError("sign out before removing this account")
+                self.store.remove(slot)
+                self.pool.remove(slot)
+                self.closed(account)
+                for path in self.state_dirs(slot):
+                    remove_account_state(path)
+        else:
+            raise RequestError("action must be add or remove")
+        self.forget()
+        return {"ok": True, "account": slot}
+
+    def forget(self) -> None:
+        with self._lock:
+            self._catalog = None
+
+    def _live_catalog(self) -> list[dict[str, Any]]:
+        with self._lock:
+            cached = self._catalog
+        if cached and time.time() - cached[0] < CATALOG_TTL_SECONDS:
+            return cached[1]
+        try:
+            items = self.pool.call(
+                None, self.fetch_catalog, self.no_account, self.retry_if
+            )
+        except ProviderError:
+            items = []
+        with self._lock:
+            self._catalog = (time.time(), items)
+        return items
+
+    def status(self) -> ProviderStatus:
+        accounts = []
+        for account in self.pool.accounts:
+            try:
+                value = self.account_status(account)
+            except DEGRADES as error:
+                value = AccountStatus(error=str(error) or "unavailable")
+            observed = self.pool.account_error(account.id)
+            if observed and value.signed_in:
+                value = replace(
+                    value,
+                    signed_in=False,
+                    error=f"reauthentication required: {observed}",
+                )
+            accounts.append(replace(value, id=account.id))
+        return ProviderStatus(
+            signed_in=any(account.signed_in for account in accounts),
+            accounts=tuple(accounts),
+        )
+
+
+def _signed_in(auth: Auth) -> bool:
+    try:
+        return auth.signed_in()
+    except (OSError, RuntimeError, ValueError):
+        return False

@@ -8,20 +8,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from ...errors import ProviderError
+from ...errors import UpstreamError
 from ...ledger import TokenLedger, track_usage
 from .. import transport
 from .app_server import AppServer, RpcError
 from .usage import TERMINAL_EVENTS, read_usage
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
-
-
-class UpstreamError(ProviderError):
-    def __init__(self, status: int, message: str, *, account_unavailable: bool = False):
-        super().__init__(message)
-        self.status = status
-        self.account_unavailable = account_unavailable
 
 
 class Upstream:

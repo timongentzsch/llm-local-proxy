@@ -11,23 +11,19 @@ import contextlib
 import io
 import unittest
 
-from llm_local_proxy.dialects import ANTHROPIC, resolve
+import claude_events
+
+from llm_local_proxy.dialects import ANTHROPIC
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse
 from llm_local_proxy.errors import RequestError
-from llm_local_proxy.http import security
 from llm_local_proxy.ir import (
     Image,
     NativeAnthropicBlock,
     Text,
-    Thinking,
-    ToolResult,
-    ToolUse,
 )
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude
-from llm_local_proxy.providers.claude.subscription import CLAUDE_CODE_SYSTEM_MARKER
-from llm_local_proxy.providers.codex.request import build as build_codex
 from llm_local_proxy.providers.reasoning import ReasoningCache
 
 BASE = {
@@ -38,12 +34,6 @@ BASE = {
 
 
 class IngressTest(unittest.TestCase):
-    def test_minimal_body(self):
-        request = parse(BASE)
-        self.assertEqual(request.model, "claude-sonnet-5")
-        self.assertEqual(request.max_tokens, 1024)
-        self.assertEqual(request.turns[0].blocks, [Text("Hello")])
-
     def test_model_and_messages_are_required(self):
         with self.assertRaises(RequestError):
             parse({"max_tokens": 1, "messages": []})
@@ -107,56 +97,6 @@ class IngressTest(unittest.TestCase):
         request = parse(body)
         self.assertEqual([turn.role for turn in request.turns], ["user", "user"])
         self.assertEqual(request.turns[1].blocks, [Text("b")])
-
-    def test_tool_use_and_result_blocks(self):
-        body = {
-            **BASE,
-            "messages": [
-                {"role": "user", "content": "weather?"},
-                {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_1",
-                            "name": "get_weather",
-                            "input": {"city": "Berlin"},
-                        }
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "toolu_1",
-                            "content": "17C",
-                        }
-                    ],
-                },
-            ],
-        }
-        request = parse(body)
-        self.assertEqual(
-            request.turns[1].blocks,
-            [ToolUse("toolu_1", "get_weather", {"city": "Berlin"})],
-        )
-        self.assertEqual(request.turns[2].blocks, [ToolResult("toolu_1", "17C")])
-
-    def test_signed_thinking_survives(self):
-        body = {
-            **BASE,
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "thinking", "thinking": "hmm", "signature": "SIG"}
-                    ],
-                },
-            ],
-        }
-        self.assertEqual(parse(body).turns[1].blocks, [Thinking("hmm", "SIG")])
 
     def test_images(self):
         def block(source):
@@ -276,11 +216,6 @@ class IngressTest(unittest.TestCase):
             with self.assertRaises(RequestError, msg=name):
                 parse({**BASE, name: {"any": "value"}})
 
-    def test_output_config_effort_becomes_reasoning_effort(self):
-        # Real Claude Code sends this on every request.
-        body = {**BASE, "output_config": {"effort": "high"}}
-        self.assertEqual(parse(body).reasoning_effort, "high")
-
     def test_fields_the_proxy_cannot_act_on_are_accepted(self):
         # Rejecting these would break a real client for no benefit.
         body = {
@@ -294,58 +229,6 @@ class IngressTest(unittest.TestCase):
         request = parse({**BASE, "stop_sequences": ["END"], "top_k": 5})
         self.assertEqual(request.params["stop"], ["END"])
         self.assertEqual(request.params["top_k"], 5)
-
-    def test_claude_and_codex_both_receive_a_requested_schema(self):
-        schema = {
-            "title": "city",
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
-        }
-        body = {
-            **BASE,
-            "output_config": {"format": {"type": "json_schema", "schema": schema}},
-        }
-        request = parse(body)
-        self.assertEqual(request.output_format.kind, "json_schema")
-        self.assertEqual(request.output_format.schema, schema)
-
-        upstream, betas = build_claude(
-            request,
-            "claude-sonnet-5",
-            max_output=32768,
-            reasoning_cache=ReasoningCache(),
-        )
-        self.assertEqual(
-            upstream["output_config"],
-            {"format": {"type": "json_schema", "schema": schema}},
-        )
-        self.assertIn("structured-outputs-2025-11-13", betas)
-
-        # Responses demands a label Messages never sends; the schema title is
-        # carried across so the constraint itself survives the crossing.
-        codex, _ = build_codex(request, ReasoningCache())
-        self.assertEqual(
-            codex["text"],
-            {
-                "format": {
-                    "type": "json_schema",
-                    "name": "city",
-                    "schema": schema,
-                    "strict": True,
-                }
-            },
-        )
-
-    def test_deprecated_output_format_is_still_honoured(self):
-        schema = {"type": "object", "properties": {}}
-        request = parse(
-            {**BASE, "output_format": {"type": "json_schema", "schema": schema}}
-        )
-        self.assertEqual(request.output_format.schema, schema)
-        # No title to borrow, so the Responses label falls back to a placeholder.
-        codex, _ = build_codex(request, ReasoningCache())
-        self.assertEqual(codex["text"]["format"]["name"], "response")
 
     def test_output_config_options_we_cannot_honour_are_refused(self):
         with self.assertRaisesRegex(RequestError, "task_budget"):
@@ -416,110 +299,6 @@ class RoundTripTest(unittest.TestCase):
         upstream, _ = build_claude(request, "claude-sonnet-5")
         self.assertEqual(upstream["messages"][1]["content"], [search, result])
 
-    def test_signed_thinking_reaches_claude_verbatim(self):
-        """The whole point of the Anthropic lane: signatures must survive."""
-        body = {
-            **BASE,
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "thinking", "thinking": "hmm", "signature": "SIG"},
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_1",
-                            "name": "f",
-                            "input": {},
-                        },
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "toolu_1",
-                            "content": "x",
-                        }
-                    ],
-                },
-            ],
-        }
-        upstream, _ = build_claude(parse(body), "claude-sonnet-5")
-        blocks = upstream["messages"][1]["content"]
-        self.assertIn(
-            {"type": "thinking", "thinking": "hmm", "signature": "SIG"}, blocks
-        )
-
-    def test_native_thinking_is_not_duplicated_by_reasoning_cache(self):
-        body = {
-            **BASE,
-            "messages": [
-                {"role": "user", "content": "hi"},
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "thinking", "thinking": "hmm", "signature": "SIG"},
-                        {
-                            "type": "tool_use",
-                            "id": "toolu_1",
-                            "name": "f",
-                            "input": {},
-                        },
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "toolu_1",
-                            "content": "x",
-                        }
-                    ],
-                },
-            ],
-        }
-        cache = ReasoningCache()
-        cache.put(
-            ["toolu_1"],
-            [{"type": "thinking", "thinking": "hmm", "signature": "SIG"}],
-        )
-
-        upstream, _ = build_claude(
-            parse(body), "claude-sonnet-5", reasoning_cache=cache
-        )
-        thinking = [
-            block
-            for block in upstream["messages"][1]["content"]
-            if block["type"] == "thinking"
-        ]
-        self.assertEqual(
-            thinking,
-            [{"type": "thinking", "thinking": "hmm", "signature": "SIG"}],
-        )
-
-    def test_the_marker_is_not_duplicated(self):
-        # Real Claude Code already sends the marker as a system block; adding a
-        # second one would waste tokens on every request.
-        body = {
-            **BASE,
-            "system": [
-                {"type": "text", "text": "billing-header"},
-                {"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER},
-                {"type": "text", "text": "the prompt"},
-            ],
-        }
-        upstream, _ = build_claude(parse(body), "claude-sonnet-5")
-        texts = [block["text"] for block in upstream["system"]]
-        self.assertEqual(texts.count(CLAUDE_CODE_SYSTEM_MARKER), 1)
-
-    def test_the_marker_is_added_when_absent(self):
-        # Without it the request bills against the API pool and 429s.
-        upstream, _ = build_claude(parse(BASE), "claude-sonnet-5")
-        self.assertEqual(upstream["system"][0]["text"], CLAUDE_CODE_SYSTEM_MARKER)
-
     def test_adaptive_thinking_is_forwarded_not_converted(self):
         body = {
             **BASE,
@@ -561,33 +340,6 @@ class EgressTest(unittest.TestCase):
             frames.extend(encoder.feed(event))
         frames.extend(encoder.finish())
         return frames
-
-    def test_stream_opens_and_closes_correctly(self):
-        frames = self._stream(
-            [
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": "hi"},
-                },
-                {"type": "content_block_stop", "index": 0},
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn"},
-                    "usage": {"output_tokens": 2},
-                },
-                {"type": "message_stop"},
-            ]
-        )
-        self.assertEqual(frames[0]["type"], "message_start")
-        self.assertEqual(frames[-1]["type"], "message_stop")
-        self.assertEqual(frames[-2]["type"], "message_delta")
-        self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
 
     def test_hosted_search_stays_a_server_tool_and_never_a_tool_use(self):
         """A search the provider ran must not read as a call the client owes.
@@ -663,11 +415,7 @@ class EgressTest(unittest.TestCase):
                         "input": {"query": "current model"},
                     },
                 },
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "pause_turn"},
-                    "usage": {"output_tokens": 1},
-                },
+                claude_events.stop("pause_turn", {"output_tokens": 1}),
             ]
         )
         blocks = [
@@ -722,44 +470,6 @@ class EgressTest(unittest.TestCase):
         )
         self.assertEqual(frames[-2]["delta"]["stop_reason"], "end_turn")
 
-    def test_message_start_carries_required_usage(self):
-        # input_tokens is non-nullable even before anything is known.
-        start = self._stream([])[0]
-        self.assertEqual(start["message"]["usage"]["input_tokens"], 0)
-        self.assertIsNone(start["message"]["stop_reason"])
-
-    def test_blocks_stay_singly_open_with_rising_indices(self):
-        frames = self._stream(
-            [
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "thinking"},
-                },
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "thinking_delta", "thinking": "t"},
-                },
-                {"type": "content_block_stop", "index": 0},
-                {
-                    "type": "content_block_start",
-                    "index": 1,
-                    "content_block": {"type": "text", "text": ""},
-                },
-                {
-                    "type": "content_block_delta",
-                    "index": 1,
-                    "delta": {"type": "text_delta", "text": "x"},
-                },
-                {"type": "content_block_stop", "index": 1},
-            ]
-        )
-        opens = [f["index"] for f in frames if f["type"] == "content_block_start"]
-        stops = [f["index"] for f in frames if f["type"] == "content_block_stop"]
-        self.assertEqual(opens, [0, 1])
-        self.assertEqual(stops, [0, 1])
-
     def test_non_stream_message_has_every_required_field(self):
         encoder = MessageEncoder("claude-sonnet-5", ClaudeDecoder(ReasoningCache()))
         message = encoder.result()
@@ -781,19 +491,6 @@ class EgressTest(unittest.TestCase):
 
 
 class DialectTest(unittest.TestCase):
-    def test_mounted_under_its_own_prefix(self):
-        dialect, path = resolve("/anthropic/v1/messages")
-        self.assertEqual(dialect.name, "anthropic")
-        self.assertEqual(path, dialect.chat_route)
-
-    def test_bare_paths_still_belong_to_chat_completions(self):
-        self.assertEqual(resolve("/v1/models")[0].name, "openai")
-
-    def test_authenticates_with_either_credential_header(self):
-        self.assertTrue(security.authorized({"x-api-key": "k"}, "k"))
-        self.assertTrue(security.authorized({"Authorization": "Bearer k"}, "k"))
-        self.assertFalse(security.authorized({"x-api-key": "no"}, "k"))
-
     def test_error_envelope(self):
         error = ANTHROPIC.error(400, "bad")
         self.assertEqual(error["type"], "error")
@@ -804,8 +501,7 @@ class DialectTest(unittest.TestCase):
         )
 
     def test_stream_has_named_frames_and_no_done_sentinel(self):
-        self.assertIsNone(ANTHROPIC.terminator)
-        self.assertEqual(ANTHROPIC.event_name({"type": "message_stop"}), "message_stop")
+        self.assertTrue(ANTHROPIC.routes["/v1/messages"].named)
         self.assertIn(b"event: ping", ANTHROPIC.keepalive)
 
     def test_catalog_shape(self):

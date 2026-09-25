@@ -21,11 +21,6 @@ class Config:
     path: Path
 
     @property
-    def base_url(self) -> str:
-        """The unprefixed mount, kept for clients configured before /openai."""
-        return f"{self.origin}/v1"
-
-    @property
     def origin(self) -> str:
         host = "127.0.0.1" if self.host in {"0.0.0.0", "::"} else self.host
         return (

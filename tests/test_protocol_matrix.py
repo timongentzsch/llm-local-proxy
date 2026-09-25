@@ -7,12 +7,16 @@ dialect/provider tests and byte-level goldens.
 
 from __future__ import annotations
 
+import json
 import unittest
+
+import claude_events
 
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse as anthropic
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse as chat
+from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
 from llm_local_proxy.dialects.openai.responses_ingress import parse as responses
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
@@ -21,6 +25,7 @@ from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build as to_codex
 from llm_local_proxy.providers.codex.thinking import ENVELOPE_PREFIX
 from llm_local_proxy.providers.reasoning import ReasoningCache
+from llm_local_proxy.tools import flatten, qualified_name
 
 CLAUDE_THINKING = {
     "type": "thinking",
@@ -39,41 +44,9 @@ CALL = {"id": "call_1", "name": "read", "arguments": "{}"}
 def _cache_claude_turn(cache: ReasoningCache) -> None:
     encoder = ChunkEncoder("claude-test", ClaudeDecoder(cache))
     events = [
-        {
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "thinking", "thinking": ""},
-        },
-        {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "thinking_delta", "thinking": "Checked."},
-        },
-        {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {
-                "type": "signature_delta",
-                "signature": "claude-signature",
-            },
-        },
-        {"type": "content_block_stop", "index": 0},
-        {
-            "type": "content_block_start",
-            "index": 1,
-            "content_block": {
-                "type": "tool_use",
-                "id": CALL["id"],
-                "name": CALL["name"],
-            },
-        },
-        {
-            "type": "content_block_delta",
-            "index": 1,
-            "delta": {"type": "input_json_delta", "partial_json": "{}"},
-        },
-        {"type": "content_block_stop", "index": 1},
-        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        *claude_events.thinking(0, "Checked.", "claude-signature"),
+        *claude_events.tool_use(1, CALL["id"], CALL["name"], "{}"),
+        claude_events.stop("tool_use"),
     ]
     for event in events:
         encoder.feed(event)
@@ -137,7 +110,233 @@ def _chat_history() -> list[dict]:
     ]
 
 
+#: Populated arguments: nested values, booleans, nulls and Unicode, so a
+#: serialization bug cannot hide behind `{}`.
+ARGS = '{"path":"/tmp/ä","opts":{"depth":2,"follow":false,"tags":["a","ß"],"x":null}}'
+
+
+def _claude_tool_turn() -> list[dict]:
+    return [
+        *claude_events.thinking(0, "Checked.", "claude-signature"),
+        *claude_events.tool_use(1, CALL["id"], "read", ARGS),
+        claude_events.stop("tool_use"),
+    ]
+
+
+def _codex_tool_turn() -> list[dict]:
+    return [
+        {"type": "response.output_item.done", "item": CODEX_REASONING},
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": CALL["id"],
+                "name": "read",
+                "arguments": ARGS,
+            },
+        },
+    ]
+
+
+def _chat_replay(result: dict) -> dict:
+    return {
+        "messages": [
+            {"role": "user", "content": "read"},
+            result["choices"][0]["message"],
+            {"role": "tool", "tool_call_id": CALL["id"], "content": "ok"},
+        ]
+    }
+
+
+def _responses_replay(result: dict) -> dict:
+    return {
+        "store": False,
+        "input": [
+            {"type": "message", "role": "user", "content": "read"},
+            *result["output"],
+            {"type": "function_call_output", "call_id": CALL["id"], "output": "ok"},
+        ],
+    }
+
+
+def _messages_replay(result: dict) -> dict:
+    return {
+        "max_tokens": 4096,
+        "messages": [
+            {"role": "user", "content": "read"},
+            {"role": "assistant", "content": result["content"]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": CALL["id"], "content": "ok"}
+                ],
+            },
+        ],
+    }
+
+
+#: (dialect, result encoder, ingress, replay body from that dialect's result).
+DIALECTS = (
+    ("chat", ChunkEncoder, chat, _chat_replay),
+    ("responses", ResponseEncoder, responses, _responses_replay),
+    ("messages", MessageEncoder, anthropic, _messages_replay),
+)
+
+
 class ProtocolMatrixTest(unittest.TestCase):
+    def test_every_pairing_replays_its_own_tool_turn(self):
+        """Upstream turn -> IR -> client format -> IR -> next upstream request.
+
+        Covers all six dialect/provider lanes: the call id, name and populated
+        arguments, the tool result, and the provider's signed reasoning must
+        all survive the full round trip through the intermediate representation.
+        """
+        for dialect, encoder_type, ingress, replay in DIALECTS:
+            for provider in ("claude", "codex"):
+                with self.subTest(dialect=dialect, provider=provider):
+                    cache = ReasoningCache()
+                    if provider == "claude":
+                        model, events = "claude-test", _claude_tool_turn()
+                        decoder = ClaudeDecoder(cache)
+                    else:
+                        model, events = "gpt-test", _codex_tool_turn()
+                        decoder = CodexDecoder(cache)
+                    encoder = encoder_type(model, decoder)
+                    for event in events:
+                        encoder.feed(event)
+                    request = ingress({"model": model, **replay(encoder.result())})
+                    if provider == "claude":
+                        self._assert_claude_replay(
+                            to_claude(request, model, 32768, reasoning_cache=cache)[0]
+                        )
+                    else:
+                        self._assert_codex_replay(to_codex(request, cache)[0])
+
+    def _assert_claude_replay(self, upstream: dict) -> None:
+        assistant = upstream["messages"][1]
+        self.assertEqual(assistant["role"], "assistant")
+        self.assertEqual(
+            assistant["content"],
+            [
+                CLAUDE_THINKING,
+                {
+                    "type": "tool_use",
+                    "id": CALL["id"],
+                    "name": "read",
+                    "input": json.loads(ARGS),
+                },
+            ],
+        )
+        self.assertEqual(
+            upstream["messages"][2]["content"],
+            [{"type": "tool_result", "tool_use_id": CALL["id"], "content": "ok"}],
+        )
+
+    def _assert_codex_replay(self, upstream: dict) -> None:
+        items = upstream["input"]
+        kinds = [item.get("type") for item in items]
+        self.assertEqual(
+            kinds[1:], ["reasoning", "function_call", "function_call_output"]
+        )
+        self.assertEqual(items[1]["encrypted_content"], "codex-encrypted")
+        call = items[2]
+        self.assertEqual((call["call_id"], call["name"]), (CALL["id"], "read"))
+        self.assertEqual(json.loads(call["arguments"]), json.loads(ARGS))
+        self.assertEqual(
+            items[3],
+            {"type": "function_call_output", "call_id": CALL["id"], "output": "ok"},
+        )
+
+    def test_namespaced_calls_round_trip_through_responses(self):
+        """Codex CLI groups MCP tools in namespaces; calls must find their way home.
+
+        Codex speaks namespaces natively. Claude does not, so the tools are
+        flattened under one qualified name (hashed when it would pass 64
+        characters) and the call is mapped back before the client sees it.
+        """
+        namespace = "mcp__codex_apps__codex_document_control"
+        member = "_get_document_tool_schemas"
+        tool = {
+            "type": "namespace",
+            "name": namespace,
+            "description": "Document sessions",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": member,
+                    "description": "Schemas",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+        qualified = qualified_name(namespace, member)
+        self.assertLessEqual(len(qualified), 64)
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                cache = ReasoningCache()
+                body = {"model": "m", "store": False, "tools": [tool]}
+                request = responses({**body, "input": "read"})
+                if provider == "claude":
+                    upstream = to_claude(request, "m", 32768)[0]
+                    self.assertEqual(
+                        [t["name"] for t in upstream["tools"]], [qualified]
+                    )
+                    decoder = ClaudeDecoder(cache, flatten(request.tools)[1])
+                    events = [
+                        *claude_events.tool_use(0, CALL["id"], qualified, ARGS),
+                        claude_events.stop("tool_use"),
+                    ]
+                else:
+                    self.assertEqual(to_codex(request, cache)[0]["tools"], [tool])
+                    decoder = CodexDecoder(cache)
+                    events = [
+                        {
+                            "type": "response.output_item.done",
+                            "item": {
+                                "type": "function_call",
+                                "call_id": CALL["id"],
+                                "namespace": namespace,
+                                "name": member,
+                                "arguments": ARGS,
+                            },
+                        }
+                    ]
+                encoder = ResponseEncoder("m", decoder, request)
+                for event in events:
+                    encoder.feed(event)
+                output = encoder.result()["output"]
+                call = next(item for item in output if item["type"] == "function_call")
+                self.assertEqual((call["namespace"], call["name"]), (namespace, member))
+
+                replay = responses(
+                    {
+                        **body,
+                        "input": [
+                            {"type": "message", "role": "user", "content": "read"},
+                            *output,
+                            {
+                                "type": "function_call_output",
+                                "call_id": CALL["id"],
+                                "output": "ok",
+                            },
+                        ],
+                    }
+                )
+                if provider == "claude":
+                    sent = to_claude(replay, "m", 32768, reasoning_cache=cache)[0]
+                    use = sent["messages"][1]["content"][-1]
+                    self.assertEqual(
+                        (use["name"], use["input"]), (qualified, json.loads(ARGS))
+                    )
+                else:
+                    sent = to_codex(replay, cache)[0]["input"]
+                    use = next(
+                        item for item in sent if item.get("type") == "function_call"
+                    )
+                    self.assertEqual(
+                        (use["namespace"], use["name"]), (namespace, member)
+                    )
+
     def test_openai_to_claude(self):
         cache = ReasoningCache()
         _cache_claude_turn(cache)

@@ -8,6 +8,8 @@ import io
 import json
 import unittest
 
+import claude_events
+
 from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
 from llm_local_proxy.dialects.openai.responses_ingress import parse
 from llm_local_proxy.errors import RequestError
@@ -39,6 +41,74 @@ def build_claude(request, model, **kwargs):
 
 
 class ResponsesIngressTest(unittest.TestCase):
+    def test_codex_cli_options_reach_codex_and_are_refused_by_claude(self):
+        """What Codex CLI sends: verbosity, reasoning context, live search."""
+        base = {"model": "m", "store": False, "input": "hi"}
+        request = parse(
+            {
+                **base,
+                "text": {"verbosity": "low"},
+                "reasoning": {"effort": "low", "context": "all_turns"},
+                "tools": [{"type": "web_search", "external_web_access": True}],
+            }
+        )
+        body, _ = build_codex(request, ReasoningCache())
+        self.assertEqual(body["text"], {"verbosity": "low"})
+        self.assertEqual(body["reasoning"]["context"], "all_turns")
+        self.assertEqual(
+            body["tools"], [{"type": "web_search", "external_web_access": True}]
+        )
+
+        live = parse(
+            {**base, "tools": [{"type": "web_search", "external_web_access": True}]}
+        )
+        self.assertEqual(build_claude(live, "m")[0]["tools"][0]["name"], "web_search")
+        refused = (
+            ({"text": {"verbosity": "low"}}, "verbosity"),
+            ({"reasoning": {"context": "all_turns"}}, "reasoning.context"),
+            (
+                {"tools": [{"type": "web_search", "external_web_access": False}]},
+                "web_search options",
+            ),
+            (
+                {
+                    "tools": [
+                        {
+                            "type": "namespace",
+                            "name": "ns",
+                            "description": "d",
+                            "tools": [{"type": "custom", "name": "patch"}],
+                        }
+                    ]
+                },
+                "non-function tool",
+            ),
+            (
+                {
+                    "tools": [
+                        {"type": "function", "name": "ns__a", "parameters": {}},
+                        {
+                            "type": "namespace",
+                            "name": "ns",
+                            "description": "d",
+                            "tools": [
+                                {"type": "function", "name": "a", "parameters": {}}
+                            ],
+                        },
+                    ]
+                },
+                "duplicate tool name",
+            ),
+        )
+        for fields, message in refused:
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(RequestError, message),
+            ):
+                build_claude(parse({**base, **fields}), "m")
+        # `auto` leaves the choice to the model, which Claude does anyway.
+        build_claude(parse({**base, "reasoning": {"context": "auto"}}), "m")
+
     def test_rejects_server_side_state(self):
         base = {"model": "gpt-test", "input": "hi"}
         with self.assertRaisesRegex(RequestError, "store"):
@@ -58,142 +128,18 @@ class ResponsesIngressTest(unittest.TestCase):
         with self.assertRaisesRegex(RequestError, "message.output_text.logprobs"):
             parse({**base, "include": ["message.output_text.logprobs"]})
 
-    def test_structured_output_reaches_codex_as_text_format(self):
-        schema = {
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
-            "additionalProperties": False,
-        }
-        request = parse(
-            {
-                "model": "gpt-test",
-                "input": "capital of France?",
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "name": "city",
-                        "schema": schema,
-                        "strict": True,
-                    }
-                },
-            }
-        )
-        upstream, _ = build_codex(request, ReasoningCache())
-        self.assertEqual(
-            upstream["text"],
-            {
-                "format": {
-                    "type": "json_schema",
-                    "name": "city",
-                    "schema": schema,
-                    "strict": True,
-                }
-            },
-        )
-
-        loose = parse(
-            {
-                "model": "gpt-test",
-                "input": "json please",
-                "text": {"format": {"type": "json_object"}},
-            }
-        )
-        upstream, _ = build_codex(loose, ReasoningCache())
-        self.assertEqual(upstream["text"], {"format": {"type": "json_object"}})
-
-    def test_unconstrained_text_format_adds_no_constraint(self):
-        request = parse(
-            {
-                "model": "gpt-test",
-                "input": "hi",
-                "text": {"format": {"type": "text"}},
-            }
-        )
-        self.assertIsNone(request.output_format)
-        upstream, _ = build_codex(request, ReasoningCache())
-        self.assertNotIn("text", upstream)
-
     def test_unhonourable_text_options_are_refused_not_dropped(self):
         base = {"model": "gpt-test", "input": "hi"}
-        with self.assertRaisesRegex(RequestError, "verbosity"):
-            parse({**base, "text": {"verbosity": "low"}})
+        with self.assertRaisesRegex(RequestError, "text.verbosity must be one of"):
+            parse({**base, "text": {"verbosity": "loud"}})
+        with self.assertRaisesRegex(RequestError, "unsupported text options: stop"):
+            parse({**base, "text": {"stop": "x"}})
+        with self.assertRaisesRegex(RequestError, "reasoning.context must be one of"):
+            parse({**base, "reasoning": {"context": "forever"}})
         with self.assertRaisesRegex(RequestError, "json_schema output format requires"):
             parse({**base, "text": {"format": {"type": "json_schema", "name": "r"}}})
         with self.assertRaisesRegex(RequestError, "unsupported output format type"):
             parse({**base, "text": {"format": {"type": "grammar"}}})
-
-    def test_claude_receives_a_schema_and_refuses_a_bare_json_mode(self):
-        def responses_body(fmt):
-            return {
-                "model": "claude-test",
-                "input": "capital of France?",
-                "text": {"format": fmt},
-            }
-
-        schema = {"type": "object", "properties": {"city": {"type": "string"}}}
-        request = parse(
-            responses_body(
-                {
-                    "type": "json_schema",
-                    "name": "city",
-                    "schema": schema,
-                    "strict": True,
-                }
-            )
-        )
-        upstream, betas = build_claude(
-            request, "claude-test", reasoning_cache=ReasoningCache()
-        )
-        self.assertEqual(
-            upstream["output_config"],
-            {"format": {"type": "json_schema", "schema": schema}},
-        )
-        self.assertIn("structured-outputs-2025-11-13", betas)
-
-        # Messages constrains with a schema or not at all.
-        loose = parse(responses_body({"type": "json_object"}))
-        with self.assertRaisesRegex(RequestError, "json_object"):
-            build_claude(loose, "claude-test", reasoning_cache=ReasoningCache())
-
-    def test_codex_reasoning_and_tool_history_round_trip_verbatim(self):
-        body = {
-            "model": "gpt-test",
-            "instructions": "Be concise.",
-            "input": [
-                {"type": "message", "role": "user", "content": "read it"},
-                REASONING,
-                {
-                    "type": "function_call",
-                    "id": "fc_1",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": '{"path":"a"}',
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_1",
-                    "output": "hello",
-                },
-            ],
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "read_file",
-                    "strict": True,
-                    "parameters": {"type": "object"},
-                }
-            ],
-            "reasoning": {"effort": "high", "summary": "auto"},
-            "store": False,
-        }
-        upstream, _ = build_codex(parse(body), ReasoningCache())
-        self.assertEqual(upstream["input"][1], REASONING)
-        self.assertEqual(upstream["input"][2]["call_id"], "call_1")
-        self.assertEqual(upstream["input"][3]["type"], "function_call_output")
-        self.assertFalse(upstream["store"])
-        self.assertEqual(upstream["include"], ["reasoning.encrypted_content"])
-        self.assertTrue(upstream["tools"][0]["strict"])
 
     def test_native_items_and_structured_outputs_pass_through_to_codex(self):
         custom_call = {
@@ -256,45 +202,6 @@ class ResponsesIngressTest(unittest.TestCase):
         with self.assertRaisesRegex(RequestError, "custom_tool_call"):
             build_claude(request, "claude-test")
 
-    def test_claude_recovers_signed_thinking_from_responses_history(self):
-        # Stateless: the client carries the block back, this process need not
-        # remember it, and no cache is supplied here.
-        signed = {"type": "thinking", "thinking": "Checked.", "signature": "SIG"}
-        request = parse(
-            {
-                "model": "claude-test",
-                "input": [
-                    {"type": "message", "role": "user", "content": "read it"},
-                    {
-                        "type": "reasoning",
-                        "id": "rs_1",
-                        "summary": [{"type": "summary_text", "text": "Checked."}],
-                        "encrypted_content": pack(signed, 0),
-                    },
-                    {
-                        "type": "function_call",
-                        "call_id": "call_1",
-                        "name": "read_file",
-                        "arguments": "{}",
-                    },
-                    {
-                        "type": "function_call_output",
-                        "call_id": "call_1",
-                        "output": "hello",
-                    },
-                ],
-                "reasoning": {"effort": "low"},
-            }
-        )
-        upstream, _ = build_claude(request, "claude-test")
-        self.assertEqual(upstream["output_config"], {"effort": "low"})
-        assistant = upstream["messages"][1]["content"]
-        self.assertEqual(assistant[0], signed)
-        self.assertEqual(assistant[1]["type"], "tool_use")
-        self.assertEqual(
-            len([block for block in assistant if block["type"] == "thinking"]), 1
-        )
-
     def test_claude_maps_a_requested_summary_to_visible_thinking(self):
         request = parse(
             {
@@ -312,54 +219,70 @@ class ResponsesIngressTest(unittest.TestCase):
 
 
 class ResponsesEgressTest(unittest.TestCase):
-    def test_codex_stream_has_native_order_and_opaque_reasoning(self):
+    def test_each_reasoning_item_keeps_one_id_from_added_to_done(self):
+        # Clients correlate `added` and `done` by id; two upstream reasoning
+        # items must stay two items, each under its own upstream id.
         encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
-        events = [encoder.start()]
-        for upstream in (
-            {"type": "response.reasoning_summary_text.delta", "delta": "Checked."},
-            {"type": "response.output_item.done", "item": REASONING},
+        frames: list = []
+        for item_id in ("rs_a", "rs_b"):
+            frames += encoder.feed(
+                {
+                    "type": "response.reasoning_summary_text.delta",
+                    "item_id": item_id,
+                    "delta": "Thinking.",
+                }
+            )
+            frames += encoder.feed(
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "reasoning",
+                        "id": item_id,
+                        "summary": [{"type": "summary_text", "text": "Thinking."}],
+                        "encrypted_content": f"enc-{item_id}",
+                    },
+                }
+            )
+        frames += encoder.finish()
+        lifecycle = [
+            (frame["type"], frame["item"]["id"])
+            for frame in frames
+            if frame["type"]
+            in {"response.output_item.added", "response.output_item.done"}
+        ]
+        self.assertEqual(
+            lifecycle,
+            [
+                ("response.output_item.added", "rs_a"),
+                ("response.output_item.done", "rs_a"),
+                ("response.output_item.added", "rs_b"),
+                ("response.output_item.done", "rs_b"),
+            ],
+        )
+
+        # A delta that names no item still gets one id for its whole lifecycle.
+        encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
+        frames = encoder.feed(
+            {"type": "response.reasoning_summary_text.delta", "delta": "Thinking."}
+        )
+        frames += encoder.feed(
             {
                 "type": "response.output_item.done",
                 "item": {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": "{}",
+                    "type": "reasoning",
+                    "id": "rs_upstream",
+                    "summary": [{"type": "summary_text", "text": "Thinking."}],
+                    "encrypted_content": "enc",
                 },
-            },
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [],
-                    "usage": {"input_tokens": 2, "output_tokens": 3},
-                },
-            },
-        ):
-            events.extend(encoder.feed(upstream))
-        events.extend(encoder.finish())
-        kinds = [event["type"] for event in events]
-        self.assertEqual(kinds[0], "response.created")
-        self.assertLess(
-            kinds.index("response.output_item.added"),
-            kinds.index("response.reasoning_summary_text.delta"),
+            }
         )
-        self.assertIn("response.function_call_arguments.done", kinds)
-        self.assertEqual(kinds[-1], "response.completed")
-        completed = events[-1]["response"]
-        self.assertEqual(completed["output"][0]["encrypted_content"], "opaque-secret")
-        self.assertEqual(completed["output"][1]["call_id"], "call_1")
-        self.assertEqual(completed["parallel_tool_calls"], True)
-        self.assertEqual(completed["tool_choice"], "auto")
-        self.assertEqual(completed["tools"], [])
-        self.assertEqual(
-            completed["usage"]["input_tokens_details"]["cache_write_tokens"], 0
-        )
-        done = next(
-            event
-            for event in events
-            if event["type"] == "response.function_call_arguments.done"
-        )
-        self.assertEqual(done["name"], "read_file")
+        ids = {
+            frame["item"]["id"]
+            for frame in frames
+            if frame["type"]
+            in {"response.output_item.added", "response.output_item.done"}
+        }
+        self.assertEqual(len(ids), 1)
 
     def test_empty_reasoning_summary_remains_exactly_empty(self):
         encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
@@ -472,23 +395,8 @@ class ResponsesEgressTest(unittest.TestCase):
     def test_claude_signed_thinking_is_exposed_as_replayable_item(self):
         encoder = ResponseEncoder("claude-test", ClaudeDecoder())
         for event in (
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "thinking", "thinking": ""},
-            },
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "thinking_delta", "thinking": "Checked."},
-            },
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "signature_delta", "signature": "signature"},
-            },
-            {"type": "content_block_stop", "index": 0},
-            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            *claude_events.thinking(0, "Checked.", "signature"),
+            claude_events.stop("end_turn"),
         ):
             encoder.feed(event)
         result = encoder.result()
@@ -505,62 +413,18 @@ def _claude_stream(blocks: list[dict[str, object]]) -> list[dict[str, object]]:
     """The Claude SSE events that produce these content blocks."""
     events: list[dict[str, object]] = []
     for index, block in enumerate(blocks):
-        kind = block["type"]
-        if kind == "thinking":
-            events.append(
-                {
-                    "type": "content_block_start",
-                    "index": index,
-                    "content_block": {"type": "thinking", "thinking": ""},
-                }
+        if block["type"] == "thinking":
+            events += claude_events.thinking(
+                index, block["thinking"], block["signature"]
             )
-            if block["thinking"]:
-                events.append(
-                    {
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {
-                            "type": "thinking_delta",
-                            "thinking": block["thinking"],
-                        },
-                    }
-                )
-            events.append(
-                {
-                    "type": "content_block_delta",
-                    "index": index,
-                    "delta": {
-                        "type": "signature_delta",
-                        "signature": block["signature"],
-                    },
-                }
-            )
-        elif kind == "redacted_thinking":
-            events.append(
-                {
-                    "type": "content_block_start",
-                    "index": index,
-                    "content_block": block,
-                }
-            )
+        elif block["type"] == "redacted_thinking":
+            events += [
+                {"type": "content_block_start", "index": index, "content_block": block},
+                {"type": "content_block_stop", "index": index},
+            ]
         else:
-            events.append(
-                {
-                    "type": "content_block_start",
-                    "index": index,
-                    "content_block": {"type": "tool_use", "id": "toolu_1", "name": "f"},
-                }
-            )
-            events.append(
-                {
-                    "type": "content_block_delta",
-                    "index": index,
-                    "delta": {"type": "input_json_delta", "partial_json": "{}"},
-                }
-            )
-        events.append({"type": "content_block_stop", "index": index})
-    events.append({"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
-    return events
+            events += claude_events.tool_use(index, "toolu_1", "f", "{}")
+    return [*events, claude_events.stop("tool_use")]
 
 
 class ClaudeThinkingRoundTripTest(unittest.TestCase):

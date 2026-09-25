@@ -19,21 +19,28 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ...atomic import atomic_write_json
 from ...errors import ProviderError
-from ...status import ProviderStatus
+from ...status import AccountStatus
 from ..auth import Auth
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-AUTHORIZE_URL = "https://platform.claude.com/oauth/authorize"
+# The subscription (claude.ai) login. platform.claude.com/oauth/authorize is
+# the Console login and grants only org:create_api_key user:profile, which
+# cannot call Messages. Verified against the CLI 2.1.282 bundle.
+AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 MANUAL_REDIRECT_URL = "https://platform.claude.com/oauth/code/callback"
 SCOPE = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers"
 OAUTH_BETA = "oauth-2025-04-20"
+#: Without it the token can sign in and read a profile but every Messages or
+#: Models call answers 403, so such a grant is not a usable login.
+INFERENCE_SCOPE = "user:inference"
 REFRESH_SKEW_SECONDS = 120
 USER_AGENT = "llm-local-proxy/0.1.0"
 
@@ -89,7 +96,7 @@ class ClaudeAuth(Auth):
 
     # -- login flow ---------------------------------------------------------
 
-    def login_start(self, account_id: str = "") -> dict[str, Any]:
+    def login_start(self) -> dict[str, Any]:
         verifier = _b64url(secrets.token_bytes(32))
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
         state = secrets.token_urlsafe(24)
@@ -141,12 +148,13 @@ class ClaudeAuth(Auth):
                 raise ClaudeAuthError(
                     "Claude OAuth response is missing access_token", 502
                 )
+            _require_inference(token)
             token = self._with_profile(token)
             self._write(token)
             self._verifier = ""
             self._state = ""
             self._clear_login()
-            return self.status().payload()
+            return asdict(self.status())
 
     @staticmethod
     def _extract_state(value: str) -> str:
@@ -174,7 +182,7 @@ class ClaudeAuth(Auth):
             raise ClaudeAuthError("code is required", 400)
         return code
 
-    def logout(self, account_id: str = "") -> None:
+    def logout(self) -> None:
         with self._lock:
             self._verifier = ""
             self._state = ""
@@ -187,14 +195,14 @@ class ClaudeAuth(Auth):
         value = self._read()
         return bool(value and value.get("access_token"))
 
-    def status(self) -> ProviderStatus:
+    def status(self) -> AccountStatus:
         value = self._read()
         if not value or not value.get("access_token"):
-            return ProviderStatus()
+            return AccountStatus()
         email = str(value.get("email") or "")
         subscription = str(value.get("subscription_type") or "")
         account = " · ".join(part for part in (email, subscription) if part)
-        return ProviderStatus(
+        return AccountStatus(
             signed_in=True,
             account=account or "claude",
         )
@@ -222,6 +230,9 @@ class ClaudeAuth(Auth):
                 raise ClaudeAuthError(
                     "not signed in to Claude; use the sign in button on the status page"
                 )
+            # Before any refresh: it requests the granted scopes again, so it
+            # cannot repair a grant without inference.
+            _require_inference(value)
             expires_at = int(value.get("expires_at", 0) or 0)
             stale = expires_at <= time.time() + REFRESH_SKEW_SECONDS
             if (force_refresh or stale) and value.get("refresh_token"):
@@ -315,6 +326,21 @@ class ClaudeAuth(Auth):
                 f"Claude OAuth unreachable: {error.reason}", 502
             ) from error
         return _normalize(raw)
+
+
+def _require_inference(token: dict[str, Any]) -> None:
+    """Refuse a grant that names its scopes and lacks inference.
+
+    Credentials written before scopes were recorded carry none and are
+    accepted; the upstream's own 403 still catches them.
+    """
+    scopes = token.get("scopes")
+    if scopes and INFERENCE_SCOPE not in scopes:
+        raise ClaudeAuthError(
+            "this login lacks Claude inference access; sign out and sign in "
+            "with a Claude subscription account",
+            403,
+        )
 
 
 def _error_message(error: urllib.error.HTTPError) -> str:

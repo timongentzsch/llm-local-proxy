@@ -16,12 +16,12 @@ stream framing and the header its clients authenticate with.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from ..errors import RequestError
-from ..ir import ChatRequest, Decoder
+from ..ir import ChatRequest, Decoder, StreamEvent
 
 
 def block_text(parts: list[Any]) -> str:
@@ -36,21 +36,50 @@ def block_text(parts: list[Any]) -> str:
     return "\n".join(part["text"] for part in parts)
 
 
-@dataclass(frozen=True, eq=False)
-class Frame:
-    """One server-sent event; ``event`` is unset for anonymous frames."""
+class Encoder:
+    """Drives one provider's decoder and shapes its events for one dialect.
 
-    data: dict[str, Any]
-    event: str | None = None
+    Subclasses implement `_one` (one event to frames) and the lifecycle ends:
+    `start`, `finish` and `result`.
+    """
 
-
-class Encoder(Protocol):
-    """Downstream lifecycle consumed by the HTTP layer."""
+    def __init__(self, decoder: Decoder):
+        self.decoder = decoder
+        self._drained = False
 
     def start(self) -> dict[str, Any]: ...
-    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]: ...
     def finish(self) -> list[dict[str, Any]]: ...
     def result(self) -> dict[str, Any]: ...
+    def _one(self, event: StreamEvent) -> list[dict[str, Any]]: ...
+
+    def error(self, message: str) -> dict[str, Any] | None:
+        """A mid-stream failure frame; None sends the dialect's error body."""
+        return None
+
+    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._encode(self.decoder.decode(event))
+
+    def _drain(self) -> list[dict[str, Any]]:
+        """Collect whatever the decoder only knows once the stream ends."""
+        if self._drained:
+            return []
+        self._drained = True
+        return self._encode(self.decoder.finish())
+
+    def _encode(self, events: list[StreamEvent]) -> list[dict[str, Any]]:
+        return [frame for event in events for frame in self._one(event)]
+
+
+@dataclass(frozen=True)
+class Route:
+    #: (body, session) -> the dialect-neutral request every provider reads.
+    parse: Callable[[dict[str, Any], str], ChatRequest]
+    #: (model, provider decoder, request) -> encoder. Pairing here keeps
+    #: neither side naming the other. None: the route counts input tokens.
+    encode: Callable[[str, Decoder, ChatRequest], Encoder] | None = None
+    #: SSE frames are named after their `type` and need no end sentinel;
+    #: otherwise they are anonymous and end with `data: [DONE]`.
+    named: bool = False
 
 
 @dataclass(frozen=True, eq=False)
@@ -62,26 +91,11 @@ class Dialect:
     #: What a client is configured with. Not always prefix + "/v1": clients
     #: differ in how much of the path they append themselves.
     base_path: str
-    #: Path, below the prefix, that accepts a chat request.
-    chat_route: str
-    #: (body, session) -> the dialect-neutral request every provider reads.
-    parse: Callable[[dict[str, Any], str], ChatRequest]
-    #: (model, provider decoder) -> encoder. Pairing here keeps neither side
-    #: naming the other.
-    encode: Callable[[str, Decoder], Encoder]
+    #: Paths below the prefix that accept a request, and how each is served.
+    routes: Mapping[str, Route]
     #: Merged provider catalogs -> this dialect's model listing.
     catalog: Callable[[list[dict[str, Any]]], dict[str, Any]]
-    #: Payload -> the SSE event name to write, or None for anonymous frames.
-    event_name: Callable[[dict[str, Any]], str | None]
     #: (status, message) -> the dialect's error body.
     error: Callable[[int, str], dict[str, Any]]
+    #: Written while the upstream is silent, so idle connections stay open.
     keepalive: bytes
-    #: Written after the final frame; Anthropic has no such sentinel.
-    terminator: bytes | None
-    #: Counts input tokens without running the request; None when unsupported.
-    count_route: str | None = None
-    parse_count: Callable[[dict[str, Any], str], ChatRequest] | None = None
-    #: Optional second OpenAI endpoint using Responses item semantics.
-    responses_route: str | None = None
-    parse_responses: Callable[[dict[str, Any], str], ChatRequest] | None = None
-    encode_responses: Callable[[str, Decoder, ChatRequest], Encoder] | None = None

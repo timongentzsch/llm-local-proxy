@@ -43,7 +43,7 @@
     <div id="commands" aria-live="polite"></div>
   </section>
   <section class="panel">
-    <div class="section-head"><h2>models</h2></div>
+    <div class="section-head"><h2>models</h2><button id="refresh-models">refresh</button></div>
     <div id="models" aria-live="polite"></div>
   </section>
 </main>
@@ -139,6 +139,7 @@ function showCommands(){
   const config={"$schema":"https://opencode.ai/config.json",provider:{"local-proxy":{npm:"@ai-sdk/openai",name:"LLM Local Proxy",options:{baseURL:openai,apiKey:"{env:LLM_PROXY_API_KEY}"},models:{[model]:modelConfig}}}},opencode=`LLM_PROXY_API_KEY=${shell(clientKey)} OPENCODE_CONFIG_CONTENT=${shell(JSON.stringify(config))} opencode --model ${shell(`local-proxy/${model}`)}`;
   root.replaceChildren();for(const [name,command] of [["codex",codex],["claude code",claude],["opencode",opencode]]){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=document.createElement("button");let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;copy.className="command-copy";copy.textContent="copy";copy.setAttribute("aria-label",`copy ${name} command`);copy.onclick=async()=>{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.textContent="copied";reset=setTimeout(()=>copy.textContent="copy",1500)};box.append(code,copy);row.append(label,box);root.append(row)}}
 q("#command-model").onchange=showCommands;
+q("#refresh-models").onclick=()=>api("/v1/models?refresh=1").then(value=>showModels(value.data)).catch(e=>alert(e.message));
 async function load(){
   const initial=!document.body.classList.contains("ready");
   const status=api("/api/status").then(value=>{

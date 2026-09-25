@@ -1,0 +1,129 @@
+{
+  "stream": [
+    {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_0000000000000000000000000000000f",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "in_progress",
+        "model": "claude-sonnet-5",
+        "output": [],
+        "parallel_tool_calls": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "type": "function",
+            "name": "get_weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Look up weather"
+          }
+        ],
+        "usage": null,
+        "error": null,
+        "incomplete_details": null
+      }
+    },
+    {
+      "type": "response.output_item.added",
+      "sequence_number": 1,
+      "output_index": 0,
+      "item": {
+        "type": "function_call",
+        "id": "fc_00000000000000000000000000000002",
+        "call_id": "toolu_2",
+        "name": "now",
+        "arguments": "",
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "response.function_call_arguments.delta",
+      "sequence_number": 2,
+      "item_id": "fc_00000000000000000000000000000002",
+      "output_index": 0,
+      "delta": "{}"
+    },
+    {
+      "type": "response.function_call_arguments.done",
+      "sequence_number": 3,
+      "item_id": "fc_00000000000000000000000000000002",
+      "output_index": 0,
+      "name": "now",
+      "arguments": "{}"
+    },
+    {
+      "type": "response.output_item.done",
+      "sequence_number": 4,
+      "output_index": 0,
+      "item": {
+        "type": "function_call",
+        "id": "fc_00000000000000000000000000000002",
+        "call_id": "toolu_2",
+        "name": "now",
+        "arguments": "{}",
+        "status": "completed"
+      }
+    },
+    {
+      "type": "response.completed",
+      "sequence_number": 5,
+      "response": {
+        "id": "resp_0000000000000000000000000000000f",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "completed",
+        "model": "claude-sonnet-5",
+        "output": [
+          {
+            "type": "function_call",
+            "id": "fc_00000000000000000000000000000002",
+            "call_id": "toolu_2",
+            "name": "now",
+            "arguments": "{}",
+            "status": "completed"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "type": "function",
+            "name": "get_weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Look up weather"
+          }
+        ],
+        "usage": {
+          "input_tokens": 130,
+          "output_tokens": 42,
+          "total_tokens": 172,
+          "input_tokens_details": {
+            "cached_tokens": 30,
+            "cache_write_tokens": 10
+          },
+          "output_tokens_details": {
+            "reasoning_tokens": 15
+          }
+        },
+        "error": null,
+        "incomplete_details": null
+      }
+    }
+  ]
+}

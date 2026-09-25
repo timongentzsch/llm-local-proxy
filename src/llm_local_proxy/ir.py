@@ -32,6 +32,8 @@ class ToolUse:
     id: str
     name: str
     arguments: Any
+    #: The Responses namespace the called tool belongs to, if any.
+    namespace: str = ""
 
 
 @dataclass
@@ -114,7 +116,20 @@ class NativeTool:
     item: dict[str, Any]
 
 
-Tool = FunctionTool | WebSearchTool | NativeTool
+@dataclass
+class ToolNamespace:
+    """A Responses namespace: tools grouped under one name.
+
+    ``item`` is the definition as sent, for targets that speak Responses;
+    others flatten ``tools`` with :func:`llm_local_proxy.tools.flatten`.
+    """
+
+    name: str
+    tools: list[FunctionTool | NativeTool]
+    item: dict[str, Any]
+
+
+Tool = FunctionTool | WebSearchTool | NativeTool | ToolNamespace
 
 
 @dataclass
@@ -136,6 +151,9 @@ class TextDelta:
 @dataclass
 class ThinkingDelta:
     text: str
+    #: The reasoning item this text belongs to, when the upstream names one,
+    #: so an item-based client sees one id from `added` through `done`.
+    item_id: str = ""
 
 
 @dataclass
@@ -171,6 +189,7 @@ class ToolCallStart:
     id: str
     name: str
     arguments: str = ""
+    namespace: str = ""
 
 
 @dataclass
@@ -187,6 +206,7 @@ class ToolCallEnd:
     id: str
     name: str
     arguments: str
+    namespace: str = ""
 
 
 @dataclass
@@ -310,6 +330,10 @@ class ChatRequest:
     thinking_mode: str = ""
     #: Claude thinking visibility: "summarized" or "omitted".
     thinking_display: str = ""
+    #: Responses reasoning context: "auto", "current_turn" or "all_turns".
+    reasoning_context: str = ""
+    #: OpenAI output verbosity: "low", "medium" or "high".
+    verbosity: str = ""
     parallel_tool_calls: bool | None = None
     stream: bool = False
     session: str = ""

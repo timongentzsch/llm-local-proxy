@@ -1,9 +1,9 @@
-"""Server-sent event plumbing, parameterised by dialect.
+"""Server-sent event plumbing.
 
-Framing is shared: an event name is written only when the dialect's encoder
-supplies one, which is what distinguishes named Anthropic frames from
-anonymous Chat Completions frames. What differs per dialect — the keepalive
-and the terminator — lives on the :class:`~llm_local_proxy.dialects.base.Dialect`.
+Anthropic Messages and OpenAI Responses name every frame after its ``type``
+and end without a sentinel; Chat Completions sends anonymous frames and ends
+with ``data: [DONE]``. The route selects which; the keepalive belongs to the
+dialect.
 """
 
 from __future__ import annotations
@@ -14,18 +14,16 @@ import threading
 from collections.abc import Iterator
 from typing import Any, cast
 
-from ..dialects import Dialect, Frame
 from ..streaming import closing_iterator
 
 SSE_HEARTBEAT_SECONDS = 15
 _DONE = object()
 
 
-def render(frame: Frame) -> bytes:
-    data = json.dumps(frame.data, separators=(",", ":")).encode()
-    if frame.event is None:
-        return b"data: " + data + b"\n\n"
-    return f"event: {frame.event}\n".encode() + b"data: " + data + b"\n\n"
+def render(data: dict[str, Any], event: str | None = None) -> bytes:
+    """One SSE frame; the event line is written only for named frames."""
+    payload = b"data: " + json.dumps(data, separators=(",", ":")).encode() + b"\n\n"
+    return payload if event is None else f"event: {event}\n".encode() + payload
 
 
 def with_heartbeats(
@@ -71,19 +69,20 @@ def with_heartbeats(
 class SseStream:
     """Writes frames for one dialect to one client connection."""
 
-    def __init__(self, wfile: Any, dialect: Dialect):
+    def __init__(self, wfile: Any, keepalive: bytes, named: bool):
         self._wfile = wfile
-        self._dialect = dialect
+        self._keepalive = keepalive
+        self._named = named
 
-    def send(self, data: dict[str, Any], event: str | None = None) -> None:
-        self._write(render(Frame(data, event)))
+    def send(self, data: dict[str, Any]) -> None:
+        self._write(render(data, data.get("type") if self._named else None))
 
     def keepalive(self) -> None:
-        self._write(self._dialect.keepalive)
+        self._write(self._keepalive)
 
     def end(self) -> None:
-        if self._dialect.terminator is not None:
-            self._write(self._dialect.terminator)
+        if not self._named:
+            self._write(b"data: [DONE]\n\n")
 
     def _write(self, payload: bytes) -> None:
         self._wfile.write(payload)

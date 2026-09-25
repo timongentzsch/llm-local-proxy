@@ -15,14 +15,21 @@ what a client receives.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import unittest
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
+from llm_local_proxy.dialects.anthropic.ingress import parse as parse_messages
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
+from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
+from llm_local_proxy.dialects.openai.responses_ingress import parse as parse_responses
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as build_claude_request
 from llm_local_proxy.providers.codex.events import CodexDecoder
@@ -35,6 +42,7 @@ RECORD = os.environ.get("LLM_PROXY_RECORD") == "1"
 # Streams are frozen so ids and timestamps never enter a golden file.
 FIXED_ID = "chatcmpl-0000000000000000000000000000000f"
 FIXED_MESSAGE_ID = "msg_00000000000000000000000f"
+FIXED_RESPONSE_ID = "resp_0000000000000000000000000000000f"
 FIXED_CREATED = 1700000000
 
 
@@ -58,8 +66,16 @@ CODEX_STREAMS: dict[str, list[dict]] = {
         },
     ],
     "reasoning_and_tool_call": [
-        {"type": "response.reasoning_summary_text.delta", "delta": "Weighing "},
-        {"type": "response.reasoning_summary_text.delta", "delta": "options."},
+        {
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": "rs_1",
+            "delta": "Weighing ",
+        },
+        {
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": "rs_1",
+            "delta": "options.",
+        },
         {
             "type": "response.output_item.done",
             "item": {
@@ -458,7 +474,8 @@ WEB_SEARCH_BODY = {
     "tools": [
         {
             "type": "openrouter:web_search",
-            "parameters": {"search_context_size": "high"},
+            # OpenRouter's engine choice has no upstream meaning and is dropped.
+            "parameters": {"engine": "auto", "search_context_size": "high"},
         }
     ],
 }
@@ -478,6 +495,235 @@ CLAUDE_FULL_BODY = {
     "top_p": 0.9,
     "max_tokens": 2048,
 }
+
+#: Populated history arguments for the Messages and Responses request goldens.
+ARGS = {
+    "city": "Berlin",
+    "when": {"days": 2, "hourly": False},
+    "tags": ["ß"],
+    "x": None,
+}
+
+MESSAGES_BODIES = {
+    "simple": {
+        "model": "claude-sonnet-5",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Hello"}],
+    },
+    "conversation_with_tools": {
+        "model": "claude-sonnet-5",
+        "max_tokens": 2048,
+        "system": [
+            {"type": "text", "text": "Be terse."},
+            {"type": "text", "text": "Prefer SI units."},
+        ],
+        "messages": [
+            {"role": "user", "content": "Weather in Berlin?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_abc",
+                        "name": "get_weather",
+                        "input": ARGS,
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_abc",
+                        "content": "17C",
+                    },
+                    {"type": "text", "text": "Thanks"},
+                ],
+            },
+        ],
+        "tools": [
+            {
+                "name": "get_weather",
+                "description": "Look up weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            }
+        ],
+        "tool_choice": {"type": "auto"},
+        "output_config": {"effort": "high"},
+    },
+    "image_input": {
+        "model": "claude-sonnet-5",
+        "max_tokens": 512,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AAAA",
+                        },
+                    },
+                ],
+            }
+        ],
+    },
+    "web_search_tool": {
+        "model": "claude-sonnet-5",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Latest news?"}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+    },
+}
+
+RESPONSES_BODIES = {
+    "simple": {"model": "gpt-5.6-sol", "store": False, "input": "Hello"},
+    "conversation_with_tools": {
+        "model": "gpt-5.6-sol",
+        "store": False,
+        "instructions": "Be terse.",
+        "max_output_tokens": 2048,
+        "input": [
+            {"type": "message", "role": "developer", "content": "Prefer SI units."},
+            {"type": "message", "role": "user", "content": "Weather in Berlin?"},
+            {
+                "type": "function_call",
+                "call_id": "call_abc",
+                "name": "get_weather",
+                "arguments": json.dumps(ARGS, ensure_ascii=False),
+            },
+            {"type": "function_call_output", "call_id": "call_abc", "output": "17C"},
+            {"type": "message", "role": "user", "content": "Thanks"},
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+        "reasoning": {"effort": "high", "summary": "auto"},
+    },
+    "image_input": {
+        "model": "gpt-5.6-sol",
+        "store": False,
+        "max_output_tokens": 512,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "What is this?"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ],
+    },
+    "web_search_tool": {
+        "model": "gpt-5.6-sol",
+        "store": False,
+        "input": "Latest news?",
+        "tools": [{"type": "web_search"}],
+    },
+}
+
+#: Tools as Codex CLI declares them: MCP tools grouped in namespaces, one
+#: qualified name longer than Anthropic's 64-character limit.
+CODEX_CLI_NAMESPACE = {
+    "type": "namespace",
+    "name": "mcp__codex_apps__codex_document_control",
+    "description": "Document sessions.",
+    "tools": [
+        {
+            "type": "function",
+            "name": "_get_document_tool_schemas",
+            "description": "Schemas for a session.",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {"session": {"type": "string"}},
+            },
+        }
+    ],
+}
+
+#: What Codex CLI sends for its own models: tools in an `additional_tools`
+#: input item (including a freeform custom tool), verbosity, reasoning context.
+CODEX_CLI_BODY = {
+    "model": "gpt-5.6-sol",
+    "store": False,
+    "stream": True,
+    "include": ["reasoning.encrypted_content"],
+    "prompt_cache_key": "session-1",
+    "parallel_tool_calls": False,
+    "tool_choice": "auto",
+    "reasoning": {"effort": "low", "context": "all_turns"},
+    "text": {"verbosity": "low"},
+    "input": [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [
+                CODEX_CLI_NAMESPACE,
+                {
+                    "type": "namespace",
+                    "name": "collaboration",
+                    "description": "Agents.",
+                    "tools": [{"type": "custom", "name": "apply_patch"}],
+                },
+            ],
+        },
+        {"type": "message", "role": "user", "content": "hi"},
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "namespace": CODEX_CLI_NAMESPACE["name"],
+            "name": "_get_document_tool_schemas",
+            "arguments": '{"session":"ß"}',
+        },
+        {"type": "function_call_output", "call_id": "call_1", "output": "{}"},
+    ],
+}
+
+#: What Codex CLI sends for a model it has no metadata for (Claude): plain
+#: tools next to namespaces, live web search, no verbosity.
+CODEX_CLI_CLAUDE_BODY = {
+    "model": "claude-sonnet-5",
+    "store": False,
+    "stream": True,
+    "prompt_cache_key": "session-2",
+    "parallel_tool_calls": True,
+    "tool_choice": "auto",
+    "reasoning": {"effort": "low", "summary": "auto"},
+    "tools": [
+        {
+            "type": "function",
+            "name": "exec_command",
+            "description": "Run a command.",
+            "strict": False,
+            "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+        },
+        CODEX_CLI_NAMESPACE,
+        {"type": "web_search", "external_web_access": True},
+    ],
+    "input": CODEX_CLI_BODY["input"][1:],
+}
+
+#: The request a Responses client sent, echoed back in every response object.
+RESPONSES_REQUEST = parse_responses(RESPONSES_BODIES["conversation_with_tools"])
 
 CODEX_REQUESTS = {
     "simple": SIMPLE_BODY,
@@ -504,6 +750,21 @@ def _message(model, decoder):
     encoder = MessageEncoder(model, decoder)
     encoder.id = FIXED_MESSAGE_ID
     return encoder
+
+
+def _responses(model, decoder):
+    encoder = ResponseEncoder(model, decoder, RESPONSES_REQUEST)
+    encoder.id = FIXED_RESPONSE_ID
+    encoder.created = FIXED_CREATED
+    return encoder
+
+
+@contextmanager
+def _fixed_uuids():
+    """Number item ids in creation order; Responses mints one per output item."""
+    counter = itertools.count(1)
+    with mock.patch("uuid.uuid4", lambda: uuid.UUID(int=next(counter))):
+        yield
 
 
 def _run_stream(translator, events: list[dict]) -> dict:
@@ -554,6 +815,16 @@ def build_all() -> dict[str, dict]:
         out[f"claude_anthropic_result_{name}"] = _run_result(
             _message("claude-sonnet-5", claude()), events
         )
+    # Responses output for both providers, the third egress of each stream.
+    for provider, model, streams, decoder in (
+        ("codex", "gpt-5.6-sol", CODEX_STREAMS, CodexDecoder),
+        ("claude", "claude-sonnet-5", CLAUDE_STREAMS, ClaudeDecoder),
+    ):
+        for name, events in streams.items():
+            for kind, run in (("stream", _run_stream), ("result", _run_result)):
+                with _fixed_uuids():
+                    encoder = _responses(model, decoder(ReasoningCache()))
+                    out[f"{provider}_responses_{kind}_{name}"] = run(encoder, events)
     for name, body in CODEX_REQUESTS.items():
         request, session = build_codex_request(parse(body), ReasoningCache())
         out[f"codex_request_{name}"] = {"request": request, "session": session}
@@ -562,6 +833,41 @@ def build_all() -> dict[str, dict]:
             parse(body), body["model"], reasoning_cache=ReasoningCache()
         )
         out[f"claude_request_{name}"] = {"request": request, "betas": betas}
+    # The other two ingresses into both providers, so every request lane is
+    # pinned rather than only Chat Completions.
+    for dialect, ingress, bodies in (
+        ("messages", parse_messages, MESSAGES_BODIES),
+        ("responses", parse_responses, RESPONSES_BODIES),
+    ):
+        for name, body in bodies.items():
+            request, session = build_codex_request(
+                ingress({**body, "model": "gpt-5.6-sol"}), ReasoningCache()
+            )
+            out[f"codex_request_{dialect}_{name}"] = {
+                "request": request,
+                "session": session,
+            }
+            request, betas = build_claude_request(
+                ingress({**body, "model": "claude-sonnet-5"}),
+                "claude-sonnet-5",
+                max_output=4096,
+                reasoning_cache=ReasoningCache(),
+            )
+            out[f"claude_request_{dialect}_{name}"] = {
+                "request": request,
+                "betas": betas,
+            }
+    request, session = build_codex_request(
+        parse_responses(CODEX_CLI_BODY), ReasoningCache()
+    )
+    out["codex_request_codex_cli"] = {"request": request, "session": session}
+    request, betas = build_claude_request(
+        parse_responses(CODEX_CLI_CLAUDE_BODY),
+        "claude-sonnet-5",
+        max_output=4096,
+        reasoning_cache=ReasoningCache(),
+    )
+    out["claude_request_codex_cli"] = {"request": request, "betas": betas}
     return out
 
 

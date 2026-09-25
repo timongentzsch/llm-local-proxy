@@ -171,6 +171,97 @@ class ToolContractTest(unittest.TestCase):
                                 True if parallel is None else parallel,
                             )
 
+    def test_output_format_reaches_each_provider_natively(self):
+        titled = {"title": "city", **SCHEMA}
+
+        def schema(name, value):
+            return {
+                "type": "json_schema",
+                "name": name,
+                "schema": value,
+                "strict": True,
+            }
+
+        def claude_schema(value):
+            return {"type": "json_schema", "schema": value}
+
+        chat_schema = {
+            "type": "json_schema",
+            "json_schema": {"name": "answer", "schema": titled, "strict": True},
+        }
+        # dialect, format fields, Claude output format or refusal, Codex format
+        cases = [
+            (
+                "chat",
+                {"response_format": chat_schema},
+                claude_schema(titled),
+                schema("answer", titled),
+            ),
+            ("chat", {"response_format": {"type": "text"}}, None, None),
+            (
+                "responses",
+                {"text": {"format": schema("answer", titled)}},
+                claude_schema(titled),
+                schema("answer", titled),
+            ),
+            # Messages constrains with a schema or not at all.
+            (
+                "responses",
+                {"text": {"format": {"type": "json_object"}}},
+                "json_object",
+                {"type": "json_object"},
+            ),
+            ("responses", {"text": {"format": {"type": "text"}}}, None, None),
+            # Messages names no schema: Responses borrows the schema title ...
+            (
+                "messages",
+                {"output_config": {"format": claude_schema(titled)}},
+                claude_schema(titled),
+                schema("city", titled),
+            ),
+            # ... or a placeholder, also under the deprecated spelling.
+            (
+                "messages",
+                {"output_format": claude_schema(SCHEMA)},
+                claude_schema(SCHEMA),
+                schema("response", SCHEMA),
+            ),
+        ]
+        for dialect, fields, claude_format, codex_format in cases:
+            with self.subTest(dialect=dialect, fields=fields):
+                if dialect == "responses":
+                    req = responses({"model": "test", "input": "hi", **fields})
+                else:
+                    body = {
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 128,
+                        **fields,
+                    }
+                    req = (messages if dialect == "messages" else chat)(body)
+                if codex_format is None:
+                    self.assertIsNone(req.output_format)
+                elif codex_format["type"] == "json_schema":
+                    self.assertEqual(req.output_format.kind, "json_schema")
+                    self.assertEqual(req.output_format.schema, codex_format["schema"])
+                if isinstance(claude_format, str):
+                    with self.assertRaisesRegex(RequestError, claude_format):
+                        claude(req, "test", max_output=4096)
+                else:
+                    upstream, betas = claude(req, "test", max_output=4096)
+                    if claude_format is None:
+                        self.assertNotIn("output_config", upstream)
+                    else:
+                        self.assertEqual(
+                            upstream["output_config"], {"format": claude_format}
+                        )
+                        self.assertIn("structured-outputs-2025-11-13", betas)
+                upstream = render("codex", req)
+                if codex_format is None:
+                    self.assertNotIn("text", upstream)
+                else:
+                    self.assertEqual(upstream["text"], {"format": codex_format})
+
     def test_bad_tool_shapes_and_non_boolean_controls_are_rejected(self):
         for dialect in ("messages", "chat", "responses"):
             for fields in (

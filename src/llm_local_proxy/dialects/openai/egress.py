@@ -20,6 +20,7 @@ from ...ir import (
     ToolCallStart,
     Usage,
 )
+from ..base import Encoder
 
 #: Anthropic's seven stop reasons narrowed onto Chat Completions' four.
 FINISH_REASONS = {
@@ -33,24 +34,23 @@ FINISH_REASONS = {
 }
 
 
-class ChunkEncoder:
+class ChunkEncoder(Encoder):
     """Turns one provider's decoded stream into Chat Completions output.
 
     Holds only wire shaping; upstream specifics live in the decoder.
     """
 
     def __init__(self, model: str, decoder: Decoder):
+        super().__init__(decoder)
         self.id = "chatcmpl-" + uuid.uuid4().hex
         self.created = int(time.time())
         self.model = model
-        self.decoder = decoder
         self.content = ""
         self.reasoning = ""
         self.calls: list[dict[str, Any]] = []
         self.annotations: list[dict[str, Any]] = []
         self.usage: dict[str, Any] | None = None
         self._finish: str | None = None
-        self._drained = False
 
     def chunk(self, delta: dict[str, Any], finish: str | None = None) -> dict[str, Any]:
         return {
@@ -63,9 +63,6 @@ class ChunkEncoder:
 
     def start(self) -> dict[str, Any]:
         return self.chunk({"role": "assistant", "content": ""})
-
-    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._encode(self.decoder.decode(event))
 
     def finish(self) -> list[dict[str, Any]]:
         chunks = self._drain()
@@ -113,59 +110,48 @@ class ChunkEncoder:
     def _finish_reason(self) -> str:
         return self._finish or ("tool_calls" if self.calls else "stop")
 
-    def _drain(self) -> list[dict[str, Any]]:
-        """Collect whatever the decoder only knows once the stream ends."""
-        if self._drained:
-            return []
-        self._drained = True
-        return self._encode(self.decoder.finish())
-
-    def _encode(self, events: list[StreamEvent]) -> list[dict[str, Any]]:
-        chunks = []
-        for event in events:
-            chunk = self._one(event)
-            if chunk is not None:
-                chunks.append(chunk)
-        return chunks
-
-    def _one(self, event: StreamEvent) -> dict[str, Any] | None:
+    def _one(self, event: StreamEvent) -> list[dict[str, Any]]:
         if isinstance(event, NativeItem):
             raise ProviderError(
                 "native Responses output requires the Responses endpoint"
             )
         if isinstance(event, TextDelta):
             self.content += event.text
-            return self.chunk({"content": event.text})
+            return [self.chunk({"content": event.text})]
         if isinstance(event, ThinkingDelta):
             self.reasoning += event.text
-            return self.chunk({"reasoning_content": event.text})
+            return [self.chunk({"reasoning_content": event.text})]
         if isinstance(event, ToolCallStart):
-            return self.chunk(
-                {
-                    "tool_calls": [
-                        {
-                            "index": event.index,
-                            "id": event.id,
-                            "type": "function",
-                            "function": {
-                                "name": event.name,
-                                "arguments": event.arguments,
-                            },
-                        }
-                    ]
-                }
-            )
+            return [
+                self.chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": event.index,
+                                "id": event.id,
+                                "type": "function",
+                                "function": {
+                                    "name": event.name,
+                                    "arguments": event.arguments,
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
         if isinstance(event, ToolCallArgs):
-            return self.chunk(
-                {
-                    "tool_calls": [
-                        {
-                            "index": event.index,
-                            "function": {"arguments": event.fragment},
-                        }
-                    ]
-                }
-            )
+            return [
+                self.chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": event.index,
+                                "function": {"arguments": event.fragment},
+                            }
+                        ]
+                    }
+                )
+            ]
         if isinstance(event, ToolCallEnd):
             self.calls.append(
                 {
@@ -174,19 +160,19 @@ class ChunkEncoder:
                     "function": {"name": event.name, "arguments": event.arguments},
                 }
             )
-            return None
+            return []
         if isinstance(event, Citation):
             return self._citation(event)
         if isinstance(event, Usage):
             self.usage = _usage(event)
-            return None
+            return []
         if isinstance(event, Finish):
             self._finish = FINISH_REASONS.get(event.reason, "stop")
-            return None
+            return []
         # Signed reasoning and hosted tool lifecycles have no Chat representation.
-        return None
+        return []
 
-    def _citation(self, event: Citation) -> dict[str, Any] | None:
+    def _citation(self, event: Citation) -> list[dict[str, Any]]:
         fields = {
             "url": event.url,
             "title": event.title,
@@ -198,9 +184,9 @@ class ChunkEncoder:
             "url_citation": {k: v for k, v in fields.items() if v is not None},
         }
         if annotation in self.annotations:
-            return None
+            return []
         self.annotations.append(annotation)
-        return self.chunk({"annotations": [annotation]})
+        return [self.chunk({"annotations": [annotation]})]
 
 
 def _usage(event: Usage) -> dict[str, Any]:

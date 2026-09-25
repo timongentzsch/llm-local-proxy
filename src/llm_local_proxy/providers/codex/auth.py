@@ -3,7 +3,7 @@
 Codex owns its own OAuth: ``codex app-server`` holds the token pair and
 refreshes it. This adapter only forwards the JSON-RPC calls the status page
 and the HTTP handlers need, and reads back whether a session exists. It
-implements the :class:`~llm_local_proxy.auth.Auth` interface so the server
+implements the :class:`~llm_local_proxy.providers.auth.Auth` interface so the server
 treats Codex exactly like any other provider.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ...status import Limit, ProviderStatus, window_name
+from ...status import AccountStatus, Limit, window_name
 from ..auth import Auth
 from .app_server import AppServer, RpcError
 
@@ -21,28 +21,28 @@ class CodexAuth(Auth):
     def __init__(self, app: AppServer):
         self.app = app
 
-    def login_start(self, account_id: str = "") -> dict[str, Any]:
+    def login_start(self) -> dict[str, Any]:
         value = self.app.call("account/login/start", {"type": "chatgptDeviceCode"})
         return {
             "url": value.get("verificationUrl", ""),
             "code": value.get("userCode", ""),
         }
 
-    def logout(self, account_id: str = "") -> None:
+    def logout(self) -> None:
         self.app.call("account/logout")
 
     def signed_in(self) -> bool:
         return bool(self._account().get("account"))
 
-    def status(self) -> ProviderStatus:
+    def status(self) -> AccountStatus:
         account = self._account().get("account")
         if not account:
-            return ProviderStatus()
+            return AccountStatus()
         try:
             limits = _limits(self.app.call("account/rateLimits/read"))
         except RpcError:
-            return ProviderStatus(signed_in=True, account=_account_line(account))
-        return ProviderStatus(
+            return AccountStatus(signed_in=True, account=_account_line(account))
+        return AccountStatus(
             signed_in=True,
             account=_account_line(account),
             limits=limits,

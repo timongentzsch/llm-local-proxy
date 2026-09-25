@@ -33,8 +33,14 @@ class ClaudeDecoder:
     forwarded: it exists to be replayed upstream on the next turn.
     """
 
-    def __init__(self, reasoning_cache: ReasoningCache | None = None):
+    def __init__(
+        self,
+        reasoning_cache: ReasoningCache | None = None,
+        names: dict[str, tuple[str, str]] | None = None,
+    ):
         self.reasoning_cache = reasoning_cache
+        #: Flattened tool name -> (namespace, name), from `tools.flatten`.
+        self.names = names or {}
         self.reasoning_blocks: list[dict[str, Any]] = []
         self.calls: list[str] = []
         #: Search ids, so the same search counted from its request and from
@@ -44,6 +50,7 @@ class ClaudeDecoder:
         self._open_search = ""
         self._open_call: dict[str, Any] | None = None
         self._open_thinking: dict[str, Any] | None = None
+        self._thinking_id = ""
         self._open_redacted: dict[str, Any] | None = None
         self._stop: Finish | None = None
         self._usage = ClaudeUsage()
@@ -88,17 +95,20 @@ class ClaudeDecoder:
         index = event.get("index")
         if kind == "tool_use":
             call_id = str(block.get("id") or "toolu_" + uuid.uuid4().hex[:24])
-            name = str(block.get("name", ""))
+            flat = str(block.get("name", ""))
+            namespace, name = self.names.get(flat, ("", flat))
             self._open_call = {
                 "index": index,
                 "id": call_id,
                 "name": name,
+                "namespace": namespace,
                 "arguments": "",
             }
             # Announced immediately so time-to-first-token is not stalled.
-            return [ToolCallStart(index, call_id, name)]
+            return [ToolCallStart(index, call_id, name, namespace=namespace)]
         if kind == "thinking":
             self._open_thinking = {"type": "thinking", "thinking": "", "signature": ""}
+            self._thinking_id = "rs_" + uuid.uuid4().hex
         elif kind == "redacted_thinking":
             # Opaque, safety-flagged portion; replay verbatim on round-trip.
             self._open_redacted = {
@@ -153,7 +163,7 @@ class ClaudeDecoder:
                         ReasoningItem(
                             {
                                 "type": "reasoning",
-                                "id": "rs_" + uuid.uuid4().hex,
+                                "id": self._thinking_id,
                                 "summary": summary,
                                 "encrypted_content": pack(block, ordinal),
                             }
@@ -189,7 +199,7 @@ class ClaudeDecoder:
             text = str(delta.get("thinking", ""))
             if self._open_thinking is not None and text:
                 self._open_thinking["thinking"] += text
-            return [ThinkingDelta(text)] if text else []
+            return [ThinkingDelta(text, self._thinking_id)] if text else []
         if kind == "signature_delta":
             signature = str(delta.get("signature", ""))
             if self._open_thinking is not None and signature:
@@ -222,7 +232,13 @@ class ClaudeDecoder:
             # No input_json_delta arrives, so the client would see "".
             events.append(ToolCallArgs(call["index"], "{}"))
         events.append(
-            ToolCallEnd(call["index"], call["id"], call["name"], streamed or "{}")
+            ToolCallEnd(
+                call["index"],
+                call["id"],
+                call["name"],
+                streamed or "{}",
+                call["namespace"],
+            )
         )
         return events
 

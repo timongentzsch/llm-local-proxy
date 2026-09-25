@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ...atomic import atomic_write_json
-from ...errors import ProviderError
+from ...errors import UpstreamError
 from ...ledger import TokenLedger, track_usage
 from ...status import Limit, window_label
 from .. import transport
@@ -34,11 +34,8 @@ CLAUDE_CODE_BETA = "claude-code-20250219"
 USER_AGENT = "claude-cli/2.1.251 (external, sdk-cli)"
 
 
-class ClaudeUpstreamError(ProviderError):
-    def __init__(self, status: int, message: str, *, account_unavailable: bool = False):
-        super().__init__(message)
-        self.status = status
-        self.account_unavailable = account_unavailable
+class ClaudeUpstreamError(UpstreamError):
+    pass
 
 
 def _message_events(response: Any) -> Iterator[dict[str, Any]]:
@@ -114,6 +111,13 @@ class UsageStore:
         with self._lock:
             return dict(self._value) if self._value else None
 
+    def clear(self) -> None:
+        """Forget the bars of a login this slot no longer holds."""
+        with self._lock:
+            self._value = {}
+            if self.path:
+                self.path.unlink(missing_ok=True)
+
     def limits(self) -> tuple[Limit, ...]:
         """The unified utilization headers as dashboard bars."""
         value = self.get() or {}
@@ -126,6 +130,10 @@ class UsageStore:
             except (TypeError, ValueError):
                 continue
             prefix = key[: -len("-utilization")]
+            if _expired(value.get(f"{prefix}-reset")):
+                # The window has rolled over since this was observed; its old
+                # utilization says nothing about the new one.
+                continue
             name = prefix.removeprefix("anthropic-ratelimit-unified-")
             items.append(
                 Limit(
@@ -140,6 +148,13 @@ class UsageStore:
         value = self.get() or {}
         stamp = value.get("updated_at")
         return float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+def _expired(reset: Any) -> bool:
+    try:
+        return float(reset) <= time.time()
+    except (TypeError, ValueError):
+        return False
 
 
 class ClaudeUpstream:
@@ -425,10 +440,13 @@ def _upstream_error(error: urllib.error.HTTPError) -> ClaudeUpstreamError:
     message = _error_message(error.read().decode("utf-8", "replace"))
     if error.code == 429 and message in {"", "Error"}:
         message = "Claude usage limit reached; the subscription is rate limited"
+    # A 403 naming a scope is the credential, not the request: the same body
+    # succeeds on a login that holds inference access.
+    scope_denied = error.code == 403 and "scope" in message.casefold()
     return ClaudeUpstreamError(
         error.code,
         message,
-        account_unavailable=error.code == 401,
+        account_unavailable=error.code == 401 or scope_denied,
     )
 
 
