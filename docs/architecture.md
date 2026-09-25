@@ -17,10 +17,11 @@ N + M instead of N × M.
 
 `ir.py` defines both directions.
 
-- **`ChatRequest`** carries shared semantics in typed fields: system blocks with
-  cache options, turns of content blocks, function tools with strictness and
-  parallel-call control, tool choice, token limits, reasoning effort, thinking
-  mode and display, sampling parameters and output format. Wire-specific tool
+- **`ChatRequest`** carries shared semantics in typed fields: system blocks,
+  turns of content blocks, function tools with strictness and parallel-call
+  control, tool choice, token limits, reasoning effort and summary, thinking
+  mode and display, cache hints and key, session, sampling parameters and
+  output format. Wire-specific tool
   options keep their source format; `tools.py` preserves them on compatible
   targets and rejects them elsewhere.
 - **Opaque escape hatches** (`Reasoning`, `NativeResponseItem`,
@@ -75,7 +76,8 @@ line in `dialects/__init__.py` or `providers/__init__.py`.
    logins, failover, catalog caching and status come with it.
 2. Render the upstream request from `ChatRequest`, reusing `tools.py`
    (`render_function`, `responses_tool`, `flatten`, `arguments`) and rejecting
-   anything the upstream cannot represent.
+   anything the upstream cannot represent. Cache hints are the exception:
+   honour the ones the upstream can express and ignore the rest.
 3. Write a `Decoder` from upstream events to `StreamEvent`s; wrap the stream in
    `ledger.track_usage` and read it with `transport.read_events`.
 4. Expose `create(ProviderContext) -> Provider` via `PooledProvider.provider`
@@ -111,7 +113,9 @@ Routing sees one provider per subscription, so model ids carry no account
 suffix.
 
 - **Selection.** A session id hashes to a stable signed-in account; without
-  one, the starting account advances round-robin.
+  one, the starting account advances round-robin. The session is
+  `X-Session-Id`, else a header the dialect names (`Dialect.session_headers`,
+  e.g. Claude Code's), else the request's `prompt_cache_key`.
 - **Failover.** Before the first upstream event, a 429 cools the account for
   five minutes; a terminal authentication failure (rejected credentials or a
   missing inference scope) marks it for reauthentication and cools it for one
@@ -173,7 +177,9 @@ Wire claims are labelled by how they can be checked:
    signature. A block whose text the upstream never streamed (omitted display)
    cannot be replayed, so its turn continues without thinking. Codex receives
    the requested summary mode verbatim, and `auto` whenever the client asked
-   for an effort, summarized display or adaptive thinking.
+   for an effort, summarized display or adaptive thinking; summary `none` and
+   display `omitted` ask for none. Claude derives its display from the same
+   request: `omitted` for either, `summarized` otherwise.
 3. **Hosted search.** Web search runs upstream, so it is a `HostedToolEvent`,
    never a tool call the client would have to execute. Responses clients get a
    `web_search_call` item held open for the duration of the search; Anthropic
@@ -184,7 +190,14 @@ Wire claims are labelled by how they can be checked:
    are omitted elsewhere, since the search has run and its answer is in the
    transcript. Cited text keeps its citations for Claude and its text for
    Codex.
-4. **Cache breakpoints** keep their full `cache_control`, including TTL.
+4. **Prompt caching.** Cache controls are hints in the IR (`cache` on blocks,
+   tools and the request: None, or a TTL). Claude renders them as
+   `cache_control`, and adds its automatic top-level breakpoint only when the
+   client placed none, since the upstream accepts at most four. Codex drops
+   them: its backend refuses `prompt_cache_breakpoint`,
+   `prompt_cache_options` and `prompt_cache_retention` on every model
+   [empirical] and caches by `prompt_cache_key`, which is the client's own key
+   when it sent one (`ChatRequest.cache_key`), else the session, else derived.
 5. **Betas [empirical].** The Claude transport sends its subscription betas
    plus feature betas for web search and structured outputs as requested.
 

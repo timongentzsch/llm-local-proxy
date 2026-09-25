@@ -162,7 +162,8 @@ def build(
         raise RequestError("model is required")
     _reject_unsupported(request.params)
 
-    # Codex caches prefixes implicitly, so breakpoints do not apply.
+    # Codex caches prefixes implicitly and refuses explicit breakpoints, so
+    # cache hints are dropped; the cache key is what keeps a prefix warm.
     instructions = "\n\n".join(block.text for block in request.system)
     items: list[dict[str, Any]] = []
     # The opening user turn seeds the fallback cache key, and empty text is a
@@ -179,10 +180,10 @@ def build(
             )
         items.extend(_turn_items(turn, cache))
 
-    session = request.session
-    if not session:
+    cache_key = request.cache_key or request.session
+    if not cache_key:
         seed = f"{instructions}\0{first_user or ''}".encode()
-        session = "proxy-" + hashlib.sha256(seed).hexdigest()[:24]
+        cache_key = "proxy-" + hashlib.sha256(seed).hexdigest()[:24]
 
     body: dict[str, Any] = {
         "model": request.model,
@@ -190,7 +191,7 @@ def build(
         "input": items,
         "store": False,
         "stream": True,
-        "prompt_cache_key": session,
+        "prompt_cache_key": cache_key,
     }
     tools = [responses_tool(tool) for tool in request.tools]
     if tools:
@@ -225,7 +226,11 @@ def build(
         or request.thinking_mode == "adaptive"
     )
     summary = ""
-    if request.thinking_display != "omitted" and wants_summary:
+    if (
+        request.thinking_display != "omitted"
+        and request.reasoning_summary != "none"
+        and wants_summary
+    ):
         summary = request.reasoning_summary or "auto"
     if effort or summary:
         body["reasoning"] = {
@@ -237,4 +242,4 @@ def build(
     # Models can reason at their catalog default even when the client omits an
     # explicit effort, so always request the completed encrypted item.
     body["include"] = ["reasoning.encrypted_content"]
-    return body, session
+    return body, cache_key

@@ -50,8 +50,16 @@ search, reasoning effort, structured outputs and token usage work in every
 pairing. Anything without a faithful mapping is rejected with a 400 rather
 than dropped: unsupported sampling parameters, cross-format tool options,
 malformed tool-call arguments, a bare `json_object` format on Claude, or
-Anthropic deferred tool loading. Cache breakpoints keep their TTL and tool
-definitions keep their order.
+Anthropic deferred tool loading. Tool definitions keep their order.
+
+**Prompt caching.** Caching never changes output, so cache controls are hints
+and never a reason to refuse a request. Claude receives Anthropic
+`cache_control` breakpoints with their TTL wherever the client placed them;
+when a request carries none (every OpenAI-format request), the proxy asks
+Claude to cache the prompt automatically. Codex caches prefixes implicitly and
+refuses explicit breakpoints, so they are dropped; `prompt_cache_key` reaches
+it verbatim. `prompt_cache_retention` and `prompt_cache_options` are accepted
+and ignored.
 
 **Codex CLI.** Its Responses traffic works against every model. Namespaced
 tools (how Codex CLI groups MCP and app tools), `text.verbosity` and
@@ -88,10 +96,11 @@ requested value or the model's maximum, which also bounds any thinking budget.
 `count_tokens` is exact for Claude models and returns 404 for Codex models,
 whose upstream cannot count, so clients fall back to their own estimate.
 
-**Accounts.** `X-Session-Id` (or Claude Code's `X-Claude-Code-Session-Id`)
-pins a conversation to one account for prompt-cache locality. Codex requests
-without either are pinned by a key derived from their instructions and first
-user turn; remaining sessionless traffic round-robins. Before any output is
+**Accounts.** `X-Session-Id` (or Claude Code's `X-Claude-Code-Session-Id`, or
+the request's `prompt_cache_key`) pins a conversation to one account for
+prompt-cache locality. Codex requests without any are pinned by a key derived
+from their instructions and first user turn; remaining sessionless traffic
+round-robins. Before any output is
 streamed, a 429 cools the account for five minutes and a rejected credential
 (expired login or missing inference scope) marks it for reauthentication and
 cools it for one minute; either way the request moves to the next account.

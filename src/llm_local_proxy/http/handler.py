@@ -126,13 +126,14 @@ def make_handler(service: Service):
                 raise RequestError(f"no provider handles model: {model}")
             return routed
 
-        def _session_id(self) -> str:
-            return self.headers.get("X-Session-Id", "") or self.headers.get(
-                "X-Claude-Code-Session-Id", ""
-            )
+        def _session_id(self, dialect: Dialect) -> str:
+            for name in ("X-Session-Id", *dialect.session_headers):
+                if self.headers.get(name):
+                    return self.headers[name]
+            return ""
 
         def _serve(self, dialect: Dialect, route: Route, body: dict[str, Any]) -> None:
-            request = route.parse(body, self._session_id())
+            request = route.parse(body, self._session_id(dialect))
             provider, canonical = self._route(request.model)
             if route.encode is None:
                 if provider.count_tokens is None:

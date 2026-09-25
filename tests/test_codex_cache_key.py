@@ -7,6 +7,7 @@ import time
 import unittest
 
 from llm_local_proxy.dialects.openai.ingress import parse
+from llm_local_proxy.dialects.openai.responses_ingress import parse as parse_responses
 from llm_local_proxy.providers.codex import Codex
 from llm_local_proxy.providers.codex.request import build
 from llm_local_proxy.providers.reasoning import ReasoningCache
@@ -72,6 +73,19 @@ class CacheKeyTest(unittest.TestCase):
         turns = [{"role": "user", "content": "hi"}]
         _, key = built(turns, session="session-42")
         self.assertEqual(key, "session-42")
+
+    def test_a_client_cache_key_reaches_codex_verbatim(self):
+        """An explicit key names the cache; a session header only picks the
+        account, so it must not replace the key."""
+
+        chat = {
+            **body_for([{"role": "user", "content": "hi"}]),
+            "prompt_cache_key": "k1",
+        }
+        self.assertEqual(build(parse(chat, "header-1"), ReasoningCache())[1], "k1")
+        responses = {"model": MODEL, "input": "hi", "prompt_cache_key": "k2"}
+        sent, _ = build(parse_responses(responses, "header-2"), ReasoningCache())
+        self.assertEqual(sent["prompt_cache_key"], "k2")
 
     def test_a_rewritten_first_turn_moves_the_key(self):
         """The fallback hashes the first user text, so a refreshed timestamp

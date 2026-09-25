@@ -99,3 +99,5 @@ class Dialect:
     error: Callable[[int, str], dict[str, Any]]
     #: Written while the upstream is silent, so idle connections stay open.
     keepalive: bytes
+    #: Headers its clients name a conversation with, after X-Session-Id.
+    session_headers: tuple[str, ...] = ()

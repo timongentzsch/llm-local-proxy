@@ -81,6 +81,25 @@ def _check(request: ChatRequest) -> None:
         raise RequestError("top_k must be a positive integer")
 
 
+def _cached(ttl: str | None) -> dict[str, Any]:
+    """The `cache_control` field for a breakpoint, or none."""
+    if ttl is None:
+        return {}
+    return {"cache_control": {"type": "ephemeral", **({"ttl": ttl} if ttl else {})}}
+
+
+def _has_breakpoint(body: dict[str, Any]) -> bool:
+    """Whether the client placed a breakpoint anywhere Messages allows one."""
+    blocks = [*body["system"], *body.get("tools", ())]
+    for message in body["messages"]:
+        content = message["content"]
+        for block in content if isinstance(content, list) else ():
+            blocks.append(block)
+            nested = block.get("content") if block["type"] == "tool_result" else None
+            blocks.extend(nested if isinstance(nested, list) else ())
+    return any("cache_control" in block for block in blocks)
+
+
 def _image(url: str) -> dict[str, Any]:
     if url.startswith("data:"):
         header, _, data = url.partition(",")
@@ -109,7 +128,7 @@ def _text(block: Text) -> dict[str, Any]:
     return {
         "type": "text",
         "text": block.text,
-        **({"cache_control": block.cache} if block.cache is not None else {}),
+        **_cached(block.cache),
         **({"citations": citations} if citations else {}),
     }
 
@@ -172,7 +191,7 @@ def _blocks(
             if turn.role == "user" or block.text.strip():
                 blocks.append(_text(block))
         elif isinstance(block, Image) and turn.role == "user":
-            blocks.append(_image(block.url))
+            blocks.append({**_image(block.url), **_cached(block.cache)})
         elif isinstance(block, ToolResult) and turn.role == "user":
             blocks.append(
                 {
@@ -180,6 +199,7 @@ def _blocks(
                     "tool_use_id": block.tool_use_id,
                     "content": block.text,
                     **({"is_error": True} if block.is_error else {}),
+                    **_cached(block.cache),
                 }
             )
         elif isinstance(block, ToolUse):
@@ -189,6 +209,7 @@ def _blocks(
                     "id": block.id or "toolu_" + uuid.uuid4().hex[:24],
                     "name": qualified_name(block.namespace, block.name),
                     "input": arguments(block.arguments, RequestError),
+                    **_cached(block.cache),
                 }
             )
         elif isinstance(block, NativeAnthropicBlock):
@@ -335,7 +356,6 @@ def build(
         "max_tokens": max_tokens,
         "messages": messages,
         "stream": True,
-        "cache_control": {"type": "ephemeral"},
         "system": system,
     }
     if request.params.get("temperature") is not None:
@@ -356,7 +376,12 @@ def build(
                 raise RequestError(
                     "Anthropic deferred tools require unsupported tool search"
                 )
-            tools.append(render_function(tool, "anthropic", "input_schema"))
+            tools.append(
+                {
+                    **render_function(tool, "anthropic", "input_schema"),
+                    **_cached(tool.cache),
+                }
+            )
         elif isinstance(tool, WebSearchTool):
             tools.append(anthropic_web_search(tool))
             if WEB_SEARCH_BETA not in betas:
@@ -374,6 +399,10 @@ def build(
             body["tool_choice"][
                 "disable_parallel_tool_use"
             ] = not request.parallel_tool_calls
+    # The client's own automatic breakpoint; otherwise ours, unless the client
+    # placed breakpoints itself: the upstream accepts at most four.
+    if request.cache is not None or not _has_breakpoint(body):
+        body.update(_cached(request.cache or ""))
 
     if request.output_format is not None:
         if request.output_format.kind != "json_schema":
@@ -407,7 +436,11 @@ def build(
         body.setdefault("output_config", {})["effort"] = effort
 
     budget = request.thinking_budget
-    display = request.thinking_display or "summarized"
+    # Every OpenAI summary mode asks for readable reasoning, which Messages
+    # calls "summarized"; "none" asks for none.
+    display = request.thinking_display or (
+        "omitted" if request.reasoning_summary == "none" else "summarized"
+    )
     if request.thinking_mode == "disabled":
         return body, betas
     if request.thinking_mode == "adaptive":
@@ -426,7 +459,12 @@ def build(
             "budget_tokens": budget,
             "display": display,
         }
-    elif thinking == "adaptive" or effort is not None or request.thinking_display:
+    elif (
+        thinking == "adaptive"
+        or effort is not None
+        or request.thinking_display
+        or request.reasoning_summary
+    ):
         # Some live catalog entries advertise effort but omit their thinking
         # capability even though the model accepts adaptive thinking. An
         # explicit OpenAI-shaped reasoning request must therefore activate it

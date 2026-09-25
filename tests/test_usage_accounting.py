@@ -52,6 +52,10 @@ CLAUDE_EVENTS = [
                 "output_tokens": 1,
                 "cache_read_input_tokens": 60,
                 "cache_creation_input_tokens": 10,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 4,
+                    "ephemeral_1h_input_tokens": 6,
+                },
             }
         },
     },
@@ -105,6 +109,18 @@ class UsageAccountingTest(unittest.TestCase):
                             self.assertEqual(usage["cache_read_input_tokens"], 60)
                             self.assertEqual(usage["cache_creation_input_tokens"], 10)
                             self.assertEqual(usage["output_tokens"], 15)
+                            # Only a whole Message carries writes by TTL, and
+                            # only an upstream that reports them fills it.
+                            if not streaming:
+                                self.assertEqual(
+                                    usage["cache_creation"],
+                                    {
+                                        "ephemeral_5m_input_tokens": 4,
+                                        "ephemeral_1h_input_tokens": 6,
+                                    }
+                                    if provider == "claude"
+                                    else None,
+                                )
                         else:
                             name = "prompt" if encoder is ChunkEncoder else "input"
                             out = "completion" if encoder is ChunkEncoder else "output"

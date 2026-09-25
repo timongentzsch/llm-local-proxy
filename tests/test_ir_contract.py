@@ -103,28 +103,98 @@ class IRContractTest(unittest.TestCase):
         self.assertEqual(body["system"][1], text)
         self.assertEqual(body["messages"][0]["content"], [text])
 
-    def test_native_content_options_survive_or_are_rejected(self):
-        for block in (
+    def test_cache_hints_reach_claude_and_never_block_codex(self):
+        tool = {"name": "read", "input_schema": {"type": "object"}}
+        search = {"type": "web_search_20250305", "name": "web_search"}
+        body = {
+            **BASE,
+            "tools": [
+                {**tool, "cache_control": CACHE},
+                {**search, "cache_control": CACHE},
+            ],
+            "messages": [
+                {"role": "user", "content": "look"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "read",
+                            "input": {},
+                            "cache_control": CACHE,
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": "done",
+                            "cache_control": CACHE,
+                        },
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": "https://example.com/a.png",
+                            },
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                    ],
+                },
+            ],
+        }
+        request = messages(body)
+        sent, _ = claude(request, "test")
+        self.assertEqual(sent["tools"][0]["cache_control"], CACHE)
+        self.assertEqual(sent["tools"][1]["cache_control"], CACHE)
+        self.assertEqual(sent["messages"][1]["content"][0]["cache_control"], CACHE)
+        self.assertEqual(sent["messages"][2]["content"], body["messages"][2]["content"])
+        # The client placed its breakpoints; one more could exceed the limit.
+        self.assertNotIn("cache_control", sent)
+        # Codex caches implicitly and refuses breakpoints: hints are dropped.
+        self.assertNotIn("cache_control", str(codex(request, ReasoningCache())[0]))
+
+    def test_claude_adds_a_breakpoint_only_when_the_client_placed_none(self):
+        plain = messages(BASE)
+        self.assertEqual(
+            claude(plain, "test")[0]["cache_control"], {"type": "ephemeral"}
+        )
+        automatic = messages({**BASE, "cache_control": CACHE})
+        self.assertEqual(claude(automatic, "test")[0]["cache_control"], CACHE)
+        four = {"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}}
+        placed = messages(
             {
-                "type": "image",
-                "source": {"type": "url", "url": "https://example.com/image.png"},
-                "cache_control": CACHE,
-            },
+                **BASE,
+                "system": [four, four],
+                "messages": [{"role": "user", "content": [four, four]}],
+            }
+        )
+        self.assertNotIn("cache_control", claude(placed, "test")[0])
+        # A breakpoint inside tool_result content counts as placed too.
+        image = {"type": "image", "source": {"type": "url", "url": "https://a/b.png"}}
+        result = {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": [four, image],
+        }
+        call = {"type": "tool_use", "id": "call_1", "name": "read", "input": {}}
+        nested = messages(
             {
-                "type": "tool_result",
-                "tool_use_id": "call_1",
-                "content": "done",
-                "cache_control": CACHE,
-            },
-        ):
-            with self.subTest(block=block):
-                request = messages(
-                    {**BASE, "messages": [{"role": "user", "content": [block]}]}
-                )
-                body, _ = claude(request, "test")
-                self.assertEqual(body["messages"][0]["content"], [block])
-                with self.assertRaises(RequestError):
-                    codex(request, ReasoningCache())
+                **BASE,
+                "messages": [
+                    {"role": "user", "content": "look"},
+                    {"role": "assistant", "content": [call]},
+                    {"role": "user", "content": [result]},
+                ],
+            }
+        )
+        self.assertNotIn("cache_control", claude(nested, "test")[0])
+        with self.assertRaisesRegex(RequestError, "cache_control"):
+            messages({**BASE, "cache_control": {"type": "persistent"}})
 
     def test_cited_text_keeps_its_citations_for_claude_and_its_text_for_codex(self):
         # Citations are provenance for text already written; the proxy itself

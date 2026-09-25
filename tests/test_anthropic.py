@@ -68,7 +68,7 @@ class IngressTest(unittest.TestCase):
         ]
         self.assertEqual(
             parse({**BASE, "system": blocks}).system,
-            [Text("a"), Text("b", cache={"type": "ephemeral"})],
+            [Text("a"), Text("b", cache="")],
         )
 
     def test_assistant_prefill_is_preserved(self):

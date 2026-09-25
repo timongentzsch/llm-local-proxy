@@ -6,6 +6,11 @@ converter per (dialect, provider) pair.
 
 Common semantics use typed fields. Content without a lossless mapping uses
 explicit opaque wire-format records; adapters must preserve or reject them.
+
+Prompt caching never changes output, so every ``cache`` field is a hint: None
+places no breakpoint, otherwise the block ends a cacheable prefix kept for that
+TTL ("" for the upstream's default). A provider honours the hints its upstream
+can express and otherwise relies on the upstream's automatic caching.
 """
 
 from __future__ import annotations
@@ -17,15 +22,16 @@ from typing import Any, Literal, Protocol
 @dataclass
 class Text:
     text: str
-    #: Native prompt-cache options, including TTL; ignored by Codex.
-    cache: dict[str, Any] | None = None
-    #: Anthropic citations on replayed assistant text; ignored by Codex.
+    cache: str | None = None
+    #: Anthropic-format citations on replayed assistant text, for an upstream
+    #: that verifies them; others read the text alone.
     citations: list[Any] | None = None
 
 
 @dataclass
 class Image:
     url: str
+    cache: str | None = None
 
 
 @dataclass
@@ -36,6 +42,7 @@ class ToolUse:
     arguments: Any
     #: The Responses namespace the called tool belongs to, if any.
     namespace: str = ""
+    cache: str | None = None
 
 
 @dataclass
@@ -43,6 +50,7 @@ class ToolResult:
     tool_use_id: str
     text: str
     is_error: bool = False
+    cache: str | None = None
 
 
 @dataclass
@@ -117,6 +125,7 @@ class FunctionTool:
     #: Extra fields belong to a wire format, not to a particular provider.
     source: str = ""
     options: dict[str, Any] = field(default_factory=dict)
+    cache: str | None = None
 
 
 @dataclass
@@ -276,8 +285,8 @@ class Citation:
     title: str | None = None
     start_index: int | None = None
     end_index: int | None = None
-    #: The Anthropic citation as issued. Claude verifies it on replay, so an
-    #: Anthropic client must receive it whole.
+    #: The Anthropic-format citation as issued. An upstream that verifies it on
+    #: replay needs it whole, so an Anthropic client must receive it whole.
     native: dict[str, Any] | None = None
 
 
@@ -289,6 +298,9 @@ class Usage:
     total: int | None = None
     cache_read: int = 0
     cache_write: int = 0
+    #: The part of cache_write kept for an hour; None when the upstream does
+    #: not report cache TTLs.
+    cache_write_1h: int | None = None
     thinking: int = 0
     web_searches: int = 0
 
@@ -354,9 +366,9 @@ class ChatRequest:
     thinking_budget: int | None = None
     #: "adaptive" or "disabled" when named; neither maps to a budget.
     thinking_mode: str = ""
-    #: Claude thinking visibility: "summarized" or "omitted".
+    #: Anthropic thinking visibility: "summarized" or "omitted".
     thinking_display: str = ""
-    #: OpenAI reasoning summary mode: "auto", "concise" or "detailed".
+    #: OpenAI reasoning summary mode: "auto", "concise", "detailed" or "none".
     reasoning_summary: str = ""
     #: Responses reasoning context: "auto", "current_turn" or "all_turns".
     reasoning_context: str = ""
@@ -364,7 +376,12 @@ class ChatRequest:
     verbosity: str = ""
     parallel_tool_calls: bool | None = None
     stream: bool = False
+    #: Account affinity: requests of one session start on the same account.
     session: str = ""
+    #: The client's own prompt-cache key, for an upstream that takes one.
+    cache_key: str = ""
+    #: A breakpoint the upstream places automatically at the end of the prompt.
+    cache: str | None = None
     #: As sent; each provider validates what it can honour.
     params: dict[str, Any] = field(default_factory=dict)
     #: Schema-constrained output when the client asked for one. A provider that

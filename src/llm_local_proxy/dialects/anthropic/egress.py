@@ -4,7 +4,7 @@ Two constraints from specs/anthropic-openapi.json shape this file. Exactly
 one content block may be open at a time, under monotonically increasing
 indices, so the encoder is a small state machine that closes the open block
 whenever the kind changes. And message_start carries a Message whose
-usage.input_tokens is non-nullable, while a Codex stream reports no input
+usage.input_tokens is non-nullable, while an upstream may report no input
 count until it ends: the opening frame therefore claims zero and the
 authoritative totals arrive in message_delta.
 """
@@ -142,8 +142,8 @@ class MessageEncoder(Encoder):
                 {"type": "tool_use", "id": event.id, "name": event.name, "input": {}},
             )
             if event.arguments:
-                # Codex hands over a complete call; Anthropic clients still
-                # expect the arguments to arrive as a delta.
+                # A provider may hand over a complete call; Anthropic clients
+                # still expect the arguments to arrive as a delta.
                 self._open["json"] += event.arguments
                 frames.append(
                     self._delta(
@@ -196,7 +196,7 @@ class MessageEncoder(Encoder):
         if event.id not in self._searches or event.query:
             self._searches[event.id] = event.query
         if event.phase in {"completed", "failed"}:
-            # Do not expose an orphaned server_tool_use when Claude switches
+            # Do not expose an orphaned server_tool_use when the model switches
             # to a client tool call before its hosted search finishes. Once
             # written into client history Anthropic requires the matching
             # result, so emit the native pair atomically at the terminal step.
@@ -293,6 +293,12 @@ def _usage(usage: Usage | None, full: bool = False) -> dict[str, Any]:
         result["output_tokens_details"] = {"thinking_tokens": usage.thinking}
     if usage and usage.web_searches:
         result["server_tool_use"] = {"web_search_requests": usage.web_searches}
+    # Only a whole Message reports cache writes by TTL; a delta cannot.
+    if full and usage and usage.cache_write_1h is not None:
+        result["cache_creation"] = {
+            "ephemeral_5m_input_tokens": max(cache_write - usage.cache_write_1h, 0),
+            "ephemeral_1h_input_tokens": usage.cache_write_1h,
+        }
     if full:
         result.setdefault("cache_creation", None)
         result.setdefault("service_tier", None)

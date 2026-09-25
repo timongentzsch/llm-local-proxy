@@ -146,13 +146,15 @@ def responses_web_search(tool: WebSearchTool) -> dict[str, Any]:
     if tool.source != "anthropic":
         raise RequestError(f"unsupported web_search source: {tool.source}")
     # Anthropic `max_uses` caps how often the model searches; Responses has no
-    # cap, and exceeding it changes cost, not what is searched.
+    # cap, and exceeding it changes cost, not what is searched. A cache
+    # breakpoint is a hint as well.
     unsupported = sorted(
         set(native)
         - {
             "type",
             "name",
             "max_uses",
+            "cache_control",
             "allowed_domains",
             "blocked_domains",
             "user_location",

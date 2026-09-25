@@ -33,6 +33,14 @@ class ClaudeUsage:
             count = value.get(name)
             if type(count) is int and count >= 0:
                 self._counts[name] = count
+        creation = value.get("cache_creation")
+        count = (
+            creation.get("ephemeral_1h_input_tokens")
+            if isinstance(creation, dict)
+            else None
+        )
+        if type(count) is int and count >= 0:
+            self._counts["cache_write_1h"] = count
         details = value.get("output_tokens_details")
         count = details.get("thinking_tokens") if isinstance(details, dict) else None
         if type(count) is int and count >= 0:
@@ -49,6 +57,7 @@ class ClaudeUsage:
             completion=self._counts.get("output_tokens", 0),
             cache_read=read,
             cache_write=write,
+            cache_write_1h=self._counts.get("cache_write_1h"),
             thinking=self._counts.get("thinking_tokens", 0),
             web_searches=web_searches,
         )

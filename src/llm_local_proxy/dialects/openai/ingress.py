@@ -25,7 +25,6 @@ from ...ir import (
 from ...tools import definitions, optional_bool, parse_choice, parse_function
 from ..base import block_text
 from .output import VERBOSITY, enum_value, format_of
-from .reasoning import options as reasoning_options
 
 SYSTEM_ROLES = {"system", "developer"}
 PARAMS = (
@@ -112,8 +111,8 @@ def _tool_calls(message: dict[str, Any]) -> list[Block]:
 def _add_tool_result(turns: list[Turn], message: dict[str, Any]) -> None:
     """Group consecutive tool results into one user turn.
 
-    Anthropic wants every tool_result of a turn in a single user message;
-    Codex reads them back one item at a time, so grouping costs it nothing
+    Messages wants every tool_result of a turn in a single user message;
+    Responses lists them one item at a time, so grouping costs it nothing
     and leaves one representation for both.
     """
     tool_use_id = message.get("tool_call_id") or message.get("tool_use_id")
@@ -214,11 +213,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         else:
             raise RequestError(f"unsupported message role: {role}")
 
-    nested_effort, thinking_display, summary = reasoning_options(body.get("reasoning"))
-    effort = body.get("reasoning_effort")
-    if not effort:
-        effort = nested_effort
-
+    cache_key = str(body.get("prompt_cache_key") or "")
     return ChatRequest(
         model=body["model"] if isinstance(body.get("model"), str) else "",
         # One block: Chat Completions has no cache breakpoints to preserve, and
@@ -231,15 +226,14 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         ],
         tool_choice=parse_choice(body.get("tool_choice"), nested=True),
         max_tokens=body.get("max_tokens", body.get("max_completion_tokens")),
-        reasoning_effort=effort,
-        thinking_display=thinking_display,
-        reasoning_summary=summary,
+        reasoning_effort=body.get("reasoning_effort"),
         verbosity=enum_value(body.get("verbosity"), VERBOSITY, "verbosity"),
         parallel_tool_calls=optional_bool(
             body.get("parallel_tool_calls"), "parallel_tool_calls"
         ),
         stream=optional_bool(body.get("stream"), "stream") or False,
-        session=session or str(body.get("session_id", "")),
+        session=session or cache_key,
+        cache_key=cache_key,
         params={name: body[name] for name in PARAMS if name in body},
         output_format=_output_format(body.get("response_format")),
     )

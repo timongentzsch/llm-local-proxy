@@ -4,6 +4,7 @@ import unittest
 
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
+from llm_local_proxy.dialects.openai.responses_ingress import parse as parse_responses
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.ir import ToolCallArgs, ToolCallEnd
 from llm_local_proxy.providers.catalog import match_model
@@ -133,19 +134,39 @@ class BuildMessagesRequestTest(unittest.TestCase):
         self.assertEqual(
             request["thinking"], {"type": "adaptive", "display": "summarized"}
         )
-        # OpenAI's explicit request to hide a summary maps to Claude's native
+        # A Responses request to hide the summary maps to Claude's native
         # omitted display mode.
-        request, _ = claude_request(
-            {
-                **BASE,
-                "max_tokens": 4096,
-                "reasoning": {"effort": "high", "summary": "none"},
-            },
+        request, _ = build(
+            parse_responses(
+                {
+                    "model": "claude-fake-1",
+                    "input": "hi",
+                    "max_output_tokens": 4096,
+                    "reasoning": {"effort": "high", "summary": "none"},
+                }
+            ),
             "claude-fake-1",
+            max_output=32768,
             thinking="adaptive",
         )
         self.assertEqual(
             request["thinking"], {"type": "adaptive", "display": "omitted"}
+        )
+        # Asking for a summary alone asks for reasoning to summarize.
+        request, _ = build(
+            parse_responses(
+                {
+                    "model": "claude-fake-1",
+                    "input": "hi",
+                    "max_output_tokens": 4096,
+                    "reasoning": {"summary": "detailed"},
+                }
+            ),
+            "claude-fake-1",
+            max_output=32768,
+        )
+        self.assertEqual(
+            request["thinking"], {"type": "adaptive", "display": "summarized"}
         )
         # No effort and no adaptive capability means no thinking at all.
         request, _ = claude_request({**BASE, "max_tokens": 4096}, "claude-fake-1")

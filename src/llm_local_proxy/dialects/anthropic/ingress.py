@@ -6,6 +6,7 @@ whether an upstream can honour a parameter is that provider's judgement.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ...errors import RequestError
@@ -36,6 +37,7 @@ WEB_SEARCH_PREFIX = "web_search_"
 REJECTED = ("container", "mcp_servers", "service_tier")
 PARAMS = ("temperature", "top_p", "top_k")
 CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
+CACHE_TTLS = frozenset({"5m", "1h"})
 
 
 def _output_format(current: Any, deprecated: Any) -> OutputFormat | None:
@@ -70,6 +72,20 @@ def _text(value: Any) -> str:
     return block_text(value) if isinstance(value, list) else ""
 
 
+def _cache(value: Any) -> str | None:
+    """A `cache_control` breakpoint as its TTL ("" for the default)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("type") != "ephemeral":
+        raise RequestError("cache_control must be an ephemeral cache control")
+    ttl = value.get("ttl", "")
+    if ttl and ttl not in CACHE_TTLS:
+        raise RequestError("cache_control.ttl must be 5m or 1h")
+    if set(value) - {"type", "ttl"}:
+        raise RequestError("unsupported cache_control options")
+    return ttl
+
+
 def _image(source: Any) -> Image:
     if not isinstance(source, dict):
         raise RequestError("image source must be an object")
@@ -86,29 +102,26 @@ def _block(part: Any) -> Block:
     if not isinstance(part, dict):
         raise RequestError("each content block must be an object")
     kind = part.get("type")
-    cache = part.get("cache_control")
-    if cache is not None and not isinstance(cache, dict):
-        raise RequestError("cache_control must be an object")
+    cache = _cache(part.get("cache_control"))
     if kind == "web_search_tool_result" or (
         kind == "server_tool_use" and part.get("name") == "web_search"
     ):
         return HostedSearch(dict(part), "anthropic")
     if kind == "text" and set(part) - {"type", "text", "cache_control", "citations"}:
         return NativeAnthropicBlock(dict(part))
-    if cache is not None and kind != "text":
-        return NativeAnthropicBlock(dict(part))
     if kind == "text":
         citations = part.get("citations")
         if citations is not None and not isinstance(citations, list):
             raise RequestError("text citations must be an array")
-        return Text(str(part.get("text", "")), part.get("cache_control"), citations)
+        return Text(str(part.get("text", "")), cache, citations)
     if kind == "image":
-        return _image(part.get("source"))
+        return replace(_image(part.get("source")), cache=cache)
     if kind == "tool_use":
         return ToolUse(
             id=str(part.get("id") or ""),
             name=str(part.get("name") or ""),
             arguments=part.get("input", {}),
+            cache=cache,
         )
     if kind == "tool_result":
         tool_use_id = part.get("tool_use_id")
@@ -126,6 +139,7 @@ def _block(part: Any) -> Block:
             tool_use_id=str(tool_use_id),
             text=_text(part.get("content")),
             is_error=bool(part.get("is_error")),
+            cache=cache,
         )
     if kind == "thinking":
         # Must survive verbatim or the upstream refuses the turn.
@@ -136,7 +150,7 @@ def _block(part: Any) -> Block:
     if kind == "redacted_thinking":
         return Thinking(text="", redacted=str(part.get("data", "")))
     if kind == "server_tool_use":
-        # Other server tools are Anthropic-only; keep them for Claude.
+        # Other server tools exist only in this format; keep them verbatim.
         return NativeAnthropicBlock(dict(part))
     raise RequestError(f"unsupported content block: {kind}")
 
@@ -170,7 +184,9 @@ def _tools(value: Any) -> list[Tool]:
             continue
         if kind not in {"", "custom"}:
             raise RequestError(f"unsupported server tool: {kind}")
-        tools.append(parse_function(item, "anthropic", "input_schema"))
+        fields = {key: value for key, value in item.items() if key != "cache_control"}
+        tool = parse_function(fields, "anthropic", "input_schema")
+        tools.append(replace(tool, cache=_cache(item.get("cache_control"))))
     return tools
 
 
@@ -281,6 +297,7 @@ def _parse(body: dict[str, Any], session: str, generating: bool) -> ChatRequest:
         parallel_tool_calls=parallel,
         stream=optional_bool(body.get("stream"), "stream") or False,
         session=session,
+        cache=_cache(body.get("cache_control")),
         params={
             **{name: body[name] for name in PARAMS if name in body},
             **({"stop": body["stop_sequences"]} if "stop_sequences" in body else {}),

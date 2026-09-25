@@ -81,4 +81,5 @@ ANTHROPIC = Dialect(
     catalog=_catalog,
     error=_error,
     keepalive=b'event: ping\ndata: {"type":"ping"}\n\n',
+    session_headers=("X-Claude-Code-Session-Id",),
 )

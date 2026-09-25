@@ -88,16 +88,16 @@ class Codex(PooledProvider[Upstream]):
             (item for item in self._live_catalog() if item.get("id") == canonical), {}
         )
         efforts = model.get("supported_reasoning_efforts")
-        body, session = build(
+        body, cache_key = build(
             request,
             self.cache,
             reasoning_efforts=efforts if isinstance(efforts, list) else None,
         )
-        # The derived key, not the raw header: a client that sends no session
-        # still deserves one account, because round-robin would hand each turn
-        # of the same conversation a different upstream prompt cache.
+        # The cache key, which is derived when the client names none: each
+        # account has its own upstream cache, and round-robin would hand every
+        # turn of one conversation a different one.
         events = self.pool.stream(
-            session, lambda account: account.client.events(body), self.no_account
+            cache_key, lambda account: account.client.events(body), self.no_account
         )
         return events, CodexDecoder(self.cache)
 

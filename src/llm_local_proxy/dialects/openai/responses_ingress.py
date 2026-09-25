@@ -101,7 +101,7 @@ def _input(value: Any, system: list[Text], additional_tools: list[Any]) -> list[
                 _append(turns, "user", [ToolResult(str(call_id), output)])
             else:
                 # Structured text/image/file outputs have no lossless legacy IR
-                # representation; keep the entire Responses item for Codex.
+                # representation; keep the entire item for a Responses upstream.
                 _append(turns, "user", [NativeResponseItem(dict(item))])
         elif kind == "web_search_call":
             _append(turns, "assistant", [HostedSearch(dict(item), "responses")])
@@ -148,9 +148,10 @@ def _tools(value: Any) -> list[Tool]:
     return tools
 
 
-#: `include` values this proxy already satisfies. The Codex request always asks
-#: for encrypted reasoning, so naming it changes nothing; every other value asks
-#: for payloads the upstream is never told to produce.
+#: `include` values this proxy already satisfies. Encrypted reasoning always
+#: reaches the client (from a Responses upstream as issued, from others wrapped
+#: in `encrypted_content`); every other value asks for payloads no upstream is
+#: told to produce.
 INCLUDE_SUPPORTED = frozenset({"reasoning.encrypted_content"})
 REASONING_CONTEXTS = frozenset({"auto", "current_turn", "all_turns"})
 
@@ -212,13 +213,14 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
     additional_tools: list[Any] = []
     turns = _input(body.get("input", ""), system, additional_tools)
     reasoning = body.get("reasoning")
-    effort, thinking_display, summary = reasoning_options(reasoning)
+    effort, summary = reasoning_options(reasoning)
     context = enum_value(
         reasoning.get("context") if isinstance(reasoning, dict) else None,
         REASONING_CONTEXTS,
         "reasoning.context",
     )
     output_format, verbosity = _text(body.get("text"))
+    cache_key = str(body.get("prompt_cache_key") or "")
     params = {key: body[key] for key in ("temperature", "top_p", "stop") if key in body}
     return ChatRequest(
         model=model,
@@ -228,7 +230,6 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         tool_choice=parse_choice(body.get("tool_choice")),
         max_tokens=body.get("max_output_tokens"),
         reasoning_effort=effort,
-        thinking_display=thinking_display,
         reasoning_summary=summary,
         reasoning_context=context,
         verbosity=verbosity,
@@ -236,7 +237,8 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
             body.get("parallel_tool_calls"), "parallel_tool_calls"
         ),
         stream=optional_bool(body.get("stream"), "stream") or False,
-        session=session or str(body.get("prompt_cache_key") or ""),
+        session=session or cache_key,
+        cache_key=cache_key,
         params=params,
         output_format=output_format,
     )

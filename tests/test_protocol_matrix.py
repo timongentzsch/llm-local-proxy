@@ -458,7 +458,7 @@ class ProtocolMatrixTest(unittest.TestCase):
                 "model": "claude-test",
                 "messages": _chat_history(),
                 "web_search_options": {},
-                "reasoning": {"effort": "high", "summary": "auto"},
+                "reasoning_effort": "high",
             }
         )
         upstream, betas = to_claude(
