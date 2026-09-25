@@ -225,7 +225,7 @@ class ResponseEncoder(Encoder):
         if isinstance(event, HostedToolEvent):
             return self._hosted(event)
         if isinstance(event, Citation):
-            if self._message is None:
+            if self._message is None or not event.url:
                 return []
             annotation = {
                 "type": "url_citation",

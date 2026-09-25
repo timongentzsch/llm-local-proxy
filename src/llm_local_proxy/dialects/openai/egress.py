@@ -173,6 +173,8 @@ class ChunkEncoder(Encoder):
         return []
 
     def _citation(self, event: Citation) -> list[dict[str, Any]]:
+        if not event.url:
+            return []
         fields = {
             "url": event.url,
             "title": event.title,

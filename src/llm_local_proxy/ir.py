@@ -281,6 +281,8 @@ def hosted_tool_step(seen: dict[str, str], id: str, phase: str) -> bool:
 
 @dataclass
 class Citation:
+    #: Empty for a citation into a document rather than a web page; formats
+    #: that cite only URLs leave those out.
     url: str
     title: str | None = None
     start_index: int | None = None

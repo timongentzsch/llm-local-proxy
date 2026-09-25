@@ -26,8 +26,9 @@ N + M instead of N × M.
   targets and rejects them elsewhere.
 - **Opaque escape hatches** (`Reasoning`, `NativeResponseItem`,
   `NativeAnthropicBlock`, `NativeTool`) hold content without a lossless mapping,
-  such as signed reasoning and rich tool results. They are forwarded verbatim
-  on compatible routes and rejected on the rest, never interpreted.
+  such as signed reasoning, rich tool results, documents and search results.
+  They are forwarded verbatim on compatible routes and rejected on the rest,
+  never interpreted.
 - **`ToolNamespace`** keeps a Responses namespace both verbatim and as parsed
   function tools. Targets without namespaces use `tools.flatten`, which gives
   each member a qualified name of at most 64 characters and the map to restore

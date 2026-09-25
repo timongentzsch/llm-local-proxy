@@ -40,7 +40,8 @@ CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
 CACHE_TTLS = frozenset({"5m", "1h"})
 #: Block kinds whose cache breakpoint the IR carries as a hint.
 CACHED_KINDS = frozenset({"text", "image", "tool_use", "tool_result"})
-IMAGE_SOURCES = frozenset({"url", "base64"})
+#: Content only Messages defines: verbatim to an upstream that speaks it.
+NATIVE_KINDS = frozenset({"document", "search_result"})
 
 
 def _output_format(current: Any, deprecated: Any) -> OutputFormat | None:
@@ -113,12 +114,13 @@ def _block(part: Any) -> Block:
     if kind == "text" and set(part) - {"type", "text", "cache_control", "citations"}:
         return NativeAnthropicBlock(dict(part))
     source = part.get("source")
-    if cache is not None and (
-        kind not in CACHED_KINDS
-        or (
-            kind == "image"
-            and not (isinstance(source, dict) and source.get("type") in IMAGE_SOURCES)
-        )
+    file_image = (
+        kind == "image" and isinstance(source, dict) and source.get("type") == "file"
+    )
+    if (
+        kind in NATIVE_KINDS
+        or file_image
+        or (cache is not None and kind not in CACHED_KINDS)
     ):
         # No IR equivalent: the block, breakpoint included, stays verbatim.
         return NativeAnthropicBlock(dict(part))

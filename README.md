@@ -51,6 +51,8 @@ pairing. Anything without a faithful mapping is rejected with a 400 rather
 than dropped: unsupported sampling parameters, cross-format tool options,
 malformed tool-call arguments, a bare `json_object` format on Claude, or
 Anthropic deferred tool loading. Tool definitions keep their order.
+Anthropic-only content (documents, search results, file images) reaches Claude
+verbatim, with its citations returned to Anthropic clients; Codex refuses it.
 
 **Prompt caching.** Caching never changes output, so cache controls are hints
 and never a reason to refuse a request. Claude receives Anthropic

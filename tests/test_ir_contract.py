@@ -158,7 +158,7 @@ class IRContractTest(unittest.TestCase):
         # Codex caches implicitly and refuses breakpoints: hints are dropped.
         self.assertNotIn("cache_control", str(codex(request, ReasoningCache())[0]))
 
-    def test_cached_blocks_without_an_ir_equivalent_stay_verbatim(self):
+    def test_messages_only_content_stays_verbatim(self):
         for block in (
             {
                 "type": "document",
@@ -170,6 +170,12 @@ class IRContractTest(unittest.TestCase):
                 "source": {"type": "file", "file_id": "file_1"},
                 "cache_control": CACHE,
             },
+            {
+                "type": "search_result",
+                "source": "https://example.com",
+                "title": "Example",
+                "content": [{"type": "text", "text": "hi"}],
+            },
         ):
             with self.subTest(kind=block["type"]):
                 request = messages(
@@ -178,6 +184,16 @@ class IRContractTest(unittest.TestCase):
                 self.assertEqual(
                     claude(request, "test")[0]["messages"][0]["content"], [block]
                 )
+                # The same content without a breakpoint is just as native.
+                plain = {k: v for k, v in block.items() if k != "cache_control"}
+                request = messages(
+                    {**BASE, "messages": [{"role": "user", "content": [plain]}]}
+                )
+                self.assertEqual(
+                    claude(request, "test")[0]["messages"][0]["content"], [plain]
+                )
+                with self.assertRaises(RequestError):
+                    codex(request, ReasoningCache())
 
     def test_a_breakpoint_inside_tool_result_text_is_a_hint(self):
         result = {

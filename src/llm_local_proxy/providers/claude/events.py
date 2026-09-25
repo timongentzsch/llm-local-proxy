@@ -266,10 +266,10 @@ def _result_phase(content: Any) -> str:
 
 
 def _citation(value: Any) -> list[StreamEvent]:
-    # A url is what makes a citation citable, whatever its location kind.
+    # Web citations carry a url; citations into documents and search results
+    # the client supplied carry a location instead.
     if not isinstance(value, dict):
         return []
     url = value.get("url")
-    if not isinstance(url, str) or not url:
-        return []
-    return [Citation(url, value.get("title"), native=dict(value))]
+    title = value.get("title") if isinstance(value.get("title"), str) else None
+    return [Citation(url if isinstance(url, str) else "", title, native=dict(value))]

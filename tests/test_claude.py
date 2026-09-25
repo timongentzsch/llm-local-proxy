@@ -2,8 +2,10 @@
 
 import unittest
 
+from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
+from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
 from llm_local_proxy.dialects.openai.responses_ingress import parse as parse_responses
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.ir import ToolCallArgs, ToolCallEnd
@@ -283,19 +285,45 @@ class ClaudeTranslatorTest(unittest.TestCase):
         )
         self.assertEqual([(e.id, e.phase) for e in failed], [("srvtoolu_1", "failed")])
 
-    def test_citation_without_url_is_ignored(self):
-        translator = ChunkEncoder("claude-fake-1", ClaudeDecoder())
-        chunks = translator.feed(
+    def test_a_document_citation_reaches_only_anthropic_clients(self):
+        citation = {
+            "type": "char_location",
+            "cited_text": "heron",
+            "document_index": 0,
+            "document_title": "Memo",
+            "start_char_index": 0,
+            "end_char_index": 5,
+        }
+        events = [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
             {
                 "type": "content_block_delta",
                 "index": 0,
-                "delta": {
-                    "type": "citations_delta",
-                    "citation": {"type": "char_location", "document_index": 0},
-                },
-            }
-        )
-        self.assertEqual(chunks, [])
+                "delta": {"type": "text_delta", "text": "heron"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "citations_delta", "citation": citation},
+            },
+        ]
+        # The OpenAI formats cite only URLs.
+        chat = ChunkEncoder("claude-fake-1", ClaudeDecoder())
+        chunks = [chunk for event in events for chunk in chat.feed(event)]
+        self.assertNotIn("annotations", str(chunks))
+        responses = ResponseEncoder("claude-fake-1", ClaudeDecoder())
+        for event in events:
+            responses.feed(event)
+        text = responses.result()["output"][0]["content"][0]
+        self.assertEqual(text["annotations"], [])
+        messages = MessageEncoder("claude-fake-1", ClaudeDecoder())
+        for event in events:
+            messages.feed(event)
+        self.assertEqual(messages.result()["content"][0]["citations"], [citation])
 
 
 class ClaudeReasoningCaptureTest(unittest.TestCase):
