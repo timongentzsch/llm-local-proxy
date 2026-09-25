@@ -10,6 +10,7 @@ from typing import Any
 from ...errors import RequestError
 from ...ir import (
     ChatRequest,
+    HostedSearch,
     Image,
     NativeAnthropicBlock,
     NativeResponseItem,
@@ -100,6 +101,9 @@ def _turn_items(turn: Turn, cache: ReasoningCache) -> list[dict[str, Any]]:
         _flush_content(items, pending, turn.role)
         if isinstance(block, (Reasoning, NativeResponseItem)):
             items.append(dict(block.item))
+        elif isinstance(block, HostedSearch):
+            if block.source == "responses":
+                items.append(dict(block.item))
         elif isinstance(block, NativeAnthropicBlock):
             raise RequestError(
                 "Codex upstream cannot faithfully represent Anthropic content block: "
@@ -204,6 +208,7 @@ def build(
         )
     if request.thinking_mode == "disabled":
         raise RequestError("Codex upstream cannot guarantee that reasoning is disabled")
+    effort = ""
     if request.reasoning_effort:
         effort = str(request.reasoning_effort).casefold()
         supported = {str(item).casefold() for item in reasoning_efforts or ()}
@@ -211,9 +216,22 @@ def build(
             raise RequestError(
                 f"unsupported reasoning_effort: {request.reasoning_effort}"
             )
-        body["reasoning"] = {"effort": effort}
-        if request.thinking_display != "omitted":
-            body["reasoning"]["summary"] = "auto"
+    # A client that asks for reasoning, or to see it, gets its summaries; the
+    # mode it named reaches Codex as named.
+    wants_summary = bool(
+        effort
+        or request.reasoning_summary
+        or request.thinking_display == "summarized"
+        or request.thinking_mode == "adaptive"
+    )
+    summary = ""
+    if request.thinking_display != "omitted" and wants_summary:
+        summary = request.reasoning_summary or "auto"
+    if effort or summary:
+        body["reasoning"] = {
+            **({"effort": effort} if effort else {}),
+            **({"summary": summary} if summary else {}),
+        }
     if request.reasoning_context:
         body.setdefault("reasoning", {})["context"] = request.reasoning_context
     # Models can reason at their catalog default even when the client omits an

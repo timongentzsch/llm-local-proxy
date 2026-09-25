@@ -12,6 +12,7 @@ from ...errors import RequestError
 from ...ir import (
     Block,
     ChatRequest,
+    HostedSearch,
     Image,
     NativeAnthropicBlock,
     OutputFormat,
@@ -88,12 +89,19 @@ def _block(part: Any) -> Block:
     cache = part.get("cache_control")
     if cache is not None and not isinstance(cache, dict):
         raise RequestError("cache_control must be an object")
-    if kind == "text" and set(part) - {"type", "text", "cache_control"}:
+    if kind == "web_search_tool_result" or (
+        kind == "server_tool_use" and part.get("name") == "web_search"
+    ):
+        return HostedSearch(dict(part), "anthropic")
+    if kind == "text" and set(part) - {"type", "text", "cache_control", "citations"}:
         return NativeAnthropicBlock(dict(part))
     if cache is not None and kind != "text":
         return NativeAnthropicBlock(dict(part))
     if kind == "text":
-        return Text(str(part.get("text", "")), cache=part.get("cache_control"))
+        citations = part.get("citations")
+        if citations is not None and not isinstance(citations, list):
+            raise RequestError("text citations must be an array")
+        return Text(str(part.get("text", "")), part.get("cache_control"), citations)
     if kind == "image":
         return _image(part.get("source"))
     if kind == "tool_use":
@@ -127,10 +135,8 @@ def _block(part: Any) -> Block:
         )
     if kind == "redacted_thinking":
         return Thinking(text="", redacted=str(part.get("data", "")))
-    if kind in {"server_tool_use", "web_search_tool_result"}:
-        # Anthropic requires its own hosted-search blocks back verbatim when a
-        # pause_turn response is continued. They are provider work, not a
-        # client tool call/result, so retain their native shape in the IR.
+    if kind == "server_tool_use":
+        # Other server tools are Anthropic-only; keep them for Claude.
         return NativeAnthropicBlock(dict(part))
     raise RequestError(f"unsupported content block: {kind}")
 
@@ -160,7 +166,7 @@ def _tools(value: Any) -> list[Tool]:
     for item in definitions(value):
         kind = str(item.get("type") or "")
         if kind.startswith(WEB_SEARCH_PREFIX):
-            tools.append(WebSearchTool(native=dict(item), source="anthropic"))
+            tools.append(WebSearchTool(dict(item), "anthropic"))
             continue
         if kind not in {"", "custom"}:
             raise RequestError(f"unsupported server tool: {kind}")

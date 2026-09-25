@@ -135,28 +135,47 @@ def _add_tool_result(turns: list[Turn], message: dict[str, Any]) -> None:
         turns.append(Turn("user", [block]))
 
 
+def _web_search_options(value: Any) -> list[Tool]:
+    """OpenAI's Chat Completions search parameter, as the Responses search tool.
+
+    Both describe one search: the same context size, and the same approximate
+    location, which Chat Completions nests one level deeper.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        raise RequestError("web_search_options must be an object")
+    extra = sorted(set(value) - {"search_context_size", "user_location"})
+    if extra:
+        raise RequestError(f"unsupported web_search_options: {', '.join(extra)}")
+    tool: dict[str, Any] = {"type": "web_search"}
+    size = value.get("search_context_size")
+    if size is not None:
+        if size not in {"low", "medium", "high"}:
+            raise RequestError(
+                "web_search_options.search_context_size must be low, medium or high"
+            )
+        tool["search_context_size"] = size
+    location = value.get("user_location")
+    if location is not None:
+        approximate = (
+            isinstance(location, dict) and location.get("type") == "approximate"
+        )
+        detail = location.get("approximate") if approximate else None
+        if not isinstance(detail, dict):
+            raise RequestError("web_search_options.user_location must be approximate")
+        tool["user_location"] = {"type": "approximate", **detail}
+    return [WebSearchTool(tool, "responses")]
+
+
 def _tools(value: Any) -> list[Tool]:
     tools: list[Tool] = []
     for item in definitions(value):
-        if item.get("type") == "openrouter:web_search":
-            parameters = item.get("parameters")
-            size = (
-                parameters.get("search_context_size")
-                if isinstance(parameters, dict)
-                else None
-            )
-            tools.append(
-                WebSearchTool(
-                    size
-                    if isinstance(size, str) and size in {"low", "medium", "high"}
-                    else ""
-                )
-            )
-            continue
         function = item.get("function")
         if item.get("type") != "function" or not isinstance(function, dict):
             raise RequestError(
-                "only function and openrouter:web_search tools are supported"
+                "only function tools are supported; request web search with "
+                "web_search_options"
             )
         tools.append(parse_function(function, "chat_completions"))
     return tools
@@ -195,7 +214,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         else:
             raise RequestError(f"unsupported message role: {role}")
 
-    nested_effort, thinking_display = reasoning_options(body.get("reasoning"))
+    nested_effort, thinking_display, summary = reasoning_options(body.get("reasoning"))
     effort = body.get("reasoning_effort")
     if not effort:
         effort = nested_effort
@@ -206,11 +225,15 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         # every system and developer turn is one prompt to the upstream.
         system=[Text("\n\n".join(system))] if system else [],
         turns=turns,
-        tools=_tools(body.get("tools")),
+        tools=[
+            *_tools(body.get("tools")),
+            *_web_search_options(body.get("web_search_options")),
+        ],
         tool_choice=parse_choice(body.get("tool_choice"), nested=True),
         max_tokens=body.get("max_tokens", body.get("max_completion_tokens")),
         reasoning_effort=effort,
         thinking_display=thinking_display,
+        reasoning_summary=summary,
         verbosity=enum_value(body.get("verbosity"), VERBOSITY, "verbosity"),
         parallel_tool_calls=optional_bool(
             body.get("parallel_tool_calls"), "parallel_tool_calls"

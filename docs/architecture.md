@@ -171,12 +171,19 @@ Wire claims are labelled by how they can be checked:
    versioned `encrypted_content` envelope; Chat Completions clients rely on the
    cache. Codex reasoning reaches Anthropic clients inside the thinking
    signature. A block whose text the upstream never streamed (omitted display)
-   cannot be replayed, so its turn continues without thinking.
+   cannot be replayed, so its turn continues without thinking. Codex receives
+   the requested summary mode verbatim, and `auto` whenever the client asked
+   for an effort, summarized display or adaptive thinking.
 3. **Hosted search.** Web search runs upstream, so it is a `HostedToolEvent`,
    never a tool call the client would have to execute. Responses clients get a
    `web_search_call` item held open for the duration of the search; Anthropic
    clients get `server_tool_use` with its `web_search_tool_result`. Only
-   forward lifecycle steps are emitted.
+   forward lifecycle steps are emitted. When the client echoes these records,
+   ingress parses them as `HostedSearch`: they replay verbatim to an upstream
+   of the same format (Anthropic requires them to continue a `pause_turn`) and
+   are omitted elsewhere, since the search has run and its answer is in the
+   transcript. Cited text keeps its citations for Claude and its text for
+   Codex.
 4. **Cache breakpoints** keep their full `cache_control`, including TTL.
 5. **Betas [empirical].** The Claude transport sends its subscription betas
    plus feature betas for web search and structured outputs as requested.

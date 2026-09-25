@@ -68,13 +68,20 @@ its transport accepts, using a validation-only probe.
 resend opaque reasoning items; Anthropic clients resend thinking blocks; Chat
 Completions clients rely on a bounded in-memory cache keyed by tool-call id.
 Claude thinking defaults to `display: "summarized"` so its text and signature
-survive tool loops. The Responses endpoint rejects `store: true`,
-`previous_response_id`, `conversation` and `background`.
+survive tool loops. Codex streams reasoning summaries whenever a client asks
+for reasoning or to see it, in the summary mode it named. The Responses
+endpoint rejects `store: true`, `previous_response_id`, `conversation` and
+`background`.
 
-**Web search.** `openrouter:web_search` (Chat Completions), `web_search`
-(Responses) and `web_search_20250305` (Messages) map to the serving
-upstream's own search tool. Searches run inside the subscription; no
-OpenRouter account is involved. Function calls always return to the client.
+**Web search.** `web_search_options` (Chat Completions), the `web_search` tool
+(Responses) and `web_search_20250305` (Messages) map to the serving upstream's
+own search tool, which runs inside the subscription. Allowed domains and the
+user's approximate location carry across formats; search caps and context
+sizes are hints. Options with no equivalent are refused: blocked domains on
+Codex, cache-only search on Claude. Results arrive as citations. A finished
+search replays to the upstream that ran it and is left out elsewhere, so
+conversations continue across formats. Function calls always return to the
+client.
 
 **Limits.** Codex ignores `max_tokens`. Claude requires one, so it receives the
 requested value or the model's maximum, which also bounds any thinking budget.

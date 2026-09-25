@@ -8,6 +8,7 @@ from ...errors import RequestError
 from ...ir import (
     ChatRequest,
     FunctionTool,
+    HostedSearch,
     Image,
     NativeResponseItem,
     NativeTool,
@@ -102,6 +103,8 @@ def _input(value: Any, system: list[Text], additional_tools: list[Any]) -> list[
                 # Structured text/image/file outputs have no lossless legacy IR
                 # representation; keep the entire Responses item for Codex.
                 _append(turns, "user", [NativeResponseItem(dict(item))])
+        elif kind == "web_search_call":
+            _append(turns, "assistant", [HostedSearch(dict(item), "responses")])
         else:
             # Current Responses adds native item kinds regularly (custom calls,
             # programs, shell/patch calls, tool search, compaction). Preserve
@@ -120,13 +123,7 @@ def _tools(value: Any) -> list[Tool]:
         if not isinstance(kind, str):
             raise RequestError("tool type must be a string")
         if kind in {"web_search", "web_search_preview"}:
-            tools.append(
-                WebSearchTool(
-                    str(item.get("search_context_size") or ""),
-                    native=dict(item),
-                    source="responses",
-                )
-            )
+            tools.append(WebSearchTool(dict(item), "responses"))
         elif kind == "function" and item.get("name"):
             tools.append(parse_function(item, "responses"))
         elif kind == "namespace":
@@ -215,7 +212,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
     additional_tools: list[Any] = []
     turns = _input(body.get("input", ""), system, additional_tools)
     reasoning = body.get("reasoning")
-    effort, thinking_display = reasoning_options(reasoning)
+    effort, thinking_display, summary = reasoning_options(reasoning)
     context = enum_value(
         reasoning.get("context") if isinstance(reasoning, dict) else None,
         REASONING_CONTEXTS,
@@ -232,6 +229,7 @@ def parse(body: dict[str, Any], session: str = "") -> ChatRequest:
         max_tokens=body.get("max_output_tokens"),
         reasoning_effort=effort,
         thinking_display=thinking_display,
+        reasoning_summary=summary,
         reasoning_context=context,
         verbosity=verbosity,
         parallel_tool_calls=optional_bool(

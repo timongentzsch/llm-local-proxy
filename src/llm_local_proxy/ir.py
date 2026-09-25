@@ -19,6 +19,8 @@ class Text:
     text: str
     #: Native prompt-cache options, including TTL; ignored by Codex.
     cache: dict[str, Any] | None = None
+    #: Anthropic citations on replayed assistant text; ignored by Codex.
+    citations: list[Any] | None = None
 
 
 @dataclass
@@ -73,6 +75,20 @@ class NativeAnthropicBlock:
     item: dict[str, Any]
 
 
+@dataclass
+class HostedSearch:
+    """A finished provider-run search that a client echoes back in history.
+
+    It replays verbatim to an upstream that speaks ``source`` (the pause_turn
+    continuation Anthropic requires) and is omitted elsewhere: the search
+    already ran, its answer is in the transcript, and the record was written
+    for the client by this proxy.
+    """
+
+    item: dict[str, Any]
+    source: Literal["anthropic", "responses"]
+
+
 Block = (
     Text
     | Image
@@ -82,6 +98,7 @@ Block = (
     | Reasoning
     | NativeResponseItem
     | NativeAnthropicBlock
+    | HostedSearch
 )
 
 
@@ -104,9 +121,15 @@ class FunctionTool:
 
 @dataclass
 class WebSearchTool:
-    context_size: str = ""
-    native: dict[str, Any] | None = None
-    source: str = ""
+    """A search the provider runs, as its source format defined it.
+
+    ``tools.responses_web_search`` and ``tools.anthropic_web_search`` translate
+    it; options without an equivalent that change what is searched are
+    refused, hints the target cannot act on are not.
+    """
+
+    native: dict[str, Any]
+    source: Literal["responses", "anthropic"]
 
 
 @dataclass
@@ -253,6 +276,9 @@ class Citation:
     title: str | None = None
     start_index: int | None = None
     end_index: int | None = None
+    #: The Anthropic citation as issued. Claude verifies it on replay, so an
+    #: Anthropic client must receive it whole.
+    native: dict[str, Any] | None = None
 
 
 @dataclass
@@ -330,6 +356,8 @@ class ChatRequest:
     thinking_mode: str = ""
     #: Claude thinking visibility: "summarized" or "omitted".
     thinking_display: str = ""
+    #: OpenAI reasoning summary mode: "auto", "concise" or "detailed".
+    reasoning_summary: str = ""
     #: Responses reasoning context: "auto", "current_turn" or "all_turns".
     reasoning_context: str = ""
     #: OpenAI output verbosity: "low", "medium" or "high".

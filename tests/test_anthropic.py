@@ -18,8 +18,8 @@ from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.ir import (
+    HostedSearch,
     Image,
-    NativeAnthropicBlock,
     Text,
 )
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
@@ -294,7 +294,7 @@ class RoundTripTest(unittest.TestCase):
         request = parse(body)
         self.assertEqual(
             request.turns[1].blocks,
-            [NativeAnthropicBlock(search), NativeAnthropicBlock(result)],
+            [HostedSearch(search, "anthropic"), HostedSearch(result, "anthropic")],
         )
         upstream, _ = build_claude(request, "claude-sonnet-5")
         self.assertEqual(upstream["messages"][1]["content"], [search, result])

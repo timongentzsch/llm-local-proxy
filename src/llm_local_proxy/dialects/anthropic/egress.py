@@ -268,6 +268,8 @@ class MessageEncoder(Encoder):
 
 
 def _citation(event: Citation) -> dict[str, Any]:
+    if event.native is not None:
+        return dict(event.native)
     citation = {"type": "web_search_result_location", "url": event.url}
     if event.title is not None:
         citation["title"] = event.title

@@ -20,8 +20,8 @@ from ...ir import (
     ToolCallStart,
     hosted_tool_step,
 )
+from ...tools import ANTHROPIC_WEB_SEARCH
 from ..reasoning import ReasoningCache
-from .request import WEB_SEARCH_TOOL
 from .thinking import pack
 from .usage import ClaudeUsage
 
@@ -117,7 +117,7 @@ class ClaudeDecoder:
             }
             data = self._open_redacted["data"]
             return [RedactedThinkingDelta(data)] if data else []
-        elif kind in {"server_tool_use", WEB_SEARCH_TOOL}:
+        elif kind in {"server_tool_use", ANTHROPIC_WEB_SEARCH}:
             # The stream says `server_tool_use`; the versioned spelling is the
             # tool *definition*, accepted here because both have been seen.
             if str(block.get("name", "web_search")) != "web_search":
@@ -272,4 +272,4 @@ def _citation(value: Any) -> list[StreamEvent]:
     url = value.get("url")
     if not isinstance(url, str) or not url:
         return []
-    return [Citation(url, value.get("title"))]
+    return [Citation(url, value.get("title"), native=dict(value))]

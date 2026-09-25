@@ -116,11 +116,6 @@ class IRContractTest(unittest.TestCase):
                 "content": "done",
                 "cache_control": CACHE,
             },
-            {
-                "type": "text",
-                "text": "source",
-                "citations": [{"url": "https://example.com"}],
-            },
         ):
             with self.subTest(block=block):
                 request = messages(
@@ -130,6 +125,34 @@ class IRContractTest(unittest.TestCase):
                 self.assertEqual(body["messages"][0]["content"], [block])
                 with self.assertRaises(RequestError):
                     codex(request, ReasoningCache())
+
+    def test_cited_text_keeps_its_citations_for_claude_and_its_text_for_codex(self):
+        # Citations are provenance for text already written; the proxy itself
+        # adds them after a search, so replaying that text must not fail.
+        issued = {
+            "type": "web_search_result_location",
+            "url": "https://a",
+            "title": "A",
+            "cited_text": "quoted",
+            "encrypted_index": "EiQ",
+        }
+        written = {"type": "web_search_result_location", "url": "https://b"}
+        block = {"type": "text", "text": "source", "citations": [issued, written]}
+        turns = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": [block]},
+            {"role": "user", "content": "more"},
+        ]
+        request = messages({**BASE, "messages": turns})
+        # Claude gets back the citation it issued, not one written for Codex.
+        self.assertEqual(
+            claude(request, "test")[0]["messages"][1]["content"],
+            [{**block, "citations": [issued]}],
+        )
+        replayed = codex(request, ReasoningCache())[0]["input"][1]
+        self.assertEqual(
+            replayed["content"], [{"type": "output_text", "text": "source"}]
+        )
 
     def test_subscription_marker_is_first_and_unique(self):
         marker = {

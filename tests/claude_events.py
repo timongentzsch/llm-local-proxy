@@ -15,6 +15,11 @@ def _block(index: int, start: dict, *deltas: dict) -> list[dict]:
     ]
 
 
+def server_block(index: int, block: dict) -> list[dict]:
+    """A server tool block (search request or result), complete at start."""
+    return _block(index, block)
+
+
 def text(index: int, text: str) -> list[dict]:
     return _block(
         index,

@@ -1,4 +1,4 @@
-"""The OpenRouter-compatible model shape both providers report."""
+"""The model record both providers report to the model listings."""
 
 from __future__ import annotations
 

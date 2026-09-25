@@ -11,6 +11,7 @@ from ...errors import RequestError
 from ...ir import (
     ChatRequest,
     FunctionTool,
+    HostedSearch,
     Image,
     NativeAnthropicBlock,
     NativeResponseItem,
@@ -23,13 +24,18 @@ from ...ir import (
     Turn,
     WebSearchTool,
 )
-from ...tools import arguments, flatten, qualified_name, render_function
+from ...tools import (
+    anthropic_web_search,
+    arguments,
+    flatten,
+    qualified_name,
+    render_function,
+)
 from ..reasoning import ReasoningCache
 from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 from .thinking import Outcome, Unpacked, unpack
 
 WEB_SEARCH_BETA = "web-search-2025-03-05"
-WEB_SEARCH_TOOL = "web_search_20250305"
 #: Structured outputs remain gated; `output_config.format` needs this header.
 STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-11-13"
 
@@ -91,10 +97,20 @@ def _image(url: str) -> dict[str, Any]:
 
 
 def _text(block: Text) -> dict[str, Any]:
+    # Claude verifies search citations by their encrypted index; one this proxy
+    # wrote for another upstream's search has none and would be refused.
+    citations = [
+        citation
+        for citation in block.citations or ()
+        if not isinstance(citation, dict)
+        or citation.get("type") != "web_search_result_location"
+        or "encrypted_index" in citation
+    ]
     return {
         "type": "text",
         "text": block.text,
         **({"cache_control": block.cache} if block.cache is not None else {}),
+        **({"citations": citations} if citations else {}),
     }
 
 
@@ -177,6 +193,9 @@ def _blocks(
             )
         elif isinstance(block, NativeAnthropicBlock):
             blocks.append(dict(block.item))
+        elif isinstance(block, HostedSearch):
+            if block.source == "anthropic":
+                blocks.append(dict(block.item))
         else:
             raise RequestError(
                 f"unsupported {turn.role} content: {type(block).__name__}"
@@ -232,22 +251,6 @@ def _replayable(block: dict[str, Any] | None) -> bool:
     if block.get("type") != "thinking":
         return True
     return bool(str(block.get("thinking", "")) and str(block.get("signature", "")))
-
-
-def _web_tool(tool: WebSearchTool) -> dict[str, Any]:
-    if tool.native is None:
-        return {"type": WEB_SEARCH_TOOL, "name": "web_search"}
-    if tool.source == "anthropic":
-        return dict(tool.native)
-    # Live access is Claude's only search mode; it is also the Responses default.
-    options = {
-        k: v for k, v in tool.native.items() if (k, v) != ("external_web_access", True)
-    }
-    if tool.source != "responses" or set(options) - {"type"}:
-        raise RequestError(
-            "Claude upstream cannot faithfully represent Responses web_search options"
-        )
-    return {"type": WEB_SEARCH_TOOL, "name": "web_search"}
 
 
 def _tool_choice(choice: ToolChoice | None) -> dict[str, Any]:
@@ -355,7 +358,7 @@ def build(
                 )
             tools.append(render_function(tool, "anthropic", "input_schema"))
         elif isinstance(tool, WebSearchTool):
-            tools.append(_web_tool(tool))
+            tools.append(anthropic_web_search(tool))
             if WEB_SEARCH_BETA not in betas:
                 betas.append(WEB_SEARCH_BETA)
         else:

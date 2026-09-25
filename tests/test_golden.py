@@ -471,13 +471,7 @@ IMAGE_BODY = {
 WEB_SEARCH_BODY = {
     "model": "gpt-5.6-sol",
     "messages": [{"role": "user", "content": "Latest news?"}],
-    "tools": [
-        {
-            "type": "openrouter:web_search",
-            # OpenRouter's engine choice has no upstream meaning and is dropped.
-            "parameters": {"engine": "auto", "search_context_size": "high"},
-        }
-    ],
+    "web_search_options": {"search_context_size": "high"},
 }
 
 CLAUDE_BODY = {

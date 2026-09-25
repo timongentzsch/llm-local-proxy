@@ -62,6 +62,142 @@ def render(provider, req):
 
 
 class ToolContractTest(unittest.TestCase):
+    def test_chat_web_search_options_request_a_hosted_search(self):
+        base = {"model": "test", "messages": [{"role": "user", "content": "news?"}]}
+        req = chat({**base, "web_search_options": {"search_context_size": "high"}})
+        self.assertEqual(
+            render("codex", req)["tools"],
+            [{"type": "web_search", "search_context_size": "high"}],
+        )
+        self.assertEqual(render("claude", req)["tools"][0]["name"], "web_search")
+        for options, message in (
+            ({"user_location": {"type": "exact"}}, "user_location"),
+            ({"search_context_size": "huge"}, "search_context_size"),
+            ({"freshness": "day"}, "unsupported web_search_options: freshness"),
+        ):
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(RequestError, message),
+            ):
+                chat({**base, "web_search_options": options})
+        # Chat Completions has no search tool type; it points to the parameter.
+        with self.assertRaisesRegex(RequestError, "web_search_options"):
+            chat({**base, "tools": [{"type": "web_search"}]})
+
+    def test_search_options_translate_between_formats(self):
+        """Domains and location mean the same thing everywhere; caps and sizes are hints."""
+        location = {"type": "approximate", "country": "DE", "city": "Berlin"}
+        # Claude Code's WebSearch tool, sent to a Codex model.
+        claude_code = messages(
+            {
+                "model": "test",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "news?"}],
+                "tools": [
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": 8,
+                        "allowed_domains": ["python.org"],
+                        "blocked_domains": [],
+                        "user_location": location,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            render("codex", claude_code)["tools"],
+            [
+                {
+                    "type": "web_search",
+                    "filters": {"allowed_domains": ["python.org"]},
+                    "user_location": location,
+                }
+            ],
+        )
+        # The same search from a Responses client, sent to a Claude model.
+        codex_style = responses(
+            {
+                "model": "test",
+                "input": "news?",
+                "tools": [
+                    {
+                        "type": "web_search",
+                        "search_context_size": "low",
+                        "filters": {"allowed_domains": ["python.org"]},
+                        "user_location": location,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            render("claude", codex_style)["tools"],
+            [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["python.org"],
+                    "user_location": location,
+                }
+            ],
+        )
+        # Chat Completions nests the location one level deeper.
+        nested = chat(
+            {
+                "model": "test",
+                "messages": [{"role": "user", "content": "news?"}],
+                "web_search_options": {
+                    "user_location": {
+                        "type": "approximate",
+                        "approximate": {"country": "DE", "city": "Berlin"},
+                    }
+                },
+            }
+        )
+        self.assertEqual(
+            render("claude", nested)["tools"][0]["user_location"], location
+        )
+        self.assertEqual(render("codex", nested)["tools"][0]["user_location"], location)
+
+    def test_reasoning_summary_mode_reaches_codex_as_requested(self):
+        def sent(dialect, **fields):
+            if dialect == "messages":
+                body = {
+                    "model": "test",
+                    "max_tokens": 128,
+                    "messages": [{"role": "user", "content": "q"}],
+                }
+                return codex(messages({**body, **fields}), ReasoningCache())[0].get(
+                    "reasoning"
+                )
+            body = {"model": "test", "store": False, "input": "q"}
+            return codex(responses({**body, **fields}), ReasoningCache())[0].get(
+                "reasoning"
+            )
+
+        cases = (
+            (
+                {"reasoning": {"effort": "low", "summary": "detailed"}},
+                {"effort": "low", "summary": "detailed"},
+            ),
+            (
+                {"reasoning": {"effort": "low", "summary": "concise"}},
+                {"effort": "low", "summary": "concise"},
+            ),
+            ({"reasoning": {"summary": "auto"}}, {"summary": "auto"}),
+            ({"reasoning": {"effort": "low"}}, {"effort": "low", "summary": "auto"}),
+            ({"reasoning": {"effort": "low", "summary": "none"}}, {"effort": "low"}),
+            ({}, None),
+        )
+        for fields, expected in cases:
+            with self.subTest(fields=fields):
+                self.assertEqual(sent("responses", **fields), expected)
+        # An Anthropic client that turns thinking on sees Codex's summaries.
+        self.assertEqual(
+            sent("messages", thinking={"type": "adaptive"}), {"summary": "auto"}
+        )
+        self.assertIsNone(sent("messages"))
+
     def test_rich_tool_result_survives_native_replay(self):
         result = {
             "type": "tool_result",
@@ -107,7 +243,16 @@ class ToolContractTest(unittest.TestCase):
                 "tools": [{"type": "web_search_preview", "search_context_size": "low"}],
             }
         )
-        with self.assertRaises(RequestError):
+        # A size hint Claude cannot act on is not a different search.
+        self.assertEqual(render("claude", req)["tools"][0]["name"], "web_search")
+        req = responses(
+            {
+                "model": "test",
+                "input": "search",
+                "tools": [{"type": "web_search", "external_web_access": False}],
+            }
+        )
+        with self.assertRaisesRegex(RequestError, "web_search options"):
             render("claude", req)
 
     def test_web_search_does_not_guess_unknown_wire_formats(self):

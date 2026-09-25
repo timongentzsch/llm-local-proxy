@@ -123,7 +123,7 @@ class ServiceWiringTest(unittest.TestCase):
 
 
 class ServerTest(unittest.TestCase):
-    def test_model_info_matches_openrouter_shape(self):
+    def test_codex_model_info_has_the_listing_shape(self):
         model = _model_info(
             {
                 "model": "acme-gpt-1",
@@ -162,7 +162,7 @@ class ServerTest(unittest.TestCase):
         )
         self.assertIsNone(model["default_parameters"])
 
-    def test_claude_model_info_matches_openrouter_shape(self):
+    def test_claude_model_info_has_the_listing_shape(self):
         model = _claude_model_info(
             {
                 "id": "claude-fake-1",

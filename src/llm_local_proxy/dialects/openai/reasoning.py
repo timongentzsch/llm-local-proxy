@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+#: Summary modes Responses defines; Codex receives the requested one verbatim.
+SUMMARY_MODES = frozenset({"auto", "concise", "detailed"})
 
-def options(value: Any) -> tuple[Any, str]:
-    """Return the requested effort and its Claude thinking-display mapping."""
+
+def options(value: Any) -> tuple[Any, str, str]:
+    """The requested effort, its Claude thinking display, and summary mode."""
     if not isinstance(value, dict):
-        return None, ""
+        return None, "", ""
     summary = value.get("summary")
     display = ""
     if summary in {"none", "omitted"}:
@@ -17,4 +20,5 @@ def options(value: Any) -> tuple[Any, str]:
         # OpenAI summary modes all ask for readable reasoning. Claude calls
         # that one wire mode "summarized".
         display = "summarized"
-    return value.get("effort"), display
+    mode = summary if summary in SUMMARY_MODES else ""
+    return value.get("effort"), display, mode

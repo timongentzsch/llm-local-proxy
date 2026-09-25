@@ -60,8 +60,8 @@ class BuildMessagesRequestTest(unittest.TestCase):
             {
                 "model": "claude-fake-2",
                 "messages": [{"role": "user", "content": "search it"}],
+                "web_search_options": {},
                 "tools": [
-                    {"type": "openrouter:web_search"},
                     {
                         "type": "function",
                         "function": {
@@ -80,10 +80,10 @@ class BuildMessagesRequestTest(unittest.TestCase):
         )
         self.assertIn("web-search-2025-03-05", betas)
         tools = request["tools"]
-        self.assertEqual(tools[1]["name"], "get_weather")
-        self.assertEqual(tools[1]["input_schema"]["type"], "object")
+        self.assertEqual(tools[0]["name"], "get_weather")
+        self.assertEqual(tools[0]["input_schema"]["type"], "object")
         self.assertEqual(
-            tools[0], {"type": "web_search_20250305", "name": "web_search"}
+            tools[1], {"type": "web_search_20250305", "name": "web_search"}
         )
         self.assertEqual(request["tool_choice"], {"type": "any"})
 

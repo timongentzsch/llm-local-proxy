@@ -15,6 +15,8 @@ from typing import Any
 from .errors import RequestError
 from .ir import FunctionTool, NativeTool, Tool, ToolChoice, ToolNamespace, WebSearchTool
 
+#: The Messages web search tool version the proxy requests.
+ANTHROPIC_WEB_SEARCH = "web_search_20250305"
 #: The longest tool name Anthropic accepts (`^[a-zA-Z0-9_-]{1,64}$`).
 MAX_TOOL_NAME = 64
 
@@ -131,23 +133,80 @@ def flatten(tools: list[Tool]) -> tuple[list[Tool], dict[str, tuple[str, str]]]:
 def responses_tool(tool: Tool) -> dict[str, Any]:
     if isinstance(tool, (NativeTool, ToolNamespace)):
         return copy.deepcopy(tool.item)
-    if isinstance(tool, WebSearchTool) and tool.native is not None:
-        if tool.source == "responses":
-            return copy.deepcopy(tool.native)
-        if tool.source != "anthropic":
-            raise RequestError(f"unsupported web_search source: {tool.source}")
-        unsupported = sorted(set(tool.native) - {"type", "name"})
-        if unsupported:
-            raise RequestError(
-                "Responses cannot faithfully represent Anthropic web_search "
-                "options: " + ", ".join(unsupported)
-            )
-        return {"type": "web_search"}
-    if isinstance(tool, FunctionTool):
-        return {"type": "function", **render_function(tool, "responses")}
-    item = {"type": "web_search"}
-    if tool.context_size:
-        item["search_context_size"] = tool.context_size
+    if isinstance(tool, WebSearchTool):
+        return responses_web_search(tool)
+    return {"type": "function", **render_function(tool, "responses")}
+
+
+def responses_web_search(tool: WebSearchTool) -> dict[str, Any]:
+    """A search tool as Responses defines it."""
+    native = tool.native
+    if tool.source == "responses":
+        return copy.deepcopy(native)
+    if tool.source != "anthropic":
+        raise RequestError(f"unsupported web_search source: {tool.source}")
+    # Anthropic `max_uses` caps how often the model searches; Responses has no
+    # cap, and exceeding it changes cost, not what is searched.
+    unsupported = sorted(
+        set(native)
+        - {
+            "type",
+            "name",
+            "max_uses",
+            "allowed_domains",
+            "blocked_domains",
+            "user_location",
+        }
+    )
+    if native.get("blocked_domains"):
+        unsupported.append("blocked_domains")
+    if unsupported:
+        raise RequestError(
+            "Responses cannot faithfully represent Anthropic web_search options: "
+            + ", ".join(unsupported)
+        )
+    item: dict[str, Any] = {"type": "web_search"}
+    if native.get("allowed_domains"):
+        item["filters"] = {"allowed_domains": list(native["allowed_domains"])}
+    if native.get("user_location"):
+        item["user_location"] = dict(native["user_location"])
+    return item
+
+
+def anthropic_web_search(tool: WebSearchTool) -> dict[str, Any]:
+    """A search tool as the Messages API defines it."""
+    native = tool.native
+    if tool.source == "anthropic":
+        return dict(native)
+    if tool.source != "responses":
+        raise RequestError(f"unsupported web_search source: {tool.source}")
+    # The context size is a hint Messages has no control for, and live access
+    # is its only mode; options that change what is searched must map.
+    filters = native.get("filters") or {}
+    unsupported = sorted(
+        set(native)
+        - {
+            "type",
+            "search_context_size",
+            "external_web_access",
+            "filters",
+            "user_location",
+        }
+    )
+    if native.get("external_web_access") is False:
+        unsupported.append("external_web_access")
+    if not isinstance(filters, dict) or set(filters) - {"allowed_domains"}:
+        unsupported.append("filters")
+    if unsupported:
+        raise RequestError(
+            "Messages cannot faithfully represent Responses web_search options: "
+            + ", ".join(unsupported)
+        )
+    item: dict[str, Any] = {"type": ANTHROPIC_WEB_SEARCH, "name": "web_search"}
+    if filters.get("allowed_domains"):
+        item["allowed_domains"] = list(filters["allowed_domains"])
+    if native.get("user_location"):
+        item["user_location"] = dict(native["user_location"])
     return item
 
 

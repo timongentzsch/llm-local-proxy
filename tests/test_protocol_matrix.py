@@ -176,6 +176,9 @@ def _messages_replay(result: dict) -> dict:
 
 
 #: (dialect, result encoder, ingress, replay body from that dialect's result).
+#: Every format's record of a finished hosted search.
+SEARCH_RECORDS = {"server_tool_use", "web_search_tool_result", "web_search_call"}
+
 DIALECTS = (
     ("chat", ChunkEncoder, chat, _chat_replay),
     ("responses", ResponseEncoder, responses, _responses_replay),
@@ -246,6 +249,116 @@ class ProtocolMatrixTest(unittest.TestCase):
             items[3],
             {"type": "function_call_output", "call_id": CALL["id"], "output": "ok"},
         )
+
+    def test_every_pairing_continues_after_a_hosted_search(self):
+        """A search the upstream ran must not break the client's next turn.
+
+        The client echoes the search records it was shown. They replay
+        verbatim to the upstream that speaks their format and are omitted
+        elsewhere; cited answer text reaches both.
+        """
+        claude_turn = [
+            *claude_events.server_block(
+                0,
+                {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {"query": "news"},
+                },
+            ),
+            *claude_events.server_block(
+                1,
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_1",
+                    "content": [{"type": "web_search_result", "url": "https://a"}],
+                },
+            ),
+            *claude_events.text(2, "Answer."),
+            claude_events.stop("end_turn"),
+        ]
+        codex_turn = [
+            {
+                "type": "response.output_item.added",
+                "item": {"type": "web_search_call", "id": "ws_1"},
+            },
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed",
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "Answer."},
+            {
+                "type": "response.output_text.annotation.added",
+                "annotation": {
+                    "type": "url_citation",
+                    "url": "https://a",
+                    "title": "A",
+                },
+            },
+        ]
+        follow_up = {
+            "chat": lambda result: {
+                "messages": [
+                    {"role": "user", "content": "news?"},
+                    result["choices"][0]["message"],
+                    {"role": "user", "content": "more"},
+                ]
+            },
+            "responses": lambda result: {
+                "store": False,
+                "input": [
+                    {"type": "message", "role": "user", "content": "news?"},
+                    *result["output"],
+                    {"type": "message", "role": "user", "content": "more"},
+                ],
+            },
+            "messages": lambda result: {
+                "max_tokens": 4096,
+                "messages": [
+                    {"role": "user", "content": "news?"},
+                    {"role": "assistant", "content": result["content"]},
+                    {"role": "user", "content": "more"},
+                ],
+            },
+        }
+        native = {("messages", "claude"), ("responses", "codex")}
+        for dialect, encoder_type, ingress, _ in DIALECTS:
+            for provider in ("claude", "codex"):
+                with self.subTest(dialect=dialect, provider=provider):
+                    cache = ReasoningCache()
+                    if provider == "claude":
+                        decoder, events = ClaudeDecoder(cache), claude_turn
+                    else:
+                        decoder, events = CodexDecoder(cache), codex_turn
+                    encoder = encoder_type("m", decoder)
+                    for event in events:
+                        encoder.feed(event)
+                    body = {"model": "m", **follow_up[dialect](encoder.result())}
+                    request = ingress(body)
+                    if provider == "claude":
+                        turn = to_claude(request, "m", 32768)[0]["messages"][1][
+                            "content"
+                        ]
+                        kinds = [block["type"] for block in turn]
+                        text = "".join(b.get("text", "") for b in turn)
+                    else:
+                        items = to_codex(request, cache)[0]["input"]
+                        kinds = [item.get("type") for item in items]
+                        text = json.dumps(items)
+                    self.assertIn("Answer.", text)
+                    records = sorted(set(kinds) & SEARCH_RECORDS)
+                    expected = {"claude": ["server_tool_use", "web_search_tool_result"]}
+                    if (dialect, provider) in native:
+                        self.assertEqual(
+                            records, expected.get(provider, ["web_search_call"])
+                        )
+                    else:
+                        self.assertEqual(records, [])
 
     def test_namespaced_calls_round_trip_through_responses(self):
         """Codex CLI groups MCP tools in namespaces; calls must find their way home.
@@ -344,7 +457,7 @@ class ProtocolMatrixTest(unittest.TestCase):
             {
                 "model": "claude-test",
                 "messages": _chat_history(),
-                "tools": [{"type": "openrouter:web_search"}],
+                "web_search_options": {},
                 "reasoning": {"effort": "high", "summary": "auto"},
             }
         )
@@ -459,11 +572,11 @@ class ProtocolMatrixTest(unittest.TestCase):
                         {
                             "type": "web_search_20250305",
                             "name": "web_search",
-                            "max_uses": 3,
+                            "blocked_domains": ["example.com"],
                         }
                     ]
                 },
-                "web_search options",
+                "web_search options: blocked_domains",
             ),
         )
         base = {
