@@ -1,182 +1,106 @@
 # LLM Local Proxy
 
-A small local gateway that puts an OpenAI- or Anthropic-shaped API in front of
-your own Codex (ChatGPT) and Claude subscriptions. Your client keeps the agent
-and tool loop; this process only translates the protocol.
+A local gateway that exposes OpenAI- and Anthropic-compatible APIs on top of
+your own Codex (ChatGPT) and Claude subscriptions. Clients keep their agent and
+tool loop; the proxy only translates the protocol.
 
-![Dashboard with example data](docs/dashboard.png)
+![Dashboard with placeholder data](docs/dashboard.png)
 
-_Account and key above are placeholders; the dashboard reads your own accounts
-at runtime._
+## Quick start
 
-## Run
-
-Needs [uv](https://docs.astral.sh/uv/) and the
-[Codex binary](https://github.com/openai/codex), whose `app-server` the proxy
-starts. Docker includes both.
+Requires [uv](https://docs.astral.sh/uv/) and the
+[Codex CLI](https://github.com/openai/codex), whose `app-server` the proxy
+drives. The Docker image includes both.
 
 ```sh
 uv tool install .
 llm-local-proxy
 ```
 
-Open the URL printed at startup — it carries the generated API key in the
-fragment. Sign in to one or more accounts for either subscription from that
-page, then point a client at one of the base URLs it shows. The dashboard also
-generates copyable Codex CLI, Claude Code and OpenCode launch commands for the
-selected live model.
-
 ```sh
-docker compose up --build   # publishes 127.0.0.1:8787 only
+docker compose up --build   # published on 127.0.0.1:8787 only
 ```
 
-## Use it
-
-Both formats reach both subscriptions. The request's `model` decides which:
-ask an Anthropic endpoint for a Codex model and it is translated both ways.
+Open the URL printed at startup; its fragment carries the generated API key.
+Sign in to one or more accounts per subscription, then copy a base URL or a
+ready-made Codex CLI, Claude Code or OpenCode launch command from the dashboard.
 
 ```sh
-# Claude Code, or any Anthropic SDK
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic ANTHROPIC_AUTH_TOKEN=$KEY \
-  claude --model claude-opus-4-6
-
-# The dashboard supplies the complete one-line Codex and OpenCode configs,
-# including their custom provider declarations and selected model.
+  claude --model claude-sonnet-5
 ```
+
+## Endpoints
 
 | Mount | Routes |
 | --- | --- |
-| `/openai/v1` | `responses` (stateless), `chat/completions`, `models` (`?q=` search), `models/count` |
+| `/openai/v1` | `chat/completions`, `responses` (stateless), `models`, `models/count` |
 | `/anthropic` | `v1/messages`, `v1/messages/count_tokens`, `v1/models` |
 | `/v1` | alias of `/openai/v1` |
 
-Function tools preserve explicit `strict` and parallel-call settings across all
-three API endpoints and both providers. Native function options are retained
-when the target speaks that format; unsupported cross-format options return
-400 instead of disappearing. Anthropic deferred tool loading is rejected until
-its tool-search lifecycle is supported. Malformed tool-call arguments fail
-translation instead of becoming an empty call. Rich Anthropic tool results
-round-trip on the native route and are rejected on incompatible routes. Native
-cache breakpoints retain their TTL, and tool definitions keep their input order.
+Every format reaches every subscription; the request's `model` selects the
+upstream. `models` accepts `?q=` to filter and `?refresh=1` to bypass the
+60-second catalog cache. The proxy key is accepted as `Authorization: Bearer`
+or `x-api-key` on every mount. `GET /healthz` is unauthenticated.
 
-Streaming, images, function tools, web search, parallel calls, reasoning effort
-and token usage work on both. The Responses route carries reasoning as opaque
-items, so a client that resends its complete `input` continues tool loops
-without proxy state. It rejects `store: true` and `previous_response_id`; use
-`store: false`. The key is accepted as `Authorization: Bearer` or `x-api-key`
-on every mount — it is the proxy's own key, not a vendor's.
+## Behaviour
 
-Claude thinking uses `display: "summarized"` by default, so readable deltas and
-their replay signature survive tool loops. A client can explicitly request
-`display: "omitted"`; if the subscription edge withholds the signed text, that
-turn continues without its thinking rather than replaying a signature the proxy
-cannot verify against the missing text.
+**Translation.** Streaming, images, function tools, parallel calls, web
+search, reasoning effort, structured outputs and token usage work in every
+pairing. Anything without a faithful mapping is rejected with a 400 rather
+than dropped: unsupported sampling parameters, cross-format tool options,
+malformed tool-call arguments, a bare `json_object` format on Claude, or
+Anthropic deferred tool loading. Cache breakpoints keep their TTL and tool
+definitions keep their order.
 
-Model ids, context and output limits, input modalities, thinking support and
-effort names come from the authenticated upstream catalogs at runtime. Codex's
-transport enum is intersected with its app-server catalog using a validation-only
-probe, so newly added tiers appear automatically and catalog-only tiers do not.
-Only currently catalogued models are routable; the proxy does not guess a
-provider from a model-name prefix or keep a stale built-in model list.
+**Codex CLI.** Its Responses traffic works against every model. Namespaced
+tools (how Codex CLI groups MCP and app tools), `text.verbosity` and
+`reasoning.context` reach Codex unchanged. For Claude, namespaced tools are
+flattened to qualified names and mapped back on each call; options Claude has
+no equivalent for are refused.
 
-The dashboard also serves `GET /api/status` and the `POST /api/<provider>/login`
-family it uses to manage sign-ins. `POST /api/<provider>/accounts` adds or
-removes slots; a provider can have only one unsigned slot, and removal requires
-signing out first. Login, pasted-code and logout bodies carry an internal slot
-id such as `{"account":"2"}`. Missing Claude usage bars are warmed once when
-the dashboard opens; later probes refresh them every minute.
+**Models.** Model ids, context and output limits, modalities, thinking support
+and effort tiers come from the authenticated upstream catalogs at runtime; only
+catalogued models are routable. Codex effort tiers are intersected with what
+its transport accepts, using a validation-only probe.
 
-### Example
+**Reasoning.** Signed reasoning round-trips statelessly. Responses clients
+resend opaque reasoning items; Anthropic clients resend thinking blocks; Chat
+Completions clients rely on a bounded in-memory cache keyed by tool-call id.
+Claude thinking defaults to `display: "summarized"` so its text and signature
+survive tool loops. The Responses endpoint rejects `store: true`,
+`previous_response_id`, `conversation` and `background`.
 
-```sh
-curl -N http://127.0.0.1:8787/v1/chat/completions \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5.6-sol",
-    "stream": true,
-    "messages": [{"role": "user", "content": "What changed in Codex this week?"}],
-    "tools": [{"type": "openrouter:web_search",
-               "parameters": {"search_context_size": "low"}}]
-  }'
-```
+**Web search.** `openrouter:web_search` (Chat Completions), `web_search`
+(Responses) and `web_search_20250305` (Messages) map to the serving
+upstream's own search tool. Searches run inside the subscription; no
+OpenRouter account is involved. Function calls always return to the client.
 
-`openrouter:web_search` is only OpenRouter's wire name for server-side search;
-the proxy maps it to the upstream's own tool. No OpenRouter account is involved
-and the search runs inside the subscription serving the request.
+**Limits.** Codex ignores `max_tokens`. Claude requires one, so it receives the
+requested value or the model's maximum, which also bounds any thinking budget.
+`count_tokens` is exact for Claude models and returns 404 for Codex models,
+whose upstream cannot count, so clients fall back to their own estimate.
 
-## Behaviour worth knowing
+**Accounts.** `X-Session-Id` (or Claude Code's `X-Claude-Code-Session-Id`)
+pins a conversation to one account for prompt-cache locality. Codex requests
+without either are pinned by a key derived from their instructions and first
+user turn; remaining sessionless traffic round-robins. Before any output is
+streamed, a 429 cools the account for five minutes and a rejected credential
+(expired login or missing inference scope) marks it for reauthentication and
+cools it for one minute; either way the request moves to the next account.
+Nothing is retried after output starts.
 
-Function calls come back to your client to execute; only web search runs
-upstream, with `url_citation` annotations and `server_tool_use` usage in the
-stream.
-
-`max_tokens` is a hint on Codex, which controls its own output length, but the
-Messages API requires a limit — so Claude receives the requested value or the
-model's maximum, and that limit also bounds any thinking budget. A small limit
-therefore caps reasoning too.
-
-`count_tokens` is exact for models routed to Claude and returns `404` for Codex ones,
-whose upstream cannot count. A client that gets the 404 falls back to its own
-estimate knowing it is one, rather than trusting a number the proxy invented.
-
-Structured outputs cross every pairing: Chat Completions `response_format`,
-Responses `text.format` and Messages `output_config.format` all carry one JSON
-schema to either upstream. Only the wrapper differs, so a schema written for
-one client constrains the other's model too; Messages names no schema, so the
-schema's own `title` becomes the label Responses requires. Formats an upstream
-cannot enforce — a bare `json_object` against Claude — and unsupported sampling
-parameters fail explicitly instead of being silently ignored. Pricing,
-user-configurable routing and spend history are absent on purpose: neither
-subscription exposes anything equivalent.
-
-Each account keeps its own credentials, usage windows and token ledger. A
-downstream `X-Session-Id` stays on a stable account for prompt-cache locality;
-Claude Code's native `X-Claude-Code-Session-Id` works the same way. A Codex
-request that carries neither header, and no `prompt_cache_key`, is pinned by
-the key the proxy derives from its instructions and first user turn, so one
-conversation still meets one upstream cache; only catalog refreshes and other
-sessionless Claude traffic round-robin. If an account returns 429 before
-emitting any output, it is cooled locally for five minutes and the same request
-tries the next signed-in account. A terminal authentication failure follows the
-same safe pre-output failover path, marks that slot as requiring
-reauthentication and cools it for one minute. Catalog refreshes rotate between
-accounts and skip cooled stale slots, so one bad login cannot hide a provider's
-models; the short cooldown periodically retries them so a recovered login
-rejoins automatically.
-
-Token counts come from upstream usage, with one parser per provider shared by
-response translation and the ledger. OpenAI input includes cache reads/writes;
-Anthropic input excludes them. The dashboard sums uncached input, cache reads
-and cache writes for total input, and divides cache reads by that total for
-its hit percentage. Output includes reasoning tokens; these are not added again.
-The rolling 5-hour and 7-day totals cover proxy traffic only, not subscription
-billing or other clients. Existing ledger history keeps its original meaning.
-
-Usage is recorded once, including final counts from truncated or failed Codex
-responses. If a stream ends before final accounting, the latest reported counts
-are retained and the dashboard marks the window as including partial usage.
-Missing tokens are never estimated; a request that reports no usage cannot be
-counted. Truncated output with final usage is not marked as partial accounting.
-
-A stream that ends before its terminal event fails explicitly; it is never
-reported as a complete answer. The proxy never retries after output starts,
-because that could duplicate a partial answer. Claude tokens are refreshed by the proxy itself, so they do not
-contend with Claude Code logins on other machines.
-
-Codex caches prompt prefixes implicitly, so a rewritten early item — a
-refreshed timestamp in the first turn, a reordered tool list — silently costs
-the whole history its discount, and the usage numbers cannot say where the
-match ended. Setting `LLM_PROXY_PREFIX_DEBUG` to a file path (or `-` for
-stderr) logs one line per Codex request naming the first item that differs
-from the previous request under the same cache key, and flags one conversation
-arriving under two keys. It is off by default and records labels, hashes and
-lengths only; `LLM_PROXY_PREFIX_DEBUG_BODIES=1` adds an excerpt of the
-diverging item, which is your own prompt text.
+**Usage.** Token counts come from upstream usage and are recorded once per
+request, over rolling 5-hour and 7-day windows of proxy traffic only. A stream
+that ends before final accounting keeps its last reported counts and is marked
+as partial; missing counts are never estimated. A stream that ends before its
+terminal event fails instead of looking complete.
 
 ## Configuration
 
-`~/.config/llm-local-proxy/config.toml`, or `--config PATH`. Must be readable
-only by its owner (`chmod 600`).
+`~/.config/llm-local-proxy/config.toml`, or `--config PATH`
+(`--show-config` prints the path). The file is created on first run and must
+be readable only by its owner.
 
 ```toml
 host = "127.0.0.1"
@@ -187,75 +111,44 @@ codex_binary = "codex"
 request_timeout = 600
 ```
 
-Account slots are added and removed live from the dashboard and have no
-configured count or artificial cap, but each provider permits only one unsigned
-slot at a time. Every Codex login has an isolated home at
-`codex_home/accounts/<n>`. Provider credentials, usage, the slot registry and
-token ledgers use the single layout `accounts/<provider>` inside the config
-directory. The dashboard identifies signed-in slots by the email returned by
-Codex or Claude; numeric slot IDs remain internal. A slot must be signed out
-before removal. On first startup, canonical credential files are indexed into
-the registry so existing logins survive this breaking configuration change.
-There is no old-path fallback. Before upgrading an older single-account
-install, stop the proxy and move the account-1 files as follows (using your
-configured roots):
+An empty `api_key` disables authentication; otherwise it needs at least 24
+characters. Native installs bind only to loopback addresses. Under Docker keep
+the port published to `127.0.0.1` as supplied.
 
-| Previous path | Current path |
-| --- | --- |
-| `<codex_home>/auth.json` | `<codex_home>/accounts/1/auth.json` |
-| `<config>/claude-credentials.json` | `<config>/accounts/claude/1/credentials.json` |
-| `<config>/claude-usage.json` | `<config>/accounts/claude/1/usage.json` |
-| `<config>/claude-tokens.json` | `<config>/accounts/claude/1/tokens.json` |
-| `<config>/codex-tokens.json` | `<config>/accounts/codex/1/tokens.json` |
-
-An empty `api_key` disables authentication; otherwise it must be at least 24
-characters. Native installs refuse non-loopback bind addresses. Under Docker,
-no-auth mode is safe only while the port stays published to `127.0.0.1` as
-supplied — never publish it on all interfaces.
+Account slots are added and removed from the dashboard; each provider allows
+one unsigned slot at a time, and a slot must be signed out before removal.
+Codex logins live in `codex_home/accounts/<slot>`; credentials, usage and token
+ledgers live in `accounts/<provider>/<slot>` next to the config.
 
 ## Development
 
 ```sh
 uv sync --locked
 ./scripts/refresh-specs.sh
-PYTHONPATH=src uv run python -m unittest discover -s tests -v
-uv run ruff check src tests
-uv run ruff format --check src tests
+PYTHONPATH=src uv run python -m unittest discover -s tests
+uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
-Tool replay tests must include populated arguments (nested values, booleans,
-nulls, and Unicode) across each dialect/provider pairing; `{}` alone cannot
-catch invalid JSON serialization. Live checks should verify call arguments,
-result replay, usage and terminal events, using a stable session ID. HTTP 200
-and container health alone do not establish protocol correctness.
+`tests/test_golden.py` pins the byte-level output of every request and response
+lane, and `tests/test_protocol_matrix.py` replays a tool turn with populated
+arguments and signed reasoning through all six format/subscription pairs.
+Regenerate goldens only deliberately (`LLM_PROXY_RECORD=1`) and review the
+diff. CI runs the suite on Python 3.11–3.14.
 
-[docs/architecture.md](docs/architecture.md) describes the dialect, provider
-and auth axes and the wire contract each endpoint honours.
-[docs/specs.md](docs/specs.md) covers the OpenAI and Anthropic specifications
-those contracts are tested against. CI verifies pinned spec downloads and runs
-the suite on Python 3.11–3.14.
-
-Codex app-server owns login, refresh, models and account limits. Keeping the
-binary avoids reimplementing undocumented ChatGPT authentication, at the cost
-of a private transport that may change with Codex.
+See [docs/architecture.md](docs/architecture.md) for the design and wire
+contracts and [docs/specs.md](docs/specs.md) for the specifications they are
+tested against.
 
 ## Disclaimer
 
-An unofficial, independent wrapper around the publicly distributed
-[Codex CLI](https://github.com/openai/codex) and the subscription endpoints
-used by Anthropic's Claude Code. Not affiliated with, endorsed by, or supported
-by OpenAI or Anthropic.
+An unofficial, independent project, not affiliated with or endorsed by OpenAI
+or Anthropic. It runs on your machine against your own accounts; credentials
+are stored locally and sent only to their provider. Codex login is delegated to
+the official binary, and Claude tokens come from the OAuth flow of its
+first-party client.
 
-It runs entirely on your machine against your own authenticated accounts. No
-keys are intercepted and no authentication is bypassed. Credentials are stored
-locally and sent to their provider for authentication; the proxy does not send
-them to an intermediary. Codex login is delegated to the official binary, and
-Claude tokens come from the OAuth flow its first-party client uses.
-
-It does speak two undocumented interfaces — the Codex app-server JSON-RPC
+The proxy speaks two undocumented interfaces, the Codex app-server JSON-RPC
 surface and the Claude subscription Messages transport, including the client
-identifiers and beta headers that mark first-party traffic. These have no public
-specification, may break without notice, and their use may fall outside what
-your subscription permits. Review the OpenAI and Anthropic terms yourself, and
-use the paid APIs when a supported integration is required. No warranty; use at
-your own risk.
+identifiers that mark first-party traffic. They may change without notice, and
+their use may fall outside your subscription's terms; review those terms and
+use the paid APIs where a supported integration is required. No warranty.

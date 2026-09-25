@@ -1,210 +1,160 @@
 # Architecture
 
-The proxy serves two downstream wire formats over two upstream subscriptions.
-Any format can reach any subscription: the request's `model` decides.
+The proxy serves three downstream formats (OpenAI Chat Completions, OpenAI
+Responses, Anthropic Messages) over two upstream subscriptions (Codex, Claude).
+Any format can reach any subscription; the request's `model` decides.
 
 ```
-  request    dialects/<d>/ingress.py  ──► ChatRequest ──► providers/<p>/request.py ──► account pool ──► upstream
-  response   providers/<p>/events.py  ──► StreamEvent ──► dialects/<d>/egress.py   ──► client
+request   dialects/<d>/ingress ─► ChatRequest ─► providers/<p>/request ─► account pool ─► upstream
+response  providers/<p>/events ─► StreamEvent ─► dialects/<d>/egress   ─► client
 ```
 
-Everything else follows from keeping those two axes independent.
+Parsing each format once into an intermediate representation (IR) and
+rendering each upstream from it keeps the cost of a new format or provider at
+N + M instead of N × M.
 
-Providers claim models from their live catalogs rather than from name prefixes.
-The same catalog records supply context windows, output limits, modalities and
-reasoning capabilities. Values that are protocol vocabulary remain constants;
-model and effort names do not.
+## Intermediate representation
 
-## The three axes
+`ir.py` defines both directions.
 
-| Axis | Members | Adding one costs |
-| --- | --- | --- |
-| **Dialect** — downstream wire format | OpenAI Chat Completions and Responses, Anthropic Messages | one package, one registry line |
-| **Provider** — upstream subscription | Codex, Claude | one package, one registry line |
-| **Auth** — credential lifecycle | account slots behind the `Auth` ABC | nothing outside that provider |
+- **`ChatRequest`** carries shared semantics in typed fields: system blocks with
+  cache options, turns of content blocks, function tools with strictness and
+  parallel-call control, tool choice, token limits, reasoning effort, thinking
+  mode and display, sampling parameters and output format. Wire-specific tool
+  options keep their source format; `tools.py` preserves them on compatible
+  targets and rejects them elsewhere.
+- **Opaque escape hatches** (`Reasoning`, `NativeResponseItem`,
+  `NativeAnthropicBlock`, `NativeTool`) hold content without a lossless mapping,
+  such as signed reasoning and rich tool results. They are forwarded verbatim
+  on compatible routes and rejected on the rest, never interpreted.
+- **`ToolNamespace`** keeps a Responses namespace both verbatim and as parsed
+  function tools. Targets without namespaces use `tools.flatten`, which gives
+  each member a qualified name of at most 64 characters and the map to restore
+  calls; tool calls carry their `namespace` back to the client.
+- **`StreamEvent`** is the response vocabulary: `TextDelta`, `ThinkingDelta`,
+  `ThinkingSignature`, `RedactedThinkingDelta`, `ReasoningItem`, `NativeItem`,
+  `ToolCallStart`/`ToolCallArgs`/`ToolCallEnd`, `HostedToolEvent`, `Citation`,
+  `Usage` and `Finish`. Stop reasons use Anthropic's seven-value enum; Chat
+  Completions narrows them to four.
 
-Without the intermediate representations this would be a grid: every dialect
-would need a converter for every provider. With them it is N + M.
-
-## The intermediate representations
-
-**IR** is the compiler term *intermediate representation*: parse once into a
-neutral in-memory shape, emit each target from it.
-
-`ChatRequest` (`ir.py`) carries shared semantics in typed fields, including
-function schemas, optional strictness and parallel-call control. Wire-specific
-function options retain their source format. The shared tool helpers preserve
-those options on compatible targets and reject unsupported translations.
-Adding a provider does not require another ingress parser or a tool registry.
-
-Opaque Responses items and Anthropic blocks are deliberate escape hatches for
-content without a lossless mapping, including signed replay and rich tool
-results. They must be preserved on compatible routes or explicitly rejected;
-they are not permission to interpret one provider's payload in shared routing.
-
-`Decoder` and `Encoder` protocols define the stream boundary; the HTTP layer
-handles the common `ProviderError` and does not import provider implementations.
-JSON dictionaries remain appropriate for raw wire events and opaque extensions.
-
-`StreamEvent` is the response vocabulary: `TextDelta`, `ThinkingDelta`,
-`ThinkingSignature`, `ToolCallStart`/`Args`/`End`, `Citation`, `Usage`,
-`Finish`. Finish carries the stop reason and matched stop sequence. Reasons use
-Anthropic's seven-value enum; Chat Completions narrows them to four.
+Each provider supplies a `Decoder` (upstream events to `StreamEvent`s); each
+dialect supplies an `Encoder` subclass that shapes those events into its own
+frames. The HTTP layer pairs the two per request and handles `ProviderError`
+without importing provider code.
 
 ## Layout
 
 ```
 src/llm_local_proxy/
-  ir.py            # ChatRequest, content blocks, StreamEvent
-  tools.py         # shared tool validation and wire serialization
-  errors.py        # downstream request and provider failure boundaries
-  service.py       # registry, merged catalog, status
+  ir.py  tools.py  errors.py  streaming.py
+  service.py         provider registry, merged catalog, status
   config.py  atomic.py  ledger.py  status.py
-
-  http/
-    server.py      # socket, main()
-    handler.py     # (dialect, path) route table
-    sse.py         # framing driven by Dialect
-    security.py    # loopback hardening, credential headers
-
+  http/              server, request routing, SSE framing, loopback security
   dialects/
-    base.py        # Dialect: parse, encode, catalog, framing, errors
-    __init__.py    # DIALECTS registry, prefix resolution
-    openai/        # __init__.py  ingress.py  egress.py
-    anthropic/     # __init__.py  ingress.py  egress.py
-
+    base.py          Dialect, Route, Encoder base
+    openai/          Chat Completions and Responses ingress/egress
+    anthropic/       Messages ingress/egress
   providers/
-    base.py        # Provider, ProviderContext
-    __init__.py    # REGISTRY, in match-priority order
-    auth.py        # Auth ABC + multi-login facade
-    catalog.py     # the OpenRouter model shape both providers report
-    pool.py        # sticky selection, round-robin and safe pre-output failover
-    reasoning.py   # ReasoningCache
-    transport.py   # no-redirect handler + SSE reader
-    codex/         # app_server auth upstream request events catalog
-    claude/        # auth upstream request events catalog subscription
-  streaming.py     # iterator lifecycle shared across layers
-  static/index.html
+    base.py          Provider, ProviderContext
+    pool.py          AccountPool, AccountStore, PooledProvider
+    auth.py          Auth: one login's lifecycle
+    catalog.py  reasoning.py  transport.py
+    codex/           app-server client, auth, request, events, catalog
+    claude/          OAuth, transport, request, events, catalog
+  static/index.html  dashboard
 ```
 
-Each dialect's `__init__.py` *is* the `Dialect` value; each provider's is
-`create(ProviderContext) -> Provider`. That plus the registry line is the whole
-public surface of either.
+A dialect is one `Dialect` value with a mount prefix and a route table; a
+provider is `create(ProviderContext) -> Provider`. Registering either is one
+line in `dialects/__init__.py` or `providers/__init__.py`.
+
+## Adding a provider
+
+1. Subclass `PooledProvider` (`providers/pool.py`) and implement
+   `new_account`, `fetch_catalog`, `account_status` and `no_account`. Slots,
+   logins, failover, catalog caching and status come with it.
+2. Render the upstream request from `ChatRequest`, reusing `tools.py`
+   (`render_function`, `responses_tool`, `flatten`, `arguments`) and rejecting
+   anything the upstream cannot represent.
+3. Write a `Decoder` from upstream events to `StreamEvent`s; wrap the stream in
+   `ledger.track_usage` and read it with `transport.read_events`.
+4. Expose `create(ProviderContext) -> Provider` via `PooledProvider.provider`
+   and add it to `REGISTRY` in `providers/__init__.py`.
+
+Every dialect then reaches the new provider without further changes; add its
+lanes to `tests/test_golden.py` and `tests/test_protocol_matrix.py`.
 
 ## Endpoints
 
-Every dialect is mounted under its own prefix, because the two formats disagree
-about what `/v1/models` returns and neither can own it outright.
+Each dialect has its own mount because the formats disagree about what
+`/v1/models` returns.
 
 | Mount | Routes |
 | --- | --- |
-| `/openai/v1` | `responses` (stateless), `chat/completions`, `models`, `models/count` |
+| `/openai/v1` | `chat/completions`, `responses`, `models`, `models/count` |
 | `/anthropic` | `v1/messages`, `v1/messages/count_tokens`, `v1/models` |
-| `/v1` | alias of `/openai/v1`, for configs written before the prefixes |
+| `/v1` | alias of `/openai/v1` |
 
-The local API key is accepted in either `Authorization: Bearer` or `x-api-key`
-on every mount. It is the proxy's own key, not a vendor's, so refusing the
-header a client happens to send would only produce a confusing 401.
+Streams follow each API: Messages and Responses name every frame after its
+`type` and end without a sentinel, while Chat Completions sends anonymous
+frames ending with `data: [DONE]`.
 
-`count_tokens` is answered exactly by providers whose upstream can count, and
-`404` by those that cannot. A client that gets the 404 falls back to its own
-estimate knowing it is one; a client handed a guessed integer would trust it
-and manage its context wrongly.
+The proxy's own key is accepted in `Authorization: Bearer` or `x-api-key` on
+every mount. `count_tokens` answers exactly where the upstream can count and
+returns 404 otherwise, so clients never trust an invented number.
 
-## Account routing
+## Accounts
 
-Every provider owns an `AccountPool`; dialect and service routing still see one
-Claude provider and one Codex provider, so model IDs do not acquire account
-suffixes. A request with `X-Session-Id` hashes to a stable signed-in account;
-Claude Code's native `X-Claude-Code-Session-Id` is accepted as its fallback.
-Without a session ID the starting account advances round-robin.
+Each provider is a `PooledProvider`: an `AccountStore` of slot ids
+(`slots.json`), an `AccountPool` of live accounts, and a shared catalog cache.
+Routing sees one provider per subscription, so model ids carry no account
+suffix.
 
-A 429 received before the first upstream event cools that account for five
-minutes and tries the untouched request on the next login. Provider transports
-also classify terminal authentication failures; those fail over at the same
-safe boundary, mark the slot as requiring reauthentication and cool it for one
-minute. Other errors retain their upstream status, and no error after the first
-event can switch accounts. The shorter auth cooldown avoids repeated refresh
-latency while periodically checking whether a repaired login can rejoin. This
-boundary avoids both retrying invalid requests and duplicating streamed output.
+- **Selection.** A session id hashes to a stable signed-in account; without
+  one, the starting account advances round-robin.
+- **Failover.** Before the first upstream event, a 429 cools the account for
+  five minutes; a terminal authentication failure (rejected credentials or a
+  missing inference scope) marks it for reauthentication and cools it for one
+  minute. The untouched request then moves to the next account. Other errors
+  keep their status, and nothing switches accounts once output has started.
+- **Catalog.** Discovery uses the same pool without affinity and accepts the
+  first live catalog, so one stale login cannot hide a provider's models.
+- **Slots.** Added and removed live from the dashboard. Only one unsigned slot
+  may exist, and a slot must be signed out before removal. Codex state lives
+  in `codex_home/accounts/<slot>`, proxy state in `accounts/<provider>/<slot>`.
 
-Model discovery uses the same pool without session affinity. Each uncached
-refresh starts at the next account and accepts the first live catalog, skipping
-stale credentials without querying every healthy account. Claude and Codex
-share this selection path; only their transport-specific auth classification
-differs.
+## Evidence
 
-Account state has one canonical layout: Codex homes are
-`codex_home/accounts/<slot>`, while proxy-owned state is
-`accounts/<provider>/<slot>` under the config directory. Slot IDs are internal;
-the dashboard labels authenticated rows with the provider-reported email.
-Each provider's adjacent `slots.json` registry is changed live by the dashboard,
-so pools can grow without a configured count or restart. A second unsigned slot
-is refused. Removing a signed-in slot is also refused; after sign-out, removal
-closes its client and deletes only that slot's state.
+Wire claims are labelled by how they can be checked:
 
-## Evidence rules
+- **[spec]**: the pinned Anthropic OpenAPI snapshot (see [specs.md](specs.md));
+  `tests/test_conformance.py` fails when a refresh changes the contract.
+- **[docs]**: published prose that no schema covers, chiefly SSE framing
+  (`ping` and `error` events are defined only in the streaming docs).
+- **[empirical]**: observed against a subscription edge, with no specification.
 
-Wire claims are labelled, because they are not equally reliable:
+[spec] and [empirical] code never share a module. Everything reverse-engineered
+(subscription marker, beta headers, OAuth flow, transport probes) lives under
+`providers/`; nothing in `dialects/` is empirical.
 
-- **[spec]** — verifiable against the OpenAPI documents. See
-  [specs.md](specs.md); they are fetched, not committed.
-- **[docs]** — authoritative prose, not machine-checkable. Chiefly the SSE
-  framing: `MessageStreamEvent` unions six members and includes neither `ping`
-  nor `error`, both of which the streaming docs define.
-- **[empirical]** — observed against a subscription edge. No specification
-  exists and it may break without notice.
+## Anthropic Messages contract
 
-The structural rule: **[spec] and [empirical] code do not share a module.**
-Everything reverse-engineered lives under `providers/` — subscription markers,
-beta headers, transport probes and retry behaviour. Nothing in `dialects/` is
-empirical.
+- **Request.** `model`, `messages` and `max_tokens` are required;
+  `max_tokens: 0` is legal and pre-warms the prompt cache. A trailing
+  assistant message is a prefill, and a `system` role inside `messages` is
+  distinct from the top-level system prompt.
+- **Response.** `Message` must include `stop_reason`, `stop_sequence`,
+  `stop_details`, `container` and `usage`, with nullable fields present as
+  `null`.
+- **Usage.** Total input is `input_tokens + cache_creation_input_tokens +
+  cache_read_input_tokens`. The IR carries the total, and the encoder splits
+  it back out.
+- **Streaming.** Named frames and no `[DONE]` sentinel. One content block is
+  open at a time under rising indices. `message_start` reports zero input
+  tokens because Codex reports usage only at the end; `message_delta` carries
+  the final totals.
 
-`tests/test_conformance.py` turns the first category into a test, so a spec
-refresh that changes the contract fails there rather than in a client. It
-skips when `specs/` is absent.
-
-## Wire contract
-
-Details that cost real debugging, all spec-checked.
-
-**Request.** Required: `model`, `messages`, `max_tokens`. `max_tokens: 0` is
-legal — it pre-warms the prompt cache without generating. A trailing
-`assistant` message is a prefill the response continues from, and consecutive
-same-role turns merge server-side; both must survive the IR. `output_config`
-carries the same effort tiers as `reasoning_effort`. Thinking display is
-preserved, and defaults explicitly to `summarized` because the subscription
-edge otherwise omits text needed for signed replay. A `system` role is valid
-*inside* `messages`, distinct from the top-level system prompt.
-
-**Response.** `Message` requires `stop_reason`, `stop_sequence`,
-`stop_details`, `container` and `usage` to be **present**, nullable ones as
-`null`. `stop_reason` has seven values: `end_turn`, `max_tokens`,
-`stop_sequence`, `tool_use`, `pause_turn`, `refusal`,
-`model_context_window_exceeded`.
-
-**Usage.** Total input is `input_tokens + cache_creation_input_tokens +
-cache_read_input_tokens`. Chat Completions reports the sum, so the Anthropic
-encoder splits it back out.
-
-**Streaming.** Named frames, no `[DONE]` sentinel. One content block open at a
-time under monotonic indices, so the Anthropic encoder is a state machine that
-closes on kind change. `message_start.usage.input_tokens` is non-nullable while
-a Codex stream has no input count until the end, so the opening frame claims
-zero and `message_delta` carries the authoritative totals.
-
-**Hosted tools.** A web search runs at the provider, so its lifecycle is
-carried as `HostedToolEvent` and never as `ToolCallStart`/`ToolCallEnd`, which
-oblige a client to execute something and answer. Responses gets a
-`web_search_call` item held open across the wait -- the gap between
-`output_item.added` and `output_item.done` *is* the search, which is why this
-does not reuse the `NativeItem` path that emits both at once. Anthropic gets
-`server_tool_use` plus `web_search_tool_result`, with `content` preserving native result records when available; cross-provider
-searches use an empty result list. Only
-forward phase steps are emitted (`started`, `searching`, `completed`,
-`failed`), since Responses reports a finished search twice.
-
-| Anthropic | Chat Completions |
+| Anthropic stop reason | Chat Completions |
 | --- | --- |
 | `end_turn`, `stop_sequence`, `pause_turn` | `stop` |
 | `tool_use` | `tool_calls` |
@@ -213,61 +163,43 @@ forward phase steps are emitted (`started`, `searching`, `completed`,
 
 ## Sharp edges
 
-1. **The subscription marker [empirical].** Must be the first system block or
-   the request bills against the API pool and 429s. A real Claude Code client
-   already sends it, so it is deduplicated rather than prepended blindly.
-2. **Cache breakpoints.** Text blocks retain the complete `cache_control`
-   object, including TTL. Rich native blocks retain cache options verbatim.
-3. **Signatures.** On anthropic→claude, thinking blocks are forwarded verbatim
-   and the `ReasoningCache` is bypassed: the client holds them. On
-   anthropic→codex only proxy-enveloped Codex reasoning can be replayed; foreign
-   Claude signatures are rejected. The encrypted-reasoning cache is keyed
-   by tool call id. On the openai→claude routes a block is only replayable
-   when its text arrived [empirical]. The proxy explicitly requests summarized
-   display so ordinary turns carry both text and signature. If a client asks
-   for omitted display, the subscription edge can sign reasoning it never
-   streams; that signature covers what Claude wrote rather than the empty
-   string left here, so such a block is neither packed nor replayed and its turn
-   goes up without thinking.
-4. **`tool_result` images** are representable to Claude but not to Codex.
-5. **Betas [empirical].** The provider supplies its subscription betas and adds
-   feature betas for the tools and output format in the parsed request.
+1. **Subscription marker [empirical].** Claude requests must start with the
+   Claude Code system block or they are billed against the API pool and
+   rate-limited. A client that already sends it is not given a second one.
+2. **Signed reasoning.** Claude verifies thinking blocks byte for byte.
+   Anthropic clients resend them natively; Responses clients carry them in a
+   versioned `encrypted_content` envelope; Chat Completions clients rely on the
+   cache. Codex reasoning reaches Anthropic clients inside the thinking
+   signature. A block whose text the upstream never streamed (omitted display)
+   cannot be replayed, so its turn continues without thinking.
+3. **Hosted search.** Web search runs upstream, so it is a `HostedToolEvent`,
+   never a tool call the client would have to execute. Responses clients get a
+   `web_search_call` item held open for the duration of the search; Anthropic
+   clients get `server_tool_use` with its `web_search_tool_result`. Only
+   forward lifecycle steps are emitted.
+4. **Cache breakpoints** keep their full `cache_control`, including TTL.
+5. **Betas [empirical].** The Claude transport sends its subscription betas
+   plus feature betas for web search and structured outputs as requested.
 
-## What is deliberately not shared
+## Deliberately not shared
 
-Modularity is measured as diff size, not as aesthetics, and some code only
-looks duplicated:
-
-- **The two `_open` retry envelopes** differ in URL, headers, token source and
-  error mapping, and only Claude records rate-limit headers. A shared helper
-  would need four callbacks to save ten lines.
-- **Usage parsing** remains specific to each upstream's event vocabulary;
-  persistence and stream cleanup share `track_usage`. Codex reports terminal
-  totals, while Claude reports cumulative updates across events.
-- **Tool kind dispatch** belongs to each wire parser; common function fields,
-  validation, and Responses serialization share `tools.py`.
-- **No `Translator` base class.** The provider decoders share a target type,
-  not an implementation; a common ABC would assert a similarity that is not
-  there.
-- **No plugin loader.** `REGISTRY` and `DIALECTS` are Python tuples.
-- **No codegen**: the proxy implements a small subset of the upstream APIs.
-
-`providers/transport.py` shares the no-redirect handler and SSE reader. The
-reader joins multiline data frames, closes its response on every exit, and
-rejects EOF before the terminal event supplied by the provider.
+- The two upstream retry envelopes differ in URL, headers, token source and
+  error mapping; a shared helper would need several callbacks to save a few
+  lines.
+- Usage parsing is specific to each upstream (Codex reports terminal totals,
+  Claude cumulative snapshots); persistence and stream cleanup share
+  `ledger.track_usage`.
+- Decoders share a target type, not an implementation. Encoders share only
+  the decoder-driving loop in `dialects/base.Encoder`.
+- Registries are plain tuples; there is no plugin loader or code generation.
 
 ## Known gaps
 
-- **Live search status needs Responses or Anthropic Messages.** Chat
-  Completions has no standard hosted-tool lifecycle, and inventing a function
-  call there would tell the client to run a search that already ran. Its
-  clients still get the citations and the `web_search_requests` count, but
-  learn that a search happened only after the fact.
-- Streaming, tool calls and `count_tokens` are covered by tests and by a smoke
-  test against the real `claude` CLI, but the proxy has no automated test
-  against a live subscription; those runs are manual.
+- Chat Completions has no hosted-tool lifecycle: its clients get citations and
+  the `web_search_requests` count, but no live search status.
 - `pause_turn` is forwarded to Anthropic clients and narrowed to `stop` for
-  Chat Completions ones. The proxy does not itself continue a paused
-  server-tool turn.
-- Native Responses output items require the Responses endpoint. Other
-  encoders fail explicitly when an item has no lossless representation.
+  Chat Completions; the proxy does not continue a paused turn itself.
+- Native Responses output items require the Responses endpoint; other encoders
+  fail explicitly.
+- There is no automated test against a live subscription; live checks are run
+  manually.

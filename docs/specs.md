@@ -1,45 +1,44 @@
 # Wire specifications
 
-The downstream dialects this proxy speaks are public, specified APIs. These two
-files are the ground truth for request validation, response shapes and the
-conformance tests; nothing about the downstream wire format should be asserted
-from memory or from a blog post when it can be read here.
+The downstream formats are public APIs, and their contracts should be checked
+against published specifications rather than memory.
 
-The files are not committed. `scripts/refresh-specs.sh` downloads reviewed,
-immutable snapshots and verifies their SHA-256 checksums before replacing local
-copies. CI requires this step; local conformance tests skip only when the files
-are absent. To review an upgrade, update the script's URL and checksum together,
-run the tests, and record the new provenance here.
+## Anthropic Messages
+
+`scripts/refresh-specs.sh` downloads a reviewed, immutable snapshot of the
+Anthropic OpenAPI document into `specs/` (not committed) and verifies its
+checksum. CI runs it before the tests; locally, `tests/test_conformance.py`
+skips when the file is absent.
 
 | File | Snapshot | SHA-256 |
 | --- | --- | --- |
-| `openai-openapi.yaml` | OpenAI commit `b61ced96515cb6e73794ff459e9e12ca57596c72` | `77a517da92356a777eb9be7ecc978c15adcc2f17ee387c282090e5a890170cf5` |
-| `anthropic-openapi.json` | Stainless snapshot `319861ef873b46e22d6feb51442e743643815093bdd2b3324df52ed202d7ab93` | `717ab2a5efd6263fc76a03b1b361c03d34fe3a0987c2b8f445b6537ede0c991a` |
+| `anthropic-openapi.json` | Stainless `319861ef873b46e22d6feb51442e743643815093bdd2b3324df52ed202d7ab93` | `717ab2a5efd6263fc76a03b1b361c03d34fe3a0987c2b8f445b6537ede0c991a` |
 
-Verified 2026-09-07. Download URLs are pinned in the script.
+Verified 2026-09-07. The snapshot is the Stainless generator input formerly
+linked from Anthropic's TypeScript SDK and remains available at its
+content-addressed URL. It documents the implemented contract, not current API
+coverage. To upgrade, change the URL and checksum in the script together, run
+the tests, and update this table.
 
-OpenAI publishes its MIT-licensed specification in
-[openai/openai-openapi](https://github.com/openai/openai-openapi). Anthropic's
-snapshot is the Stainless generator input previously linked from its first-party
-TypeScript SDK. The SDK no longer exposes `openapi_spec_url` in `.stats.yml`;
-the last reviewed snapshot remains available at its content-addressed URL.
-It is evidence for the implemented contract, not a claim of current API coverage.
+The conformance tests check selected enums, required fields and request
+structure; they are not a full schema validator. Behaviour outside the schema
+follows the
+[streaming](https://platform.claude.com/docs/en/api/streaming),
+[stop reason](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
+and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+documentation and the
+[SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html).
 
-The conformance tests check selected Anthropic enums, required fields, and
-request structure. They are not a complete schema validator. Golden transcripts
-and endpoint tests cover emitted streams and cross-format behavior.
+## OpenAI Chat Completions and Responses
 
-For behavior outside the schemas, consult the
-[SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html),
-[Anthropic streaming documentation](https://platform.claude.com/docs/en/api/streaming),
-[stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons),
-and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+The reference is [openai/openai-openapi](https://github.com/openai/openai-openapi).
+No snapshot is fetched; golden transcripts and endpoint tests pin the emitted
+requests, streams and results.
 
 ## Not covered by any specification
 
-The Claude *subscription* transport has no public specification of any kind:
-the Claude Code beta headers and pinned user agent in
-`src/llm_local_proxy/providers/claude/upstream.py`, the mandatory first system
-block in `providers/claude/subscription.py`, and the OAuth flow in
-`providers/claude/auth.py`. All of it was established empirically and may break
-without notice. Never cite these files as spec-backed.
+The Claude subscription transport is undocumented: the beta headers and user
+agent in `providers/claude/upstream.py`, the mandatory first system block in
+`providers/claude/subscription.py`, and the OAuth flow in
+`providers/claude/auth.py`. The Codex app-server JSON-RPC surface is likewise
+private. All of it was established empirically and may change without notice.
