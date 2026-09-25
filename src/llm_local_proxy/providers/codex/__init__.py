@@ -93,11 +93,13 @@ class Codex(PooledProvider[Upstream]):
             self.cache,
             reasoning_efforts=efforts if isinstance(efforts, list) else None,
         )
-        # The cache key, which is derived when the client names none: each
-        # account has its own upstream cache, and round-robin would hand every
-        # turn of one conversation a different one.
+        # Without a session, the cache key, which is derived when the client
+        # names none: each account has its own upstream cache, and round-robin
+        # would hand every turn of one conversation a different one.
         events = self.pool.stream(
-            cache_key, lambda account: account.client.events(body), self.no_account
+            request.session or cache_key,
+            lambda account: account.client.events(body),
+            self.no_account,
         )
         return events, CodexDecoder(self.cache)
 

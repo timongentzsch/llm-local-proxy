@@ -70,6 +70,15 @@ class IngressTest(unittest.TestCase):
             parse({**BASE, "system": blocks}).system,
             [Text("a"), Text("b", cache="")],
         )
+        # A null TTL still places a breakpoint, at the default TTL.
+        cached = {
+            "type": "text",
+            "text": "c",
+            "cache_control": {"type": "ephemeral", "ttl": None},
+        }
+        self.assertEqual(
+            parse({**BASE, "system": [cached]}).system, [Text("c", cache="")]
+        )
 
     def test_assistant_prefill_is_preserved(self):
         # A trailing assistant turn continues the response; it must survive.

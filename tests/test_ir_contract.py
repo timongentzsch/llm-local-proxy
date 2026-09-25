@@ -158,6 +158,50 @@ class IRContractTest(unittest.TestCase):
         # Codex caches implicitly and refuses breakpoints: hints are dropped.
         self.assertNotIn("cache_control", str(codex(request, ReasoningCache())[0]))
 
+    def test_cached_blocks_without_an_ir_equivalent_stay_verbatim(self):
+        for block in (
+            {
+                "type": "document",
+                "source": {"type": "text", "media_type": "text/plain", "data": "hi"},
+                "cache_control": CACHE,
+            },
+            {
+                "type": "image",
+                "source": {"type": "file", "file_id": "file_1"},
+                "cache_control": CACHE,
+            },
+        ):
+            with self.subTest(kind=block["type"]):
+                request = messages(
+                    {**BASE, "messages": [{"role": "user", "content": [block]}]}
+                )
+                self.assertEqual(
+                    claude(request, "test")[0]["messages"][0]["content"], [block]
+                )
+
+    def test_a_breakpoint_inside_tool_result_text_is_a_hint(self):
+        result = {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": [{"type": "text", "text": "done", "cache_control": CACHE}],
+        }
+        call = {"type": "tool_use", "id": "call_1", "name": "read", "input": {}}
+        request = messages(
+            {
+                **BASE,
+                "messages": [
+                    {"role": "user", "content": "look"},
+                    {"role": "assistant", "content": [call]},
+                    {"role": "user", "content": [result]},
+                ],
+            }
+        )
+        sent = claude(request, "test")[0]["messages"][2]["content"][0]
+        self.assertEqual(sent["cache_control"], CACHE)
+        self.assertEqual(sent["content"], "done")
+        output = codex(request, ReasoningCache())[0]["input"][-1]
+        self.assertEqual(output["output"], "done")
+
     def test_claude_adds_a_breakpoint_only_when_the_client_placed_none(self):
         plain = messages(BASE)
         self.assertEqual(

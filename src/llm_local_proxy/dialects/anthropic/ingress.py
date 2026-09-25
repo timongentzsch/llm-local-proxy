@@ -38,6 +38,9 @@ REJECTED = ("container", "mcp_servers", "service_tier")
 PARAMS = ("temperature", "top_p", "top_k")
 CHOICES = {"auto": "auto", "any": "required", "tool": "tool", "none": "none"}
 CACHE_TTLS = frozenset({"5m", "1h"})
+#: Block kinds whose cache breakpoint the IR carries as a hint.
+CACHED_KINDS = frozenset({"text", "image", "tool_use", "tool_result"})
+IMAGE_SOURCES = frozenset({"url", "base64"})
 
 
 def _output_format(current: Any, deprecated: Any) -> OutputFormat | None:
@@ -78,7 +81,7 @@ def _cache(value: Any) -> str | None:
         return None
     if not isinstance(value, dict) or value.get("type") != "ephemeral":
         raise RequestError("cache_control must be an ephemeral cache control")
-    ttl = value.get("ttl", "")
+    ttl = value.get("ttl") or ""
     if ttl and ttl not in CACHE_TTLS:
         raise RequestError("cache_control.ttl must be 5m or 1h")
     if set(value) - {"type", "ttl"}:
@@ -109,13 +112,23 @@ def _block(part: Any) -> Block:
         return HostedSearch(dict(part), "anthropic")
     if kind == "text" and set(part) - {"type", "text", "cache_control", "citations"}:
         return NativeAnthropicBlock(dict(part))
+    source = part.get("source")
+    if cache is not None and (
+        kind not in CACHED_KINDS
+        or (
+            kind == "image"
+            and not (isinstance(source, dict) and source.get("type") in IMAGE_SOURCES)
+        )
+    ):
+        # No IR equivalent: the block, breakpoint included, stays verbatim.
+        return NativeAnthropicBlock(dict(part))
     if kind == "text":
         citations = part.get("citations")
         if citations is not None and not isinstance(citations, list):
             raise RequestError("text citations must be an array")
         return Text(str(part.get("text", "")), cache, citations)
     if kind == "image":
-        return replace(_image(part.get("source")), cache=cache)
+        return replace(_image(source), cache=cache)
     if kind == "tool_use":
         return ToolUse(
             id=str(part.get("id") or ""),
@@ -130,11 +143,16 @@ def _block(part: Any) -> Block:
         content = part.get("content")
         if isinstance(content, list) and any(
             not isinstance(item, dict)
-            or set(item) - {"type", "text"}
+            or set(item) - {"type", "text", "cache_control"}
             or item.get("type") != "text"
             for item in content
         ):
             return NativeAnthropicBlock(dict(part))
+        if cache is None and isinstance(content, list):
+            # A breakpoint inside plain text content marks the same prefix to
+            # within that content; the block keeps it.
+            nested = [_cache(item.get("cache_control")) for item in content]
+            cache = next((ttl for ttl in reversed(nested) if ttl is not None), None)
         return ToolResult(
             tool_use_id=str(tool_use_id),
             text=_text(part.get("content")),

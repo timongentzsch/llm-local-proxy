@@ -136,7 +136,13 @@ class PoolLocalityTest(unittest.TestCase):
         codex = self.provider(pool)
         request = parse(body_for([{"role": "user", "content": "hi"}]), "session-42")
         codex.chat(MODEL, request)
-        self.assertEqual(pool.sessions, ["session-42"])
+        # The session picks the account; the client's key still names the cache.
+        keyed = {
+            **body_for([{"role": "user", "content": "hi"}]),
+            "prompt_cache_key": "k1",
+        }
+        codex.chat(MODEL, parse(keyed, "session-42"))
+        self.assertEqual(pool.sessions, ["session-42", "session-42"])
 
 
 if __name__ == "__main__":
