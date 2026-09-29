@@ -9,6 +9,7 @@ from llm_local_proxy.providers.claude.auth import (
     ClaudeAuth,
     ClaudeAuthError,
     _normalize,
+    _plan,
 )
 
 
@@ -204,6 +205,26 @@ class ClaudeAuthTest(unittest.TestCase):
         self.assertEqual(
             json.loads(auth.path.read_text())["email"], "person@example.com"
         )
+
+    def test_hydrates_a_missing_plan_from_the_profile_tier(self):
+        auth = ClaudeAuth(pathlib.Path(tempfile.mkdtemp()) / "credentials.json")
+        auth.path.write_text('{"access_token":"at","email":"person@example.com"}')
+        auth._profile_request = lambda token: {
+            "account": {"email": "other@example.com"},
+            "organization": {
+                "organization_type": "claude_max",
+                "rate_limit_tier": "default_claude_max_5x",
+            },
+        }
+
+        auth.hydrate_profile()
+
+        self.assertEqual(auth.status().account, "person@example.com · max 5x")
+
+    def test_plan_falls_back_to_the_organization_type(self):
+        self.assertEqual(_plan({"organization_type": "claude_pro"}), "pro")
+        self.assertEqual(_plan({"rate_limit_tier": None}), "")
+        self.assertEqual(_plan(None), "")
 
 
 if __name__ == "__main__":

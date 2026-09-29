@@ -215,7 +215,7 @@ class ClaudeAuth(Auth):
             if (
                 not value
                 or not value.get("access_token")
-                or value.get("email")
+                or (value.get("email") and value.get("subscription_type"))
                 or self._profile_attempted
             ):
                 return
@@ -258,7 +258,7 @@ class ClaudeAuth(Auth):
         return merged
 
     def _with_profile(self, value: dict[str, Any]) -> dict[str, Any]:
-        if value.get("email"):
+        if value.get("email") and value.get("subscription_type"):
             return value
         self._profile_attempted = True
         try:
@@ -267,10 +267,15 @@ class ClaudeAuth(Auth):
             # Identity metadata is useful for identifying a pool slot, but a
             # temporary profile failure must not invalidate a working login.
             return value
+        enriched = dict(value)
         account = profile.get("account")
-        if not isinstance(account, dict) or not account.get("email"):
-            return value
-        return {**value, "email": str(account["email"])}
+        email = account.get("email") if isinstance(account, dict) else None
+        if not enriched.get("email") and email:
+            enriched["email"] = str(email)
+        plan = _plan(profile.get("organization"))
+        if not enriched.get("subscription_type") and plan:
+            enriched["subscription_type"] = plan
+        return enriched
 
     def _profile_request(self, access_token: str) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -365,6 +370,22 @@ def _error_message(error: urllib.error.HTTPError) -> str:
             or raw
         )
     return raw
+
+
+def _plan(organization: Any) -> str:
+    """A plan label from the profile, for logins whose token did not name one.
+
+    The rate-limit tier carries the multiplier (``default_claude_max_5x`` is
+    "max 5x"); the organization type (``claude_max``) is the fallback.
+    """
+    if not isinstance(organization, dict):
+        return ""
+    for key in ("rate_limit_tier", "organization_type"):
+        value = organization.get(key)
+        if isinstance(value, str) and value:
+            name = value.removeprefix("default_").removeprefix("claude_")
+            return name.replace("_", " ")
+    return ""
 
 
 def _normalize(raw: str) -> dict[str, Any]:
