@@ -7,9 +7,9 @@ docs/architecture.md rewrites the request builders (R3) and both translators
 
 Regenerate deliberately, never to make a red test green:
 
-    LLM_PROXY_RECORD=1 uv run python -m unittest tests.test_golden
+    LLM_PROXY_RECORD=1 uv run python -m unittest discover -s tests -p test_golden.py
 
-Then read `git diff tests/golden/` line by line. A diff here is a change in
+Then read `git diff tests/matrix/golden/` line by line. A diff here is a change in
 what a client receives.
 """
 

@@ -14,12 +14,9 @@ import unittest
 from pathlib import Path
 
 from llm_local_proxy.dialects.anthropic import ERROR_TYPES
-from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import CHOICES, parse
 from llm_local_proxy.dialects.openai.egress import FINISH_REASONS
 from llm_local_proxy.errors import RequestError
-from llm_local_proxy.providers.claude.events import ClaudeDecoder
-from llm_local_proxy.providers.reasoning import ReasoningCache
 
 SPEC = Path(__file__).resolve().parents[1] / "specs" / "anthropic-openapi.json"
 
@@ -51,21 +48,6 @@ class SpecTest(unittest.TestCase):
         documented = set(self.schemas["StopReason"]["enum"])
         self.assertEqual(documented - set(FINISH_REASONS), set())
 
-    def test_stream_event_union_is_covered(self):
-        documented = set(_members(self.schemas["MessageStreamEvent"], self.schemas))
-        encoder = MessageEncoder("m", ClaudeDecoder(ReasoningCache()))
-        emitted = {encoder.start()["type"]}
-        emitted.update(frame["type"] for frame in encoder.finish())
-        emitted.update(
-            {"content_block_start", "content_block_delta", "content_block_stop"}
-        )
-        self.assertEqual(documented, emitted)
-
-    def test_message_carries_every_required_field(self):
-        required = set(self.schemas["Message"]["required"])
-        encoder = MessageEncoder("m", ClaudeDecoder(ReasoningCache()))
-        self.assertEqual(required - set(encoder.result()), set())
-
     def test_request_required_fields_are_enforced(self):
         body = json.loads(SPEC.read_text())["paths"]["/v1/messages"]["post"]
         schema = body["requestBody"]["content"]["application/json"]["schema"]
@@ -89,11 +71,6 @@ class SpecTest(unittest.TestCase):
     def test_error_types_are_documented(self):
         documented = set(self.schemas["ErrorType"]["enum"])
         self.assertEqual(set(ERROR_TYPES.values()) - documented, set())
-
-    def test_usage_fields_we_emit_exist_in_the_schema(self):
-        documented = set(self.schemas["Usage"]["properties"])
-        encoder = MessageEncoder("m", ClaudeDecoder(ReasoningCache()))
-        self.assertEqual(set(encoder.result()["usage"]) - documented, set())
 
 
 if __name__ == "__main__":

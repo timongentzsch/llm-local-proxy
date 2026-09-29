@@ -69,10 +69,6 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(config.codex_home, Path("/codex"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class IPv6Test(unittest.TestCase):
     def test_loopback_binding_and_advertised_url(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,3 +79,7 @@ class IPv6Test(unittest.TestCase):
             self.assertEqual(config.origin, "http://[::1]:8787")
             with Server((config.host, 0), object) as server:
                 self.assertEqual(server.server_address[0], "::1")
+
+
+if __name__ == "__main__":
+    unittest.main()

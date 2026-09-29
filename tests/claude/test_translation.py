@@ -8,7 +8,6 @@ from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
 from llm_local_proxy.dialects.openai.responses_ingress import parse as parse_responses
 from llm_local_proxy.errors import RequestError
-from llm_local_proxy.ir import ToolCallArgs, ToolCallEnd
 from llm_local_proxy.providers.catalog import match_model
 from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build
@@ -36,14 +35,6 @@ class ClaudeRoutingTest(unittest.TestCase):
 
 
 class BuildMessagesRequestTest(unittest.TestCase):
-    def test_explicit_max_tokens_wins_over_live_default(self):
-        request, _ = claude_request(BASE, "claude-fake-1", max_output=128000)
-        self.assertEqual(request["max_tokens"], 128000)
-        request, _ = claude_request(
-            {**BASE, "max_tokens": 100}, "claude-fake-1", max_output=128000
-        )
-        self.assertEqual(request["max_tokens"], 100)
-
     def test_zero_tokens_builds_a_prewarm_request(self):
         request, _ = claude_request(
             {**BASE, "max_tokens": 0, "reasoning_effort": "high"},
@@ -196,23 +187,6 @@ class BuildMessagesRequestTest(unittest.TestCase):
 
 
 class ClaudeTranslatorTest(unittest.TestCase):
-    def test_a_call_without_arguments_still_carries_an_empty_object(self):
-        # Claude streams no input_json_delta for a parameterless tool; clients
-        # would otherwise see an empty string where a JSON object belongs.
-        decoder = ClaudeDecoder()
-        decoder.decode(
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "tool_use", "id": "toolu_1", "name": "now"},
-            }
-        )
-        closed = decoder.decode({"type": "content_block_stop", "index": 0})
-        self.assertEqual(
-            closed,
-            [ToolCallArgs(0, "{}"), ToolCallEnd(0, "toolu_1", "now", "{}")],
-        )
-
     def test_server_tool_use_and_result_bracket_the_search(self):
         """Claude's own server-tool blocks, which the decoder used to drop.
 

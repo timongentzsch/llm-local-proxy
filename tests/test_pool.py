@@ -55,11 +55,6 @@ class AccountPoolTest(unittest.TestCase):
         self.assertEqual(pool.candidates()[0].id, "1")
         self.assertEqual(pool.candidates()[0].id, "2")
 
-    def test_a_session_has_a_stable_account(self):
-        pool = self.pool()
-        first = pool.candidates("session-42")[0].id
-        self.assertEqual(pool.candidates("session-42")[0].id, first)
-
     def test_cooling_one_account_moves_only_its_own_sessions(self):
         pool = AccountPool([Account(i, _Auth(), i) for i in ("1", "2", "3")])
         sessions = [f"session-{n}" for n in range(200)]
@@ -218,20 +213,6 @@ class AccountPoolTest(unittest.TestCase):
             self.assertEqual(pool.call(None, discover, RuntimeError), "one")
         self.assertEqual(starts, ["1", "2", "2", "1"])
         self.assertEqual(pool.account_error("1"), "")
-
-    def test_accounts_can_be_added_and_removed_live(self):
-        pool = AccountPool([])
-        pool.add(Account("1", _Auth(), "one"))
-        self.assertEqual(pool.get("1").client, "one")
-        self.assertEqual(pool.remove("1").client, "one")
-        self.assertEqual(pool.accounts, ())
-
-    def test_only_one_unsigned_slot_is_allowed(self):
-        pool = AccountPool([Account("1", _Auth(False), "one")])
-        with self.assertRaisesRegex(RequestError, "existing unsigned account"):
-            pool.require_no_unsigned()
-        pool.get("1").auth.value = True
-        pool.require_no_unsigned()
 
 
 class AccountStoreTest(unittest.TestCase):

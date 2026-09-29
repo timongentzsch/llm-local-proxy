@@ -7,8 +7,8 @@ against published specifications rather than memory.
 
 `scripts/refresh-specs.sh` downloads a reviewed, immutable snapshot of the
 Anthropic OpenAPI document into `specs/` (not committed) and verifies its
-checksum. CI runs it before the tests; locally, `tests/test_conformance.py`
-skips when the file is absent.
+checksum. CI runs it before the tests; locally, the conformance tests
+skip when the file is absent.
 
 | File | Snapshot | SHA-256 |
 | --- | --- | --- |

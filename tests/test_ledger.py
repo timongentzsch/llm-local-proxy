@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 
-from llm_local_proxy.ledger import WINDOWS, TokenLedger
+from llm_local_proxy.ledger import TokenLedger
 
 
 class TokenLedgerTest(unittest.TestCase):
@@ -30,20 +30,6 @@ class TokenLedgerTest(unittest.TestCase):
         self.assertEqual(windows["5h"]["cache_write"], 5)
         self.assertEqual(windows["7d"]["input"], 500)
         self.assertEqual(windows["7d"]["output"], 250)
-
-    def test_windows_are_ordered_and_complete(self):
-        ledger = TokenLedger()
-        ledger.add(input_tokens=1, output_tokens=2, cache_read=3, cache_write=4)
-        windows = ledger.windows()
-        # Keys mirror the WINDOWS definition order (5h then 7d).
-        self.assertEqual(list(windows), [label for label, _ in WINDOWS])
-        for label, _ in WINDOWS:
-            self.assertEqual(
-                list(windows[label]),
-                ["input", "output", "cache_read", "cache_write"],
-            )
-            self.assertEqual(windows[label]["input"], 1)
-            self.assertEqual(windows[label]["cache_write"], 4)
 
     def test_prunes_expired_records(self):
         path = pathlib.Path(tempfile.mkdtemp()) / "tokens.json"

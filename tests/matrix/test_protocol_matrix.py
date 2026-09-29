@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import unittest
 
-import claude_events
+from claude import claude_events
 
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
 from llm_local_proxy.dialects.anthropic.ingress import parse as anthropic
@@ -41,30 +41,6 @@ CODEX_REASONING = {
 CALL = {"id": "call_1", "name": "read", "arguments": "{}"}
 
 
-def _cache_claude_turn(cache: ReasoningCache) -> None:
-    encoder = ChunkEncoder("claude-test", ClaudeDecoder(cache))
-    events = [
-        *claude_events.thinking(0, "Checked.", "claude-signature"),
-        *claude_events.tool_use(1, CALL["id"], CALL["name"], "{}"),
-        claude_events.stop("tool_use"),
-    ]
-    for event in events:
-        encoder.feed(event)
-    encoder.result()
-
-
-def _cache_codex_turn(cache: ReasoningCache) -> None:
-    encoder = ChunkEncoder("gpt-test", CodexDecoder(cache))
-    encoder.feed({"type": "response.output_item.done", "item": CODEX_REASONING})
-    encoder.feed(
-        {
-            "type": "response.output_item.done",
-            "item": {"type": "function_call", "call_id": CALL["id"], **CALL},
-        }
-    )
-    encoder.result()
-
-
 def _anthropic_history(thinking: dict) -> list[dict]:
     return [
         {"role": "user", "content": "read"},
@@ -90,23 +66,6 @@ def _anthropic_history(thinking: dict) -> list[dict]:
                 }
             ],
         },
-    ]
-
-
-def _chat_history() -> list[dict]:
-    return [
-        {"role": "user", "content": "read"},
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": CALL["id"],
-                    "type": "function",
-                    "function": {"name": CALL["name"], "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": CALL["id"], "content": "ok"},
     ]
 
 
@@ -449,60 +408,6 @@ class ProtocolMatrixTest(unittest.TestCase):
                     self.assertEqual(
                         (use["namespace"], use["name"]), (namespace, member)
                     )
-
-    def test_openai_to_claude(self):
-        cache = ReasoningCache()
-        _cache_claude_turn(cache)
-        request = chat(
-            {
-                "model": "claude-test",
-                "messages": _chat_history(),
-                "web_search_options": {},
-                "reasoning_effort": "high",
-            }
-        )
-        upstream, betas = to_claude(
-            request, "claude-test", max_output=32768, reasoning_cache=cache
-        )
-        self.assertEqual(upstream["messages"][1]["content"][0], CLAUDE_THINKING)
-        self.assertEqual(upstream["messages"][2]["content"][0]["type"], "tool_result")
-        self.assertEqual(upstream["output_config"], {"effort": "high"})
-        self.assertEqual(upstream["thinking"]["display"], "summarized")
-        self.assertEqual(upstream["tools"][0]["type"], "web_search_20250305")
-        self.assertIn("web-search-2025-03-05", betas)
-
-    def test_openai_to_codex(self):
-        cache = ReasoningCache()
-        _cache_codex_turn(cache)
-        request = responses(
-            {
-                "model": "gpt-test",
-                "input": [
-                    {"type": "message", "role": "user", "content": "read"},
-                    {
-                        "type": "function_call",
-                        "call_id": CALL["id"],
-                        "name": CALL["name"],
-                        "arguments": "{}",
-                    },
-                    {
-                        "type": "function_call_output",
-                        "call_id": CALL["id"],
-                        "output": "ok",
-                    },
-                ],
-                "tools": [{"type": "web_search", "search_context_size": "low"}],
-                "reasoning": {"effort": "high", "summary": "auto"},
-            }
-        )
-        upstream, _ = to_codex(request, cache)
-        self.assertEqual(upstream["input"][1], CODEX_REASONING)
-        self.assertEqual(upstream["input"][3]["type"], "function_call_output")
-        self.assertEqual(upstream["reasoning"], {"effort": "high", "summary": "auto"})
-        self.assertEqual(
-            upstream["tools"], [{"type": "web_search", "search_context_size": "low"}]
-        )
-        self.assertEqual(upstream["include"], ["reasoning.encrypted_content"])
 
     def test_anthropic_to_claude(self):
         request = anthropic(

@@ -1,8 +1,7 @@
-"""End-to-end HTTP: both dialects served over one socket by one provider.
+"""End-to-end HTTP: every dialect served over one socket by one provider.
 
-This is the 2x2 matrix at the level a client actually sees it. The provider
-below replays a canned Claude stream, so any difference between the two
-responses comes from the dialect and nothing else.
+The provider is a mock that replays scripted response events, so any
+difference between the responses comes from the dialect and nothing else.
 """
 
 from __future__ import annotations
@@ -13,92 +12,58 @@ import threading
 import unittest
 from types import SimpleNamespace
 
-import claude_events
+import mock_provider
 
+from llm_local_proxy.errors import UpstreamError
 from llm_local_proxy.http.handler import make_handler
 from llm_local_proxy.http.server import Server
-from llm_local_proxy.providers.claude.events import ClaudeDecoder
-from llm_local_proxy.providers.claude.upstream import ClaudeUpstreamError
+from llm_local_proxy.ir import Finish, ToolCallArgs, ToolCallEnd, ToolCallStart, Usage
 from llm_local_proxy.providers.pool import account_id
-from llm_local_proxy.providers.reasoning import ReasoningCache
 
-STREAM = [
-    {
-        "type": "message_start",
-        "message": {"usage": {"input_tokens": 11, "output_tokens": 0}},
-    },
-    *claude_events.text(0, "Hello"),
-    {
-        "type": "message_delta",
-        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-        "usage": {"output_tokens": 3},
-    },
-    {"type": "message_stop"},
-]
-
-MODELS = {
-    "object": "list",
-    "data": [{"id": "claude-sonnet-5", "name": "Claude Sonnet 5"}],
-}
 SESSIONS = []
 
 
-def _chat(canonical, request):
-    """The canned stream, or the failure the model name asks for."""
+def _reply(canonical, request):
+    """The scripted answer, or the failure the model name asks for."""
     SESSIONS.append(request.session)
-    if canonical.startswith("claude-fail-"):
-        raise ClaudeUpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
-    if canonical == "claude-broken-tool":
-        return iter(
-            [
-                STREAM[0],
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": "call_1",
-                        "name": "read",
-                        "input": {},
-                    },
-                },
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "input_json_delta", "partial_json": '{"path":'},
-                },
-                {"type": "content_block_stop", "index": 0},
-                *STREAM[-2:],
-            ]
-        ), ClaudeDecoder(ReasoningCache())
-    if canonical == "claude-burst":
+    if canonical.startswith("mock-fail-"):
+        raise UpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
+    if canonical == "mock-burst":
         raise OSError("disk fell over")
-    return iter(STREAM), ClaudeDecoder(ReasoningCache())
+    if canonical == "mock-broken-tool":
+        broken = '{"path":'
+        return [
+            ToolCallStart(0, "call_1", "read"),
+            ToolCallArgs(0, broken),
+            ToolCallEnd(0, "call_1", "read", broken),
+            Usage(prompt=11, completion=3),
+            Finish("tool_use"),
+        ]
+    return mock_provider.REPLY
 
 
 def _service():
-    provider = SimpleNamespace(
-        name="claude",
+    provider = mock_provider.provider(
+        models=("mock-1", "mock-fail-429", "mock-broken-tool", "mock-burst"),
+        reply=_reply,
         routes={
             "accounts": lambda body: body,
             "login": lambda body: {"account": account_id(body)},
             "logout": lambda body: {"account": account_id(body)},
         },
-        forget=lambda: None,
-        chat=_chat,
         count_tokens=lambda canonical, request: {"input_tokens": 42},
     )
-    # A provider whose upstream has no way to count, like Codex.
-    uncounted = SimpleNamespace(name="codex", routes={}, count_tokens=None)
+    # A provider whose upstream has no way to count.
+    uncounted = mock_provider.provider(name="uncounted", models=("gpt-1",))
+    catalog = {"object": "list", "data": provider.models()}
     return SimpleNamespace(
         config=SimpleNamespace(api_key="", host="127.0.0.1"),
-        app=SimpleNamespace(alive=lambda: True),
         healthy=lambda: True,
         route=lambda model: (
             (uncounted, model) if model.startswith("gpt") else (provider, model)
         ),
-        provider=lambda name: provider if name == "claude" else None,
-        models=lambda refresh=False: MODELS,
+        provider=lambda name: provider if name == "mock" else None,
+        models=lambda refresh=False: catalog,
         status=lambda: {"providers": []},
     )
 
@@ -135,7 +100,7 @@ class EndpointTest(unittest.TestCase):
                     "POST",
                     "/anthropic/v1/messages",
                     {
-                        "model": "claude-broken-tool",
+                        "model": "mock-broken-tool",
                         "max_tokens": 128,
                         "messages": [{"role": "user", "content": "read"}],
                         "stream": streaming,
@@ -153,7 +118,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "stream": True,
                 "messages": [{"role": "user", "content": "hi"}],
             },
@@ -169,7 +134,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/v1/responses",
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "stream": True,
                 "store": False,
                 "input": "hi",
@@ -196,7 +161,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/anthropic/v1/messages",
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "max_tokens": 64,
                 "stream": True,
                 "messages": [{"role": "user", "content": "hi"}],
@@ -228,7 +193,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
@@ -241,7 +206,7 @@ class EndpointTest(unittest.TestCase):
         status, text = self.request(
             "POST",
             "/v1/responses",
-            {"model": "claude-sonnet-5", "store": False, "input": "hi"},
+            {"model": "mock-1", "store": False, "input": "hi"},
         )
         self.assertEqual(status, 200)
         body = json.loads(text)
@@ -254,7 +219,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/anthropic/v1/messages",
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "max_tokens": 64,
                 "messages": [{"role": "user", "content": "hi"}],
             },
@@ -272,7 +237,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/anthropic/v1/messages",
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "max_tokens": 64,
                 "messages": [{"role": "user", "content": "hi"}],
             },
@@ -307,12 +272,12 @@ class EndpointTest(unittest.TestCase):
     def test_account_auth_routes_require_an_explicit_slot(self):
         for route in ("login", "logout"):
             with self.subTest(route=route):
-                status, text = self.request("POST", f"/api/claude/{route}", {})
+                status, text = self.request("POST", f"/api/mock/{route}", {})
                 self.assertEqual(status, 400)
                 self.assertIn("account is required", text)
 
     def test_account_slots_can_be_managed_over_http(self):
-        status, text = self.request("POST", "/api/claude/accounts", {"action": "add"})
+        status, text = self.request("POST", "/api/mock/accounts", {"action": "add"})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(text), {"action": "add"})
 
@@ -325,7 +290,7 @@ class EndpointTest(unittest.TestCase):
         must not drift apart.
         """
         chat = {
-            "model": "claude-sonnet-5",
+            "model": "mock-1",
             "messages": [{"role": "user", "content": "hi"}],
         }
         for method, path, body in (
@@ -337,7 +302,7 @@ class EndpointTest(unittest.TestCase):
             (
                 "POST",
                 "/v1/responses",
-                {"model": "claude-sonnet-5", "store": False, "input": "hi"},
+                {"model": "mock-1", "store": False, "input": "hi"},
             ),
         ):
             with self.subTest(route=f"{method} {path}"):
@@ -366,7 +331,7 @@ class EndpointTest(unittest.TestCase):
             "/anthropic/v1/messages/count_tokens",
             # No max_tokens: nothing is generated, so its schema omits it.
             {
-                "model": "claude-sonnet-5",
+                "model": "mock-1",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
@@ -387,7 +352,7 @@ class EndpointTest(unittest.TestCase):
         status, _ = self.request(
             "POST",
             "/v1/messages/count_tokens",
-            {"model": "claude-sonnet-5", "messages": []},
+            {"model": "mock-1", "messages": []},
         )
         self.assertEqual(status, 404)
 
@@ -465,7 +430,7 @@ class EndpointTest(unittest.TestCase):
                     "POST",
                     "/v1/chat/completions",
                     {
-                        "model": f"claude-fail-{status}",
+                        "model": f"mock-fail-{status}",
                         "messages": [{"role": "user", "content": "hi"}],
                     },
                 )
@@ -479,7 +444,7 @@ class EndpointTest(unittest.TestCase):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "claude-burst",
+                "model": "mock-burst",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
@@ -489,8 +454,8 @@ class EndpointTest(unittest.TestCase):
     def test_unknown_routes_and_methods_are_refused(self):
         self.assertEqual(self.request("GET", "/v1/nope")[0], 404)
         self.assertEqual(self.request("POST", "/v1/nope", {})[0], 404)
-        self.assertEqual(self.request("GET", "/api/claude/nope")[0], 404)
-        self.assertEqual(self.request("POST", "/api/claude/nope", {})[0], 404)
+        self.assertEqual(self.request("GET", "/api/mock/nope")[0], 404)
+        self.assertEqual(self.request("POST", "/api/mock/nope", {})[0], 404)
 
     def test_malformed_json_is_a_client_error(self):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)

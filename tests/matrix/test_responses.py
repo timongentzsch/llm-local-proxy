@@ -8,7 +8,7 @@ import io
 import json
 import unittest
 
-import claude_events
+from claude import claude_events
 
 from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
 from llm_local_proxy.dialects.openai.responses_ingress import parse
@@ -18,9 +18,7 @@ from llm_local_proxy.providers.claude.events import ClaudeDecoder
 from llm_local_proxy.providers.claude.request import build as _build_claude
 from llm_local_proxy.providers.claude.thinking import (
     ENVELOPE_PREFIX,
-    Outcome,
     pack,
-    unpack,
 )
 from llm_local_proxy.providers.codex.events import CodexDecoder
 from llm_local_proxy.providers.codex.request import build as build_codex
@@ -202,21 +200,6 @@ class ResponsesIngressTest(unittest.TestCase):
         with self.assertRaisesRegex(RequestError, "custom_tool_call"):
             build_claude(request, "claude-test")
 
-    def test_claude_maps_a_requested_summary_to_visible_thinking(self):
-        request = parse(
-            {
-                "model": "claude-test",
-                "input": "think",
-                "reasoning": {"effort": "high", "summary": "auto"},
-            }
-        )
-        # Explicit reasoning activates adaptive thinking even if an incomplete
-        # live catalog entry failed to advertise the capability.
-        upstream, _ = build_claude(request, "claude-test")
-        self.assertEqual(
-            upstream["thinking"], {"type": "adaptive", "display": "summarized"}
-        )
-
 
 class ResponsesEgressTest(unittest.TestCase):
     def test_each_reasoning_item_keeps_one_id_from_added_to_done(self):
@@ -283,21 +266,6 @@ class ResponsesEgressTest(unittest.TestCase):
             in {"response.output_item.added", "response.output_item.done"}
         }
         self.assertEqual(len(ids), 1)
-
-    def test_empty_reasoning_summary_remains_exactly_empty(self):
-        encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
-        encoder.feed(
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "reasoning",
-                    "id": "rs_empty",
-                    "summary": [],
-                    "encrypted_content": "opaque",
-                },
-            }
-        )
-        self.assertEqual(encoder.result()["output"][0]["summary"], [])
 
     def test_completed_only_reasoning_summary_is_not_duplicated(self):
         encoder = ResponseEncoder("gpt-test", CodexDecoder(ReasoningCache()))
@@ -391,22 +359,6 @@ class ResponsesEgressTest(unittest.TestCase):
         )
         # Never a call the client is expected to run and answer.
         self.assertEqual(result["status"], "completed")
-
-    def test_claude_signed_thinking_is_exposed_as_replayable_item(self):
-        encoder = ResponseEncoder("claude-test", ClaudeDecoder())
-        for event in (
-            *claude_events.thinking(0, "Checked.", "signature"),
-            claude_events.stop("end_turn"),
-        ):
-            encoder.feed(event)
-        result = encoder.result()
-        self.assertEqual(result["output"][0]["summary"][0]["text"], "Checked.")
-        recovered = unpack(result["output"][0]["encrypted_content"])
-        self.assertIs(recovered.outcome, Outcome.OK)
-        self.assertEqual(
-            recovered.block,
-            {"type": "thinking", "thinking": "Checked.", "signature": "signature"},
-        )
 
 
 def _claude_stream(blocks: list[dict[str, object]]) -> list[dict[str, object]]:

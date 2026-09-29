@@ -85,7 +85,7 @@ line in `dialects/__init__.py` or `providers/__init__.py`.
    and add it to `REGISTRY` in `providers/__init__.py`.
 
 Every dialect then reaches the new provider without further changes; add its
-lanes to `tests/test_golden.py` and `tests/test_protocol_matrix.py`.
+lanes to `tests/matrix/test_golden.py` and `tests/matrix/test_protocol_matrix.py`.
 
 ## Endpoints
 
@@ -139,7 +139,8 @@ suffix.
 Wire claims are labelled by how they can be checked:
 
 - **[spec]**: the pinned Anthropic OpenAPI snapshot (see [specs.md](specs.md));
-  `tests/test_conformance.py` fails when a refresh changes the contract.
+  `tests/test_conformance.py` and `tests/claude/test_conformance.py` fail when a
+  refresh changes the contract.
 - **[docs]**: published prose that no schema covers, chiefly SSE framing
   (`ping` and `error` events are defined only in the streaming docs).
 - **[empirical]**: observed against a subscription edge, with no specification.

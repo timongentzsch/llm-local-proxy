@@ -156,9 +156,13 @@ PYTHONPATH=src uv run python -m unittest discover -s tests
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
-`tests/test_golden.py` pins the byte-level output of every request and response
-lane, and `tests/test_protocol_matrix.py` replays a tool turn with populated
-arguments and signed reasoning through all six format/subscription pairs.
+Tests at the top of `tests/` are provider-agnostic and run against
+`tests/mock_provider.py`; those that need a real provider's code live in
+`tests/claude/` and `tests/codex/`, and `tests/matrix/` runs every client
+format through both. There, `test_golden.py` pins the byte-level output of
+every request and response lane, and `test_protocol_matrix.py` replays a tool
+turn with populated arguments and signed reasoning through all six
+format/subscription pairs.
 Regenerate goldens only deliberately (`LLM_PROXY_RECORD=1`) and review the
 diff. CI runs the suite on Python 3.11–3.14.
 

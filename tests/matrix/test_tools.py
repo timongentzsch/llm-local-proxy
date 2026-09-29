@@ -130,6 +130,10 @@ class ToolContractTest(unittest.TestCase):
                 ],
             }
         )
+        # Codex honours the size hint as sent.
+        self.assertEqual(
+            render("codex", codex_style)["tools"][0]["search_context_size"], "low"
+        )
         self.assertEqual(
             render("claude", codex_style)["tools"],
             [

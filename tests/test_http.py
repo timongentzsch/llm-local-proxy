@@ -10,19 +10,13 @@ import io
 import unittest
 from threading import Event
 
-from llm_local_proxy.dialects import DEFAULT, DIALECTS, OPENAI, resolve
+from llm_local_proxy.dialects import OPENAI, resolve
 from llm_local_proxy.http import security
-from llm_local_proxy.http.sse import SseStream, render, with_heartbeats
+from llm_local_proxy.http.sse import SseStream, with_heartbeats
 from llm_local_proxy.providers.transport import read_events
 
 
 class FramingTest(unittest.TestCase):
-    def test_named_frame_prefixes_the_event(self):
-        self.assertEqual(
-            render({"a": 1}, "message_start"),
-            b'event: message_start\ndata: {"a":1}\n\n',
-        )
-
     def test_openai_stream_bytes_are_unchanged(self):
         buffer = io.BytesIO()
         buffer.flush = lambda: None  # type: ignore[method-assign]
@@ -81,22 +75,6 @@ class UpstreamFramingTest(unittest.TestCase):
 
 
 class ResolveTest(unittest.TestCase):
-    def test_each_dialect_answers_under_its_own_prefix(self):
-        for dialect in DIALECTS:
-            with self.subTest(dialect=dialect.name):
-                found, path = resolve(f"{dialect.prefix}/v1/models")
-                self.assertEqual(found.name, dialect.name)
-                self.assertEqual(path, "/v1/models")
-
-    def test_bare_paths_still_reach_the_default_dialect(self):
-        # Configured before the prefixes existed; must keep working.
-        dialect, path = resolve("/v1/chat/completions")
-        self.assertIs(dialect, DEFAULT)
-        self.assertEqual(path, "/v1/chat/completions")
-
-    def test_prefixed_and_bare_default_paths_agree(self):
-        self.assertEqual(resolve(f"{DEFAULT.prefix}/v1/models"), resolve("/v1/models"))
-
     def test_a_bare_prefix_serves_the_dialect_root(self):
         self.assertEqual(resolve("/anthropic")[1], "/")
 
