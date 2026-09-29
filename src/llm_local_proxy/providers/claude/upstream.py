@@ -2,30 +2,39 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import math
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ...atomic import atomic_write_json
 from ...errors import UpstreamError
 from ...ledger import TokenLedger, track_usage
 from ...status import Limit, window_label
 from .. import transport
 from .auth import OAUTH_BETA, ClaudeAuth, ClaudeAuthError
-from .subscription import CLAUDE_CODE_SYSTEM_MARKER
 from .usage import ClaudeUsage
 
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 MODELS_URL = "https://api.anthropic.com/v1/models"
+# Subscription utilization, the endpoint Claude usage trackers read.
+# Undocumented; needs the user:profile scope the login requests.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+# Seconds between usage reads, however many dashboards are polling; after a
+# refusal (rate limit or credentials) the next read waits for the backoff.
+USAGE_TTL = 30
+USAGE_BACKOFF = 300
+# A usage read feeds a status page, so it must fail fast rather than hang.
+USAGE_TIMEOUT = 10
 ANTHROPIC_VERSION = "2023-06-01"
 # Beta the subscription edge uses to recognize Claude Code traffic; requests
 # without it (and the system marker) are billed against the API pool and 429.
@@ -63,105 +72,108 @@ def _message_events(response: Any) -> Iterator[dict[str, Any]]:
 
 
 class UsageStore:
-    """Latest unified rate-limit state reported by the subscription edge.
+    """Subscription utilization from the OAuth usage endpoint, read on demand.
 
-    Every /v1/messages response carries anthropic-ratelimit-unified-* headers
-    (5h/7d utilization, resets, overage status); /v1/usage is 404, so these
-    are the only live usage numbers. A window whose reset has passed reads as
-    idle (0%, no reset) until a response reports the new one. Kept in memory
-    and mirrored to disk so the dashboard survives a proxy restart.
+    The endpoint is read-only metadata: it generates nothing, costs no tokens
+    and cannot open a window, and it reports the whole subscription, other
+    clients included. Reads are spaced by ``USAGE_TTL`` so any number of
+    dashboards cost one request, and a failed read keeps the last bars along
+    with the stamp of when they were observed.
+
+    One read runs at a time and outside the lock: callers arriving meanwhile
+    get the last bars at once instead of queueing behind the network.
     """
 
-    def __init__(self, path: Path | None = None):
-        self.path = path
+    def __init__(self, read: Callable[[], Any]):
+        self._read = read
         self._lock = threading.Lock()
-        self._value = self._load()
+        self._bars: tuple[Limit, ...] = ()
+        self._updated_at: float | None = None
+        self._next_read = 0.0
+        self._reading = False
+        # Bumped by clear(), so a read begun for the previous login is dropped.
+        self._generation = 0
+        self._last_error = ""
 
-    def _load(self) -> dict[str, Any]:
-        if not self.path:
-            return {}
+    def current(self) -> tuple[tuple[Limit, ...], float | None]:
+        """The latest bars and when they were observed, refreshed if due."""
+        with self._lock:
+            if self._reading or time.monotonic() < self._next_read:
+                return self._bars, self._updated_at
+            self._reading = True
+            generation = self._generation
+        bars, error = None, None
         try:
-            value = json.loads(self.path.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-        return value if isinstance(value, dict) else {}
-
-    @staticmethod
-    def capture(headers: Mapping[str, Any] | None) -> dict[str, Any] | None:
-        if not headers:
-            return None
-        captured = {
-            key: value
-            for key, value in headers.items()
-            if key.lower().startswith("anthropic-ratelimit-")
-        }
-        if not captured:
-            return None
-        return {"updated_at": int(time.time()), **captured}
-
-    def update(self, headers: Mapping[str, Any] | None) -> None:
-        value = self.capture(headers)
-        if value is None:
-            return
+            bars = _limits(self._read())
+        except ClaudeUpstreamError as caught:
+            error = caught
         with self._lock:
-            self._value = value
-            if self.path:
-                atomic_write_json(self.path, value)
-
-    def get(self) -> dict[str, Any] | None:
-        with self._lock:
-            return dict(self._value) if self._value else None
+            self._reading = False
+            if generation != self._generation:
+                return self._bars, self._updated_at
+            delay = USAGE_TTL
+            if bars is not None:
+                self._bars, self._updated_at = bars, time.time()
+                self._last_error = ""
+            else:
+                if error.status in {401, 403, 429}:
+                    delay = USAGE_BACKOFF
+                # Logged once per distinct failure, not on every retry.
+                if str(error) != self._last_error:
+                    self._last_error = str(error)
+                    sys.stderr.write(f"claude: usage unavailable: {error}\n")
+            self._next_read = time.monotonic() + delay
+            return self._bars, self._updated_at
 
     def clear(self) -> None:
         """Forget the bars of a login this slot no longer holds."""
         with self._lock:
-            self._value = {}
-            if self.path:
-                self.path.unlink(missing_ok=True)
+            self._bars, self._updated_at, self._next_read = (), None, 0.0
+            self._generation += 1
+            self._last_error = ""
 
-    def limits(self) -> tuple[Limit, ...]:
-        """The unified utilization headers as dashboard bars."""
-        items: list[Limit] = []
-        for name, raw, reset in _windows(self.get() or {}):
-            try:
-                used = float(raw)
-            except (TypeError, ValueError):
-                continue
-            if _expired(reset):
-                # The window rolled over since this was observed. A new one
-                # opens on the next request, so it reads as idle until then.
-                used, reset = 0.0, None
+
+def _limits(value: Any) -> tuple[Limit, ...]:
+    """Dashboard bars from a usage response; unknown fields are ignored."""
+    if not isinstance(value, dict):
+        raise ClaudeUpstreamError(502, "Claude usage is malformed")
+    items: list[Limit] = []
+    for key, window in (("five_hour", "5h"), ("seven_day", "7d")):
+        entry = value.get(key)
+        if isinstance(entry, dict) and _is_number(entry.get("utilization")):
             items.append(
                 Limit(
-                    label=window_label(name), used_percent=used * 100, resets_at=reset
+                    label=window_label(window),
+                    used_percent=float(entry["utilization"]),
+                    resets_at=entry.get("resets_at"),
                 )
             )
-        return tuple(items)
+    # Model-scoped weekly caps (e.g. one model's own allowance) appear only
+    # in this list; the unscoped session and weekly entries repeat the above.
+    entries = value.get("limits")
+    for entry in entries if isinstance(entries, list) else ():
+        if not isinstance(entry, dict) or entry.get("kind") != "weekly_scoped":
+            continue
+        scope = entry.get("scope") if isinstance(entry.get("scope"), dict) else {}
+        model = scope.get("model") if isinstance(scope.get("model"), dict) else {}
+        name = model.get("display_name") or model.get("id")
+        if name and _is_number(entry.get("percent")):
+            items.append(
+                Limit(
+                    label=f"{name} {window_label('7d')}",
+                    used_percent=float(entry["percent"]),
+                    resets_at=entry.get("resets_at"),
+                )
+            )
+    return tuple(items)
 
-    def rolled_over(self) -> bool:
-        """Whether a window has reset since observed, so a request reopens it."""
-        return any(_expired(reset) for _, _, reset in _windows(self.get() or {}))
 
-    def updated_at(self) -> float | None:
-        value = self.get() or {}
-        stamp = value.get("updated_at")
-        return float(stamp) if isinstance(stamp, (int, float)) else None
-
-
-def _windows(value: dict[str, Any]) -> Iterator[tuple[str, Any, Any]]:
-    """(name, utilization, reset) for each window in captured headers."""
-    for key, raw in value.items():
-        if key.endswith("-utilization"):
-            prefix = key.removesuffix("-utilization")
-            name = prefix.removeprefix("anthropic-ratelimit-unified-")
-            yield name, raw, value.get(f"{prefix}-reset")
-
-
-def _expired(reset: Any) -> bool:
-    try:
-        return float(reset) <= time.time()
-    except (TypeError, ValueError):
-        return False
+def _is_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 class ClaudeUpstream:
@@ -171,56 +183,18 @@ class ClaudeUpstream:
         self,
         auth: ClaudeAuth,
         timeout: int,
-        usage_path: Path | None = None,
         tokens_path: Path | None = None,
     ):
         self.auth = auth
         self.timeout = timeout
-        self.usage = UsageStore(usage_path)
+        self.usage = UsageStore(
+            lambda: self._get(USAGE_URL, "usage", timeout=USAGE_TIMEOUT)
+        )
         self.ledger = TokenLedger(tokens_path)
         self._opener = transport.opener()
 
     def models(self) -> list[dict[str, Any]]:
-        return self._models(refresh=False)
-
-    def _models(self, refresh: bool) -> list[dict[str, Any]]:
-        try:
-            token = self.auth.access_token(force_refresh=refresh)
-        except ClaudeAuthError as error:
-            raise ClaudeUpstreamError(
-                error.status,
-                str(error),
-                account_unavailable=error.status in {400, 401, 403},
-            ) from error
-        request = urllib.request.Request(
-            MODELS_URL,
-            method="GET",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "anthropic-version": ANTHROPIC_VERSION,
-                "anthropic-beta": OAUTH_BETA,
-                "User-Agent": USER_AGENT,
-            },
-        )
-        try:
-            with self._opener.open(request, timeout=self.timeout) as response:
-                raw = response.read().decode("utf-8", "replace")
-                self.usage.update(response.headers)
-        except urllib.error.HTTPError as error:
-            self.usage.update(error.headers)
-            if error.code == 401 and not refresh:
-                error.close()
-                return self._models(refresh=True)
-            raise _upstream_error(error) from error
-        except urllib.error.URLError as error:
-            raise ClaudeUpstreamError(502, str(error.reason)) from error
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError as error:
-            raise ClaudeUpstreamError(
-                502, "Claude model list is not valid JSON"
-            ) from error
+        value = self._get(MODELS_URL, "model list")
         items = value.get("data") if isinstance(value, dict) else None
         if not isinstance(items, list):
             raise ClaudeUpstreamError(502, "Claude model list is malformed")
@@ -263,29 +237,6 @@ class ClaudeUpstream:
     def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
         return track_usage(events, self.ledger, ClaudeUsage().read, {"message_stop"})
 
-    def ping_usage(self, model: str) -> dict[str, Any] | None:
-        """A 1-token call whose only job is to make the edge report usage.
-
-        Skipped while any window has rolled over: the ping would itself open
-        a new window and start its clock. The bars then show that window as
-        idle and the others as last observed.
-        """
-        if self.usage.rolled_over():
-            return self.usage.get()
-        body = {
-            "model": model,
-            "max_tokens": 1,
-            "system": [{"type": "text", "text": CLAUDE_CODE_SYSTEM_MARKER}],
-            "messages": [{"role": "user", "content": "usage check"}],
-        }
-        betas_header = f"{CLAUDE_CODE_BETA},{OAUTH_BETA}"
-        response = self._open(body, betas_header, refresh=False)
-        try:
-            response.read()
-        finally:
-            response.close()
-        return self.usage.get()
-
     def count_tokens(
         self, body: dict[str, Any], betas: tuple[str, ...] = ()
     ) -> dict[str, Any]:
@@ -310,6 +261,57 @@ class ClaudeUpstream:
             raise ClaudeUpstreamError(502, "Claude token count is malformed")
         return {"input_tokens": tokens}
 
+    def _get(
+        self,
+        url: str,
+        what: str,
+        refresh: bool = False,
+        timeout: float | None = None,
+    ) -> Any:
+        """GET a JSON document with the subscription's OAuth credentials."""
+        request = urllib.request.Request(
+            url,
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self._token(refresh)}",
+                "Accept": "application/json",
+                "anthropic-version": ANTHROPIC_VERSION,
+                "anthropic-beta": OAUTH_BETA,
+                "User-Agent": USER_AGENT,
+            },
+        )
+        try:
+            with self._opener.open(
+                request, timeout=timeout or self.timeout
+            ) as response:
+                raw = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as error:
+            if error.code == 401 and not refresh:
+                error.close()
+                return self._get(url, what, refresh=True, timeout=timeout)
+            raise _upstream_error(error) from error
+        except urllib.error.URLError as error:
+            raise ClaudeUpstreamError(502, str(error.reason)) from error
+        except (OSError, http.client.HTTPException) as error:
+            # A timeout or a cut connection while the body is still arriving.
+            raise ClaudeUpstreamError(502, f"Claude {what} is unreadable") from error
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ClaudeUpstreamError(
+                502, f"Claude {what} is not valid JSON"
+            ) from error
+
+    def _token(self, refresh: bool) -> str:
+        try:
+            return self.auth.access_token(force_refresh=refresh)
+        except ClaudeAuthError as error:
+            raise ClaudeUpstreamError(
+                error.status,
+                str(error),
+                account_unavailable=error.status in {400, 401, 403},
+            ) from error
+
     def _open(
         self,
         body: dict[str, Any],
@@ -317,14 +319,7 @@ class ClaudeUpstream:
         refresh: bool,
         url: str = MESSAGES_URL,
     ):
-        try:
-            token = self.auth.access_token(force_refresh=refresh)
-        except ClaudeAuthError as error:
-            raise ClaudeUpstreamError(
-                error.status,
-                str(error),
-                account_unavailable=error.status in {400, 401, 403},
-            ) from error
+        token = self._token(refresh)
         request = urllib.request.Request(
             url,
             data=json.dumps(body, separators=(",", ":")).encode(),
@@ -341,11 +336,8 @@ class ClaudeUpstream:
             },
         )
         try:
-            response = self._opener.open(request, timeout=self.timeout)
-            self.usage.update(response.headers)
-            return response
+            return self._opener.open(request, timeout=self.timeout)
         except urllib.error.HTTPError as error:
-            self.usage.update(error.headers)
             if error.code == 401 and not refresh:
                 error.close()
                 return self._open(body, betas, refresh=True, url=url)

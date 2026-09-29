@@ -17,7 +17,7 @@ from .auth import ClaudeAuth, ClaudeAuthError
 from .catalog import model_info
 from .events import ClaudeDecoder
 from .request import build
-from .upstream import ClaudeUpstream, ClaudeUpstreamError
+from .upstream import ClaudeUpstream
 
 #: The request fields /v1/messages/count_tokens accepts, per the pinned spec.
 COUNTED_FIELDS = (
@@ -40,7 +40,6 @@ class Claude(PooledProvider[ClaudeUpstream]):
         upstream = ClaudeUpstream(
             auth,
             self.context.config.request_timeout,
-            usage_path=account_file(directory, "claude", slot, "usage"),
             tokens_path=account_file(directory, "claude", slot, "tokens"),
         )
         return Account(slot, auth, upstream)
@@ -50,11 +49,16 @@ class Claude(PooledProvider[ClaudeUpstream]):
 
     def account_status(self, account: Account[ClaudeUpstream]) -> AccountStatus:
         account.auth.hydrate_profile()
+        status = account.auth.status()
+        # A login awaiting reauthentication would only fail the read again.
+        if not status.signed_in or self.pool.account_error(account.id):
+            return status
+        limits, updated_at = account.client.usage.current()
         return replace(
-            account.auth.status(),
-            limits=account.client.usage.limits(),
+            status,
+            limits=limits,
             tokens=account.client.ledger.windows(),
-            updated_at=account.client.usage.updated_at(),
+            updated_at=updated_at,
         )
 
     def no_account(self) -> ClaudeAuthError:
@@ -121,32 +125,6 @@ class Claude(PooledProvider[ClaudeUpstream]):
         self.forget()
         return result
 
-    def usage(self, body: dict[str, Any]) -> dict[str, Any]:
-        models = self._live_catalog()
-        if not models:
-            raise ClaudeUpstreamError(502, "Claude model catalog is empty")
-        model = min(models, key=lambda item: int(item.get("max_output_tokens") or 0))
-        slot = body.get("account", "")
-        if not isinstance(slot, str):
-            raise RequestError("account must be a string")
-        if slot:
-            account = self.pool.get(slot)
-            if not account.auth.signed_in():
-                raise ClaudeAuthError(f"Claude account {slot} is not signed in")
-            usage = account.client.ping_usage(str(model["id"]))
-            return {"account": slot, "usage": usage}
-        usage = {}
-        for account in self.pool.accounts:
-            # A login already known to need reauthentication would only fail
-            # again, and one failure must not cost every other account its bars.
-            if not account.auth.signed_in() or self.pool.account_error(account.id):
-                continue
-            try:
-                usage[account.id] = account.client.ping_usage(str(model["id"]))
-            except (ClaudeAuthError, ClaudeUpstreamError) as error:
-                usage[account.id] = {"error": str(error)}
-        return {"usage": usage}
-
     def _capability(self, model: str, key: str) -> Any:
         if not self.signed_in():
             return None
@@ -162,6 +140,6 @@ def create(context: ProviderContext) -> Provider:
         match=claude.match,
         chat=claude.chat,
         models=claude.models,
-        routes={"code": claude.finish_login, "usage": claude.usage},
+        routes={"code": claude.finish_login},
         count_tokens=claude.count_tokens,
     )

@@ -86,11 +86,11 @@ class ServiceWiringTest(unittest.TestCase):
                 seen["codex_tokens"].append(tokens_path)
                 return SimpleNamespace(ledger=SimpleNamespace(windows=dict))
 
-            def fake_claude_upstream(auth, timeout, usage_path=None, tokens_path=None):
+            def fake_claude_upstream(auth, timeout, tokens_path=None):
                 seen["claude_tokens"].append(tokens_path)
                 return SimpleNamespace(
                     ledger=SimpleNamespace(windows=dict),
-                    usage=SimpleNamespace(get=lambda: None),
+                    usage=SimpleNamespace(current=lambda: ((), None)),
                 )
 
             with (
@@ -335,8 +335,13 @@ class MultiAccountCatalogTest(unittest.TestCase):
         def __init__(self, result):
             self.result = result
             self.calls = 0
+            self.usage_reads = 0
             self.ledger = SimpleNamespace(windows=dict)
-            self.usage = SimpleNamespace(limits=tuple, updated_at=lambda: None)
+            self.usage = SimpleNamespace(current=self.read_usage)
+
+        def read_usage(self):
+            self.usage_reads += 1
+            return (), None
 
         def models(self):
             self.calls += 1
@@ -411,27 +416,14 @@ class MultiAccountCatalogTest(unittest.TestCase):
         self.assertIn("scope requirement", claude.pool.account_error("1"))
         self.assertFalse(claude.status().accounts[0].signed_in)
 
-    def test_claude_usage_refresh_survives_one_failing_account(self):
-        class Pinged(self.Client):
-            def ping_usage(self, model):
-                if isinstance(self.result, Exception):
-                    raise self.result
-                return self.result
-
+    def test_claude_usage_is_not_read_for_a_login_awaiting_reauthentication(self):
         claude = Claude.__new__(Claude)
-        claude.pool = self.accounts(
-            Pinged(ClaudeUpstreamError(429, "rate limited")), Pinged({"ok": 1})
-        )
-        claude._lock = Lock()
-        claude._catalog = (float("inf"), [{"id": "claude-live", "name": "x"}])
-
-        usage = claude.usage({})["usage"]
-        self.assertEqual(usage["1"], {"error": "rate limited"})
-        self.assertEqual(usage["2"], {"ok": 1})
-
-        # A login already known to need reauthentication is not pinged again.
+        claude.pool = self.accounts(self.Client([]), self.Client([]))
         claude.pool._mark_account_error("1", RuntimeError("expired"))
-        self.assertEqual(set(claude.usage({})["usage"]), {"2"})
+
+        claude.status()
+        self.assertEqual(claude.pool.get("1").client.usage_reads, 0)
+        self.assertEqual(claude.pool.get("2").client.usage_reads, 1)
 
     def test_a_new_claude_login_starts_without_the_previous_logins_bars(self):
         cleared = []

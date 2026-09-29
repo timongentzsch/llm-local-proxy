@@ -23,7 +23,8 @@ docker compose up --build   # published on 127.0.0.1:8787 only
 
 Open the URL printed at startup; its fragment carries the generated API key.
 Sign in to one or more accounts per subscription, then copy a base URL or a
-ready-made Codex CLI, Claude Code, OpenCode or OMP launch command from the dashboard.
+ready-made Codex CLI, Claude Code, OpenCode or OMP launch command from the
+dashboard.
 
 ```sh
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic ANTHROPIC_AUTH_TOKEN=$KEY \
@@ -108,15 +109,17 @@ streamed, a 429 cools the account for five minutes and a rejected credential
 cools it for one minute; either way the request moves to the next account.
 Nothing is retried after output starts.
 
-**Usage.** Token counts come from upstream usage and are recorded once per
-request, over rolling 5-hour and 7-day windows of proxy traffic only; the
-utilization bars come from the subscription itself and include other clients.
-A Claude window whose reset has passed shows as an idle 0% bar until the next
-request opens a new one, and the dashboard's usage check is skipped meanwhile
-so it never starts a window by itself. A stream
-that ends before final accounting keeps its last reported counts and is marked
-as partial; missing counts are never estimated. A stream that ends before its
-terminal event fails instead of looking complete.
+**Usage.** The dashboard's utilization bars come from each subscription and
+include its other clients: Claude's from its OAuth usage endpoint, read at most
+every 30 seconds, and Codex's from the app-server's rate limits. Neither read
+sends a message, so watching the dashboard never costs tokens or starts a
+window; a window with no activity yet, such as Codex's 5-hour one, appears once
+it opens. The proxy token counts cover proxy traffic only: they come from
+upstream usage and are recorded once per request over rolling 5-hour and
+7-day windows. A stream that ends before final accounting keeps its last
+reported counts and is marked as partial; missing counts are never estimated.
+A stream that ends before its terminal event fails instead of looking
+complete.
 
 ## Configuration
 
@@ -139,7 +142,7 @@ the port published to `127.0.0.1` as supplied.
 
 Account slots are added and removed from the dashboard; each provider allows
 one unsigned slot at a time, and a slot must be signed out before removal.
-Codex logins live in `codex_home/accounts/<slot>`; credentials, usage and token
+Codex logins live in `codex_home/accounts/<slot>`; credentials and token
 ledgers live in `accounts/<provider>/<slot>` next to the config.
 
 ## Development
@@ -169,8 +172,8 @@ are stored locally and sent only to their provider. Codex login is delegated to
 the official binary, and Claude tokens come from the OAuth flow of its
 first-party client.
 
-The proxy speaks two undocumented interfaces, the Codex app-server JSON-RPC
-surface and the Claude subscription Messages transport, including the client
-identifiers that mark first-party traffic. They may change without notice, and
+The proxy speaks undocumented interfaces: the Codex app-server JSON-RPC
+surface, and the Claude subscription Messages transport and OAuth usage
+endpoint, including the client identifiers that mark first-party traffic. They may change without notice, and
 their use may fall outside your subscription's terms; review those terms and
 use the paid APIs where a supported integration is required. No warranty.

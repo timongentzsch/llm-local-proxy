@@ -23,28 +23,28 @@
   .limit{margin:7px 0;font-size:11px}.bar{height:3px;background:#8884;margin-top:3px}.bar i{display:block;height:100%;background:currentColor}
   .accounts{display:flex;flex:1;flex-direction:column}.account-slot{padding:11px 14px}.account-slot+.account-slot{border-top:1px solid var(--line)}.account-slot:last-child{flex:1}.account-slot:not(.signed):last-child{display:flex;flex-direction:column}.account-slot:not(.signed):last-child>.actions{margin-top:auto}.identity{min-width:0}.account-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-meta{display:block;margin:1px 0 0 14px;font-size:11px;opacity:.62}.signout{padding:2px 7px;font-size:11px}.usage:empty{display:none}.stamp{font-size:10px}.login{margin-top:9px}.login .row{align-items:flex-start}.login-hint{font-size:11px;margin:6px 0}.paste{display:flex}
   #clients{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}#clients .row{display:block;border:1px solid var(--line);padding:7px 9px}#clients code{display:block;margin-top:2px}
-  .key-row{margin-top:8px;align-items:center}.key-row code{margin-left:auto}.command{display:grid;grid-template-columns:86px minmax(0,1fr);align-items:start;gap:10px;padding:8px 0}.command:first-child{border-top:0}.command-code{position:relative;min-width:0;background:#8881;border:1px solid var(--line)}.command code{display:block;overflow-x:auto;word-break:normal;white-space:pre;padding:7px 62px 7px 9px}.command-copy{position:absolute;inset:-1px -1px -1px auto;white-space:nowrap;background:Canvas}#command-model{max-width:55%;margin-left:auto}
+  .key-row{margin-top:8px;align-items:center}.key-row code{margin-left:auto}.command{display:grid;grid-template-columns:100px minmax(0,1fr);align-items:start;gap:10px;padding:8px 0}.command:first-child{border-top:0}.command>.muted{padding-top:8px}.command-code{position:relative;min-width:0;background:#8881;border:1px solid var(--line)}.command code{display:block;overflow-x:auto;word-break:normal;white-space:pre;padding:7px 62px 7px 9px}.command-copy{position:absolute;inset:-1px -1px -1px auto;white-space:nowrap;background:Canvas}#command-model{max-width:55%;margin-left:auto}
   #models{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}.model{padding:8px 0;border-top:1px solid var(--line)}.model-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.model-context{white-space:nowrap}.efforts{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.effort{border:1px solid #8885;padding:0 6px;font-size:10px}.efforts-empty{opacity:.6;font-size:10px}
   .skeleton-line,.skeleton-code,.skeleton-button{display:block;background:linear-gradient(90deg,#8881 25%,#8883 50%,#8881 75%);background-size:200% 100%;animation:shimmer 1.4s ease-in-out infinite}.skeleton-line{height:9px}.skeleton-provider .provider-head{height:43px}.skeleton-provider .account-slot{min-height:76px}.skeleton-provider .actions{margin-top:12px}.skeleton-client .skeleton-line+ .skeleton-line{margin-top:7px}.skeleton-code{height:31px}.skeleton-button{width:48px;height:27px;border:1px solid var(--line)}.skeleton-code .skeleton-button{position:absolute;inset:-1px -1px -1px auto;height:auto}.skeleton-model .skeleton-line{margin-top:1px}.skeleton-model .efforts{margin-top:7px}.skeleton-model .efforts .skeleton-line{height:12px}
   @media(max-width:720px){body{margin-top:18px}#providers,#clients,#models{grid-template-columns:1fr}.command{grid-template-columns:1fr;gap:5px}#command-model{max-width:65%}}
   @media(prefers-reduced-motion:reduce){.skeleton-line,.skeleton-code,.skeleton-button{animation:none}}
   [hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shimmer{to{background-position:-200% 0}}
 </style>
-<header><h1>llm local proxy</h1><span><i class="spin"></i><i id="dot" class="dot"></i><span id="state">loading</span></span></header>
+<header><h1>llm local proxy</h1><span><i class="spin"></i><i id="dot" class="dot"></i><span id="state" role="status">loading</span></span></header>
 <main>
   <div id="providers"></div>
   <section class="panel">
     <div class="section-head"><h2>connection</h2></div>
-    <div id="clients" aria-live="polite"></div>
+    <div id="clients"></div>
     <div class="row key-row"><span class="muted">api key</span><code id="key"></code><span><button id="copy">copy</button> <button id="forget">forget</button></span></div>
   </section>
   <section class="panel">
     <div class="section-head"><h2>launch a client</h2><select id="command-model" aria-label="model" disabled><option>loading models</option></select></div>
-    <div id="commands" aria-live="polite"></div>
+    <div id="commands"></div>
   </section>
   <section class="panel">
     <div class="section-head"><h2>models</h2><button id="refresh-models">refresh</button></div>
-    <div id="models" aria-live="polite"></div>
+    <div id="models"></div>
   </section>
 </main>
 <template id="skeleton-provider">
@@ -96,9 +96,11 @@ function takeKey(){const v=hashKey();if(!v)return storedKey();history.replaceSta
 // fragment, which the browser treats as a same-document navigation: without
 // this the page would keep running with the old key and look unresponsive.
 addEventListener("hashchange",()=>{if(hashKey())location.reload()});
-let key=takeKey(),active=0,providers=[],dialects=[],modelList=[];
+// The 60s reload re-renders only what changed, so it does not steal a text
+// selection, an open model list or focus from the panels below.
+let key=takeKey(),active=0,providers=[],dialects=[],modelList=[],shownDialects="",shownModels="",shownCommands="",refreshing=false,loading=null,again=false,timer;
 function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
-async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json();if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
+async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json().catch(()=>({}));if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
 const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});
 function fmtTime(v){if(v==null||v==="")return"";const n=Number(v);let d=Number.isFinite(n)&&n>1e9?new Date(n>1e12?n:n*1000):new Date(v);return isNaN(d)?String(v):timeFmt.format(d)}
 function fmtTokens(n){if(!n)return"0";if(n>=1e9)return(n/1e9).toFixed(2)+"B";if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
@@ -114,9 +116,9 @@ function wire(name,id,c){
   const login=c.querySelector(".login"),loginUrl=c.querySelector(".login-url"),copyLogin=c.querySelector(".copy-login");
   c.querySelector(".signin").onclick=async()=>{try{const r=await api(`/api/${name}/login`,{method:"POST",body:accountBody(id)}),url=new URL(r.url);if(url.protocol!=="https:")throw Error("invalid sign in URL");loginUrl.textContent=url.href;c.querySelector(".login-hint").textContent=r.code?`Open the URL and enter ${r.code}.`:"Open the URL, approve access, then paste the code from the callback page below.";c.querySelector(".paste").hidden=!!r.code;copyLogin.textContent="copy";login.dataset.account=r.account||id;login.hidden=false}catch(e){alert(e.message)}};
   copyLogin.onclick=async()=>{try{await navigator.clipboard.writeText(loginUrl.textContent);copyLogin.textContent="copied"}catch(e){alert(e.message)}};
-  c.querySelector(".signout").onclick=async()=>{await api(`/api/${name}/logout`,{method:"POST",body:accountBody(id)});login.hidden=true;load()};
+  c.querySelector(".signout").onclick=async()=>{try{await api(`/api/${name}/logout`,{method:"POST",body:accountBody(id)});login.hidden=true;load()}catch(e){alert(e.message)}};
   c.querySelector(".remove").onclick=async()=>{try{await api(`/api/${name}/accounts`,{method:"POST",body:accountBody(id,{action:"remove"})});load()}catch(e){alert(e.message)}};
-  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:accountBody(login.dataset.account||id,{code:input.value})});input.value="";login.hidden=true;await load();poll(true)}catch(e){alert(e.message)}};
+  c.querySelector(".confirm").onclick=async()=>{const input=c.querySelector(".login-code");try{await api(`/api/${name}/code`,{method:"POST",body:accountBody(login.dataset.account||id,{code:input.value})});input.value="";login.hidden=true;await load()}catch(e){alert(e.message)}};
 }
 function showProvider(p){
   const c=providerCard(p.name),items=p.accounts||[],root=c.querySelector(".accounts");
@@ -125,11 +127,11 @@ function showProvider(p){
   c.querySelector(".summary").textContent=`${connected}/${items.length} connected`;
   c.querySelector(".add-account").hidden=!(p.routes||[]).includes("accounts")||items.some(a=>!a.signed_in);
   const ids=new Set(items.map(a=>a.id||""));for(const slot of root.querySelectorAll(".account-slot")){if(!ids.has(slot.dataset.account))slot.remove()}
-  for(const a of items){const id=a.id||"",slot=accountCard(p.name,id,root),on=!!a.signed_in,parts=String(a.account||"").split(" · ").filter(Boolean),name=parts.shift()||`${p.name} account`;slot.classList.toggle("signed",on);slot.querySelector(".account-label").textContent=a.error?"unavailable":on?name:`add ${p.name} login`;slot.querySelector(".account-meta").textContent=a.error?a.error:on?parts.join(" · "):"available login slot";slot.querySelector(".signin").textContent="sign in";slot.querySelector(".signin").hidden=on;slot.querySelector(".signout").hidden=!on;slot.querySelector(".remove").hidden=on;if(on)slot.querySelector(".login").hidden=true;const usage=slot.querySelector(".usage");usage.replaceChildren();if(on){for(const limit of a.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);showTokens(usage,a.tokens||{})}slot.querySelector(".stamp").textContent=on&&a.updated_at?`updated ${fmtTime(a.updated_at)}`:""}
+  for(const a of items){const id=a.id||"",slot=accountCard(p.name,id,root),on=!!a.signed_in,parts=String(a.account||"").split(" · ").filter(Boolean),name=parts.shift()||`${p.name} account`;slot.classList.toggle("signed",on);slot.querySelector(".account-label").textContent=a.error?"unavailable":on?name:`add ${p.name} login`;slot.querySelector(".account-meta").textContent=a.error?a.error:on?parts.join(" · "):"available login slot";slot.querySelector(".signin").textContent="sign in";slot.querySelector(".signin").hidden=on;slot.querySelector(".signout").hidden=!on;slot.querySelector(".remove").hidden=on;if(on)slot.querySelector(".login").hidden=true;const usage=slot.querySelector(".usage");usage.replaceChildren();if(on){for(const limit of a.limits||[])bar(usage,limit.label,limit.used_percent,limit.resets_at);if(!(a.limits||[]).length){const none=document.createElement("div");none.className="limit muted";none.textContent="limits unavailable";usage.append(none)}showTokens(usage,a.tokens||{})}slot.querySelector(".stamp").textContent=on&&a.updated_at?`updated ${fmtTime(a.updated_at)}`:""}
 }
-function showDialects(items){dialects=items;const root=q("#clients");root.replaceChildren();for(const d of items){const row=document.createElement("div");row.className="row";const label=document.createElement("span");label.className="muted";label.textContent=`${d.name} base url`;const value=document.createElement("code");value.textContent=d.base_url;row.append(label,value);root.append(row)}showCommands()}
+function showDialects(items){const root=q("#clients"),sig=JSON.stringify(items);if(sig===shownDialects&&root.querySelector(".row:not(.skeleton-client)"))return;shownDialects=sig;dialects=items;root.replaceChildren();for(const d of items){const row=document.createElement("div");row.className="row";const label=document.createElement("span");label.className="muted";label.textContent=`${d.name} base url`;const value=document.createElement("code");value.textContent=d.base_url;row.append(label,value);root.append(row)}showCommands()}
 function fmtContext(n){n=Number(n);if(!Number.isFinite(n)||n<=0)return"context unknown";if(n>=1e6&&n%1e6===0)return`${n/1e6}M context`;if(n>=1e3&&n%1e3===0)return`${n/1e3}k context`;return`${n.toLocaleString()} context`}
-function showModels(models){modelList=models;const root=q("#models"),select=q("#command-model"),selected=select.value;root.replaceChildren();select.replaceChildren();for(const model of models){const option=document.createElement("option");option.value=model.id;option.textContent=model.id;select.append(option);const row=document.createElement("div"),main=document.createElement("div"),id=document.createElement("code"),context=document.createElement("span"),efforts=document.createElement("div");row.className="model";main.className="model-main";id.textContent=model.id;id.title=model.name;context.className="model-context muted";context.textContent=fmtContext(model.context_length);efforts.className="efforts";const modes=Array.isArray(model.supported_reasoning_efforts)?model.supported_reasoning_efforts:[];if(modes.length){for(const mode of modes){const badge=document.createElement("span");badge.className="effort";badge.textContent=mode;efforts.append(badge)}}else{const empty=document.createElement("span");empty.className="efforts-empty";empty.textContent="effort modes not reported";efforts.append(empty)}main.append(id,context);row.append(main,efforts);root.append(row)}if(selected&&models.some(m=>m.id===selected))select.value=selected;select.disabled=false;if(!models.length){root.textContent="no models available";select.hidden=true;select.disabled=true}else select.hidden=false;showCommands()}
+function showModels(models){const root=q("#models"),select=q("#command-model"),selected=select.value,sig=JSON.stringify(models);if(sig===shownModels&&root.querySelector(".model:not(.skeleton-model)"))return;shownModels=sig;modelList=models;root.replaceChildren();select.replaceChildren();for(const model of models){const option=document.createElement("option");option.value=model.id;option.textContent=model.id;select.append(option);const row=document.createElement("div"),main=document.createElement("div"),id=document.createElement("code"),context=document.createElement("span"),efforts=document.createElement("div");row.className="model";main.className="model-main";id.textContent=model.id;id.title=model.name||model.id;context.className="model-context muted";context.textContent=fmtContext(model.context_length);efforts.className="efforts";const modes=Array.isArray(model.supported_reasoning_efforts)?model.supported_reasoning_efforts:[];if(modes.length){for(const mode of modes){const badge=document.createElement("span");badge.className="effort";badge.textContent=mode;efforts.append(badge)}}else{const empty=document.createElement("span");empty.className="efforts-empty";empty.textContent="effort modes not reported";efforts.append(empty)}main.append(id,context);row.append(main,efforts);root.append(row)}if(selected&&models.some(m=>m.id===selected))select.value=selected;select.disabled=false;if(!models.length){root.textContent="no models available";select.hidden=true;select.disabled=true}else select.hidden=false;showCommands()}
 function shell(v){return"'"+String(v).replaceAll("'","'\\''")+"'"}
 // OMP has no base URL flag; its litellm provider reads one from the
 // environment and discovers the proxy's models from /models.
@@ -139,15 +141,18 @@ function showCommands(){
   const codexContext=context>0?` -c ${shell(`model_context_window=${context}`)}`:"",codex=`LLM_PROXY_API_KEY=${shell(clientKey)} codex --model ${shell(model)} -c 'model_provider="local_proxy"' -c ${shell(`model_providers.local_proxy={ name="LLM Local Proxy", base_url="${openai}", env_key="LLM_PROXY_API_KEY", wire_api="responses" }`)}${codexContext}`,claude=`ANTHROPIC_BASE_URL=${shell(anthropic)} ANTHROPIC_AUTH_TOKEN=${shell(clientKey)} claude --model ${shell(claudeModel)}`,modelConfig={name:model};
   if(context>0)modelConfig.limit={context};
   const config={"$schema":"https://opencode.ai/config.json",provider:{"local-proxy":{npm:"@ai-sdk/openai",name:"LLM Local Proxy",options:{baseURL:openai,apiKey:"{env:LLM_PROXY_API_KEY}"},models:{[model]:modelConfig}}}},opencode=`LLM_PROXY_API_KEY=${shell(clientKey)} OPENCODE_CONFIG_CONTENT=${shell(JSON.stringify(config))} opencode --model ${shell(`local-proxy/${model}`)}`,omp=`LITELLM_BASE_URL=${shell(openai)} LITELLM_API_KEY=${shell(clientKey)} omp --model ${shell(`litellm/${model}`)}`;
-  root.replaceChildren();for(const [name,command] of [["codex",codex],["claude code",claude],["opencode",opencode],["omp",omp]]){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=document.createElement("button");let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;copy.className="command-copy";copy.textContent="copy";copy.setAttribute("aria-label",`copy ${name} command`);copy.onclick=async()=>{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.textContent="copied";reset=setTimeout(()=>copy.textContent="copy",1500)};box.append(code,copy);row.append(label,box);root.append(row)}}
+  const commands=[["codex",codex],["claude code",claude],["opencode",opencode],["omp",omp]],sig=JSON.stringify(commands);if(sig===shownCommands&&root.querySelector(".command-copy"))return;shownCommands=sig;
+  root.replaceChildren();for(const [name,command] of commands){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=document.createElement("button");let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;copy.className="command-copy";copy.textContent="copy";copy.setAttribute("aria-label",`copy ${name} command`);copy.onclick=async()=>{try{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.textContent="copied";reset=setTimeout(()=>copy.textContent="copy",1500)}catch(e){alert(e.message)}};box.append(code,copy);row.append(label,box);root.append(row)}}
 q("#command-model").onchange=showCommands;
-q("#refresh-models").onclick=async()=>{const button=q("#refresh-models"),previous=modelList;button.disabled=true;q("#models").replaceChildren();fillSkeleton("#models","#skeleton-model",Math.max(previous.length,4));try{showModels((await api("/v1/models?refresh=1")).data)}catch(e){showModels(previous);alert(e.message)}finally{button.disabled=false}};
-async function load(){
+q("#refresh-models").onclick=async()=>{const button=q("#refresh-models"),previous=modelList;button.disabled=true;refreshing=true;shownModels="";q("#models").replaceChildren();fillSkeleton("#models","#skeleton-model",Math.max(previous.length,4));try{showModels((await api("/v1/models?refresh=1")).data)}catch(e){showModels(previous);alert(e.message)}finally{refreshing=false;button.disabled=false}};
+// One reload at a time; a call arriving meanwhile runs once it finishes.
+function load(){if(loading){again=true;return loading}loading=loadOnce().finally(()=>{loading=null;if(again){again=false;load()}});return loading}
+async function loadOnce(){
   const initial=!document.body.classList.contains("ready");
   const status=api("/api/status").then(value=>{
     showDialects(value.dialects||[]);
     providers=value.providers||[];
-    const providerRoot=q("#providers");providerRoot.querySelectorAll(".skeleton-provider").forEach(item=>item.remove());
+    const providerRoot=q("#providers");for(const node of [...providerRoot.childNodes])if(!node.matches?.(".provider:not(.skeleton-provider)"))node.remove();
     if(!providers.length)providerRoot.textContent="no providers configured";
     for(const p of providers)showProvider(p);
     const accounts=providers.flatMap(p=>p.accounts?.length?p.accounts:[p]),on=accounts.filter(a=>a.signed_in).length;
@@ -156,19 +161,18 @@ async function load(){
     if(error.status===401){
     // A key that no longer works, e.g. after the proxy regenerated one.
     // Drop it rather than retrying with it until the user clears storage.
-      forgetKey();showKey();q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#state").textContent="api key rejected · reopen the link printed at startup";
-    }else{q("#state").textContent=error.message;if(initial){q("#providers").textContent="unavailable";q("#clients").textContent="unavailable"}}
+      clearInterval(timer);forgetKey();showKey();q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#state").textContent="api key rejected · reopen the link printed at startup";
+    }else{q("#dot").classList.remove("on");q("#state").textContent=`${error.message} · showing last data`;if(initial){q("#providers").textContent="unavailable";q("#clients").textContent="unavailable"}}
   });
-  const models=api("/v1/models").then(value=>showModels(value.data)).catch(()=>{if(initial){q("#models").textContent="unavailable";q("#command-model").hidden=true}});
+  const models=refreshing?null:api("/v1/models").then(value=>showModels(value.data)).catch(()=>{if(initial){q("#models").textContent="unavailable";q("#command-model").hidden=true}});
   await Promise.all([status,models]);
   if(initial&&q("#commands").querySelector(".skeleton-command"))q("#commands").textContent="unavailable";
   document.body.classList.add("ready");
 }
-function poll(missingOnly=false){const pings=providers.filter(p=>p.signed_in&&(p.routes||[]).includes("usage")).flatMap(p=>missingOnly?(p.accounts||[]).filter(a=>a.signed_in&&!(a.limits||[]).length).map(a=>api(`/api/${p.name}/usage`,{method:"POST",body:accountBody(a.id)}).catch(()=>{})):[api(`/api/${p.name}/usage`,{method:"POST",body:"{}"}).catch(()=>{})]);return pings.length?Promise.all(pings).then(load):Promise.resolve()}
 function showKey(){q("#key").textContent=key||(authRequired?"open the link printed at startup":"disabled");for(const id of["#copy","#forget"])q(id).style.display=key?"":"none"}
-q("#copy").onclick=async()=>{await navigator.clipboard.writeText(key);q("#copy").textContent="copied"};
+q("#copy").onclick=async()=>{try{await navigator.clipboard.writeText(key);q("#copy").textContent="copied";setTimeout(()=>q("#copy").textContent="copy",1500)}catch(e){alert(e.message)}};
 q("#forget").onclick=()=>{forgetKey();location.reload()};
 showKey();
-if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load().then(()=>poll(true));setInterval(poll,60000)}
+if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load();timer=setInterval(load,60000)}
 </script>
 </html>

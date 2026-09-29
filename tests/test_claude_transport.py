@@ -1,16 +1,19 @@
-"""The Claude subscription transport: usage capture and error mapping."""
+"""The Claude subscription transport: usage reads and error mapping."""
 
 import contextlib
 import io
 import json
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
-from email.message import Message
 
-from llm_local_proxy.providers.claude.auth import ClaudeAuthError
+from llm_local_proxy.providers.claude.auth import OAUTH_BETA, ClaudeAuthError
 from llm_local_proxy.providers.claude.upstream import (
+    USAGE_TTL,
+    USAGE_URL,
     ClaudeUpstream,
     ClaudeUpstreamError,
     UsageStore,
@@ -125,13 +128,6 @@ class BlockShapeReportTest(unittest.TestCase):
             self._report(error, body)
 
 
-def _headers(**values):
-    message = Message()
-    for key, value in values.items():
-        message[key] = value
-    return message
-
-
 ENABLED = {"thinking": {"type": "enabled", "budget_tokens": 4096}}
 
 
@@ -150,79 +146,107 @@ class ThinkingFallbackTest(unittest.TestCase):
                 self.assertIs(_thinking_rejected(error, body), expected)
 
 
+#: The fields of a live /api/oauth/usage response the dashboard reads, among
+#: the placeholders and nulls it carries alongside them.
+USAGE = {
+    "five_hour": {"utilization": 8.0, "resets_at": "2026-09-29T22:19:59+00:00"},
+    "seven_day": {"utilization": 75.0, "resets_at": "2026-09-29T21:59:59+00:00"},
+    "seven_day_opus": None,
+    "nimbus_quill": {"utilization": 0.0, "resets_at": None},
+    "limits": [
+        {"kind": "session", "percent": 8, "scope": None},
+        {"kind": "weekly_all", "percent": 75, "scope": None},
+        {
+            "kind": "weekly_scoped",
+            "percent": 3,
+            "resets_at": "2026-09-29T22:00:00+00:00",
+            "scope": {"model": {"id": None, "display_name": "Fable"}},
+        },
+    ],
+}
+
+
 class UsageStoreTest(unittest.TestCase):
-    def test_captures_only_unified_ratelimit_headers(self):
-        value = UsageStore.capture(
-            _headers(
-                **{
-                    "anthropic-ratelimit-unified-5h-utilization": "0.07",
-                    "anthropic-ratelimit-unified-5h-reset": "1784900000",
-                    "anthropic-ratelimit-unified-overage-status": "rejected",
-                    "x-request-id": "ignored",
-                }
-            )
+    def test_bars_come_from_the_session_weekly_and_model_scoped_windows(self):
+        limits, updated_at = UsageStore(lambda: USAGE).current()
+        self.assertEqual(
+            [(limit.label, limit.used_percent, limit.resets_at) for limit in limits],
+            [
+                ("5 hour", 8.0, "2026-09-29T22:19:59+00:00"),
+                ("weekly", 75.0, "2026-09-29T21:59:59+00:00"),
+                ("Fable weekly", 3.0, "2026-09-29T22:00:00+00:00"),
+            ],
         )
-        self.assertIn("updated_at", value)
-        self.assertEqual(value["anthropic-ratelimit-unified-5h-utilization"], "0.07")
-        self.assertNotIn("x-request-id", value)
+        self.assertIsNotNone(updated_at)
 
-    def test_ignores_responses_without_usage(self):
-        self.assertIsNone(UsageStore.capture(_headers(**{"x-request-id": "abc"})))
-        self.assertIsNone(UsageStore.capture(None))
+    def test_reads_are_spaced_and_a_refusal_backs_off_keeping_the_last_bars(self):
+        answers = [USAGE, ClaudeUpstreamError(429, "rate limited")]
+        reads = []
 
-    def test_update_persists_and_survives_reload(self):
-        path = pathlib.Path(tempfile.mkdtemp()) / "usage.json"
-        store = UsageStore(path)
-        self.assertIsNone(store.get())
-        store.update(_headers(**{"anthropic-ratelimit-unified-5h-utilization": "0.1"}))
-        reloaded = UsageStore(path)
-        value = reloaded.get()
-        self.assertEqual(value["anthropic-ratelimit-unified-5h-utilization"], "0.1")
-        reloaded.clear()
-        self.assertIsNone(reloaded.get())
-        self.assertIsNone(UsageStore(path).get())
+        def read():
+            reads.append(1)
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
 
-    def test_limits_normalize_headers_into_dashboard_bars(self):
-        store = UsageStore()
-        store.update(
-            _headers(
-                **{
-                    "anthropic-ratelimit-unified-5h-utilization": "0.57",
-                    "anthropic-ratelimit-unified-5h-reset": "4102444800",
-                    "anthropic-ratelimit-unified-7d-utilization": "0.28",
-                    "anthropic-ratelimit-unified-fallback-percentage": "0.5",
-                    "anthropic-ratelimit-unified-overage-status": "rejected",
-                }
-            )
-        )
-        limits = {limit.label: limit for limit in store.limits()}
-        self.assertEqual(sorted(limits), ["5 hour", "weekly"])
-        self.assertAlmostEqual(limits["5 hour"].used_percent, 57.0)
-        self.assertEqual(limits["5 hour"].resets_at, "4102444800")
-        self.assertIsNone(limits["weekly"].resets_at)
-        self.assertIsNotNone(store.updated_at())
+        store = UsageStore(read)
+        first = store.current()
+        self.assertEqual(store.current(), first)
+        self.assertEqual(len(reads), 1)
 
-    def test_limits_show_windows_whose_reset_has_passed_as_idle(self):
-        store = UsageStore()
-        store.update(
-            _headers(
-                **{
-                    "anthropic-ratelimit-unified-5h-utilization": "0.36",
-                    "anthropic-ratelimit-unified-5h-reset": "1000",
-                    "anthropic-ratelimit-unified-7d-utilization": "0.33",
-                    "anthropic-ratelimit-unified-7d-reset": "4102444800",
-                }
-            )
-        )
-        limits = {limit.label: limit for limit in store.limits()}
-        self.assertEqual(limits["5 hour"].used_percent, 0)
-        self.assertIsNone(limits["5 hour"].resets_at)
-        self.assertAlmostEqual(limits["weekly"].used_percent, 33.0)
-        self.assertTrue(store.rolled_over())
+        store._next_read = 0
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            self.assertEqual(store.current(), first)
+        self.assertEqual(len(reads), 2)
+        self.assertIn("rate limited", log.getvalue())
+        self.assertGreater(store._next_read - time.monotonic(), USAGE_TTL)
 
-    def test_limits_are_empty_without_usage(self):
-        self.assertEqual(UsageStore().limits(), ())
-        self.assertIsNone(UsageStore().updated_at())
+    def test_odd_payloads_leave_no_bars_instead_of_failing(self):
+        for payload in (
+            [],
+            {"limits": 3},
+            {"five_hour": {"utilization": float("nan")}},
+            {"seven_day": {"utilization": True}},
+            {"limits": [None, {"kind": "weekly_scoped", "scope": None}]},
+        ):
+            with (
+                self.subTest(payload=payload),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(UsageStore(lambda p=payload: p).current()[0], ())
+
+    def test_callers_do_not_wait_for_a_read_in_flight(self):
+        started, release = threading.Event(), threading.Event()
+
+        def read():
+            started.set()
+            release.wait(5)
+            return USAGE
+
+        store = UsageStore(read)
+        reader = threading.Thread(target=store.current)
+        reader.start()
+        started.wait(5)
+        self.assertEqual(store.current(), ((), None))
+        release.set()
+        reader.join(5)
+        self.assertEqual(len(store.current()[0]), 3)
+
+    def test_clear_forgets_the_bars_and_drops_a_read_in_flight(self):
+        reads = []
+        store = UsageStore(lambda: reads.append(1) or USAGE)
+        store.current()
+        store.clear()
+        self.assertEqual(len(store.current()[0]), 3)
+        self.assertEqual(len(reads), 2)
+
+        def read_then_clear():
+            store.clear()
+            return USAGE
+
+        store = UsageStore(read_then_clear)
+        self.assertEqual(store.current(), ((), None))
 
 
 class _FakeAuth:
@@ -256,16 +280,12 @@ class _FakeOpener:
 
 
 class _SseResponse(io.BytesIO):
-    """An SSE body that also carries headers, as a real response does."""
-
-    def __init__(self, payload: bytes, headers=None):
-        super().__init__(payload)
-        self.headers = headers if headers is not None else Message()
+    """A response body, readable and closable as a real one is."""
 
 
-def _sse(*events: str, headers=None) -> _SseResponse:
+def _sse(*events: str) -> _SseResponse:
     body = "".join(f"data: {event}\n\n" for event in events)
-    return _SseResponse(body.encode(), headers)
+    return _SseResponse(body.encode())
 
 
 def _upstream(*answers, tokens=("tok",), tmp: pathlib.Path | None = None):
@@ -415,49 +435,27 @@ class UpstreamRequestTest(unittest.TestCase):
             self.assertEqual(upstream.ledger.windows()["5h"]["output"], 3)
             self.assertEqual(upstream.ledger.windows()["5h"]["partial_requests"], 1)
 
-    def test_rate_limit_headers_are_captured_from_a_failure_too(self):
-        error = _http_error(429, "{}")
-        error.headers = _headers(
-            **{"anthropic-ratelimit-unified-5h-utilization": "0.9"}
-        )
-        upstream = _upstream(error)
-        with self.assertRaises(ClaudeUpstreamError):
-            list(upstream.events({"model": "m", "messages": []}))
-        limits = {limit.label: limit for limit in upstream.usage.limits()}
-        self.assertAlmostEqual(limits["5 hour"].used_percent, 90.0)
-
-    def test_usage_ping_never_opens_a_rolled_over_window(self):
-        upstream = _upstream()
-        upstream.usage.update(
-            _headers(
-                **{
-                    "anthropic-ratelimit-unified-5h-utilization": "0.4",
-                    "anthropic-ratelimit-unified-5h-reset": "1000",
-                }
-            )
-        )
-        self.assertEqual(upstream.ping_usage("m"), upstream.usage.get())
-        self.assertEqual(upstream._opener.requests, [])
-
-    def test_usage_ping_refreshes_windows_that_are_still_open(self):
+    def test_usage_is_read_from_the_oauth_usage_endpoint(self):
         upstream = _upstream(
-            _SseResponse(
-                b"{}",
-                _headers(**{"anthropic-ratelimit-unified-5h-utilization": "0.5"}),
-            )
+            _http_error(401, "{}"), _SseResponse(json.dumps(USAGE).encode())
         )
-        upstream.usage.update(
-            _headers(
-                **{
-                    "anthropic-ratelimit-unified-5h-utilization": "0.4",
-                    "anthropic-ratelimit-unified-5h-reset": "4102444800",
-                }
-            )
-        )
-        self.assertFalse(upstream.usage.rolled_over())
-        upstream.ping_usage("m")
-        self.assertEqual(len(upstream._opener.requests), 1)
-        self.assertAlmostEqual(upstream.usage.limits()[0].used_percent, 50.0)
+        limits, _ = upstream.usage.current()
+        self.assertEqual(len(limits), 3)
+        request = upstream._opener.requests[-1]
+        self.assertEqual(request.full_url, USAGE_URL)
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Anthropic-beta"), OAUTH_BETA)
+        # An expired token is refreshed once and the read repeats.
+        self.assertEqual(upstream.auth.forced, [False, True])
+
+    def test_a_body_that_times_out_is_an_upstream_error(self):
+        class Stalled(_SseResponse):
+            def read(self, *args):
+                raise TimeoutError("timed out")
+
+        upstream = _upstream(Stalled())
+        with self.assertRaisesRegex(ClaudeUpstreamError, "usage is unreadable"):
+            upstream._get(USAGE_URL, "usage")
 
 
 class ModelNormalizationTest(unittest.TestCase):
