@@ -75,6 +75,21 @@ class CodexAuthTest(unittest.TestCase):
         )
         self.assertEqual(status.limits[1].resets_at, 1787234107)
 
+    def test_only_the_top_level_limit_limits_the_whole_account(self):
+        window = {"usedPercent": 50, "windowDurationMins": 300}
+        app = _App(
+            account={"email": "user@example.com"},
+            rate_limits={
+                "rateLimits": {"limitId": "codex"},
+                "rateLimitsByLimitId": {
+                    "codex": {"limitId": "codex", "primary": window},
+                    "spark": {"limitId": "spark", "primary": window},
+                },
+            },
+        )
+        limits = CodexAuth(app).status().limits
+        self.assertEqual([limit.model for limit in limits], ["", "spark"])
+
     def test_status_survives_a_rate_limit_read_failure(self):
         app = _App(
             account={"email": "user@example.com"}, fail={"account/rateLimits/read"}

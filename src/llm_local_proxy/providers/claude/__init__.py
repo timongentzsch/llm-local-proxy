@@ -12,6 +12,7 @@ from ...status import AccountStatus
 from ...tools import flatten
 from ..base import Provider, ProviderContext
 from ..catalog import match_model
+from ..limits import LimitsStore
 from ..pool import Account, PooledProvider, account_file, account_id
 from .auth import ClaudeAuth, ClaudeAuthError
 from .catalog import model_info
@@ -60,6 +61,9 @@ class Claude(PooledProvider[ClaudeUpstream]):
             tokens=account.client.ledger.windows(),
             updated_at=updated_at,
         )
+
+    def limits(self, account: Account[ClaudeUpstream]) -> LimitsStore:
+        return account.client.usage
 
     def no_account(self) -> ClaudeAuthError:
         return ClaudeAuthError(

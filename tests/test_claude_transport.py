@@ -5,18 +5,15 @@ import io
 import json
 import pathlib
 import tempfile
-import threading
-import time
 import unittest
 import urllib.error
 
 from llm_local_proxy.providers.claude.auth import OAUTH_BETA, ClaudeAuthError
 from llm_local_proxy.providers.claude.upstream import (
-    USAGE_TTL,
     USAGE_URL,
     ClaudeUpstream,
     ClaudeUpstreamError,
-    UsageStore,
+    _limits,
     _normalize_model,
     _report_block_shape,
     _thinking_rejected,
@@ -166,87 +163,31 @@ USAGE = {
 }
 
 
-class UsageStoreTest(unittest.TestCase):
+class UsageLimitsTest(unittest.TestCase):
     def test_bars_come_from_the_session_weekly_and_model_scoped_windows(self):
-        limits, updated_at = UsageStore(lambda: USAGE).current()
         self.assertEqual(
-            [(limit.label, limit.used_percent, limit.resets_at) for limit in limits],
             [
-                ("5 hour", 8.0, "2026-09-29T22:19:59+00:00"),
-                ("weekly", 75.0, "2026-09-29T21:59:59+00:00"),
-                ("Fable weekly", 3.0, "2026-09-29T22:00:00+00:00"),
+                (limit.label, limit.used_percent, limit.resets_at, limit.model)
+                for limit in _limits(USAGE)
+            ],
+            [
+                ("5 hour", 8.0, "2026-09-29T22:19:59+00:00", ""),
+                ("weekly", 75.0, "2026-09-29T21:59:59+00:00", ""),
+                ("Fable weekly", 3.0, "2026-09-29T22:00:00+00:00", "Fable"),
             ],
         )
-        self.assertIsNotNone(updated_at)
-
-    def test_reads_are_spaced_and_a_refusal_backs_off_keeping_the_last_bars(self):
-        answers = [USAGE, ClaudeUpstreamError(429, "rate limited")]
-        reads = []
-
-        def read():
-            reads.append(1)
-            answer = answers.pop(0)
-            if isinstance(answer, Exception):
-                raise answer
-            return answer
-
-        store = UsageStore(read)
-        first = store.current()
-        self.assertEqual(store.current(), first)
-        self.assertEqual(len(reads), 1)
-
-        store._next_read = 0
-        with contextlib.redirect_stderr(io.StringIO()) as log:
-            self.assertEqual(store.current(), first)
-        self.assertEqual(len(reads), 2)
-        self.assertIn("rate limited", log.getvalue())
-        self.assertGreater(store._next_read - time.monotonic(), USAGE_TTL)
 
     def test_odd_payloads_leave_no_bars_instead_of_failing(self):
         for payload in (
-            [],
             {"limits": 3},
             {"five_hour": {"utilization": float("nan")}},
             {"seven_day": {"utilization": True}},
             {"limits": [None, {"kind": "weekly_scoped", "scope": None}]},
         ):
-            with (
-                self.subTest(payload=payload),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                self.assertEqual(UsageStore(lambda p=payload: p).current()[0], ())
-
-    def test_callers_do_not_wait_for_a_read_in_flight(self):
-        started, release = threading.Event(), threading.Event()
-
-        def read():
-            started.set()
-            release.wait(5)
-            return USAGE
-
-        store = UsageStore(read)
-        reader = threading.Thread(target=store.current)
-        reader.start()
-        started.wait(5)
-        self.assertEqual(store.current(), ((), None))
-        release.set()
-        reader.join(5)
-        self.assertEqual(len(store.current()[0]), 3)
-
-    def test_clear_forgets_the_bars_and_drops_a_read_in_flight(self):
-        reads = []
-        store = UsageStore(lambda: reads.append(1) or USAGE)
-        store.current()
-        store.clear()
-        self.assertEqual(len(store.current()[0]), 3)
-        self.assertEqual(len(reads), 2)
-
-        def read_then_clear():
-            store.clear()
-            return USAGE
-
-        store = UsageStore(read_then_clear)
-        self.assertEqual(store.current(), ((), None))
+            with self.subTest(payload=payload):
+                self.assertEqual(_limits(payload), ())
+        with self.assertRaises(ClaudeUpstreamError):
+            _limits([])
 
 
 class _FakeAuth:

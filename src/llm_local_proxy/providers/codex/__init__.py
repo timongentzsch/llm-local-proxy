@@ -11,6 +11,7 @@ from ...ir import ChatRequest
 from ...status import AccountStatus
 from ..base import Provider, ProviderContext
 from ..catalog import match_model
+from ..limits import LimitsStore
 from ..pool import Account, PooledProvider, account_file
 from .app_server import AppServer, RpcError
 from .auth import CodexAuth
@@ -72,6 +73,9 @@ class Codex(PooledProvider[Upstream]):
 
     def account_status(self, account: Account[Upstream]) -> AccountStatus:
         return replace(account.auth.status(), tokens=account.client.ledger.windows())
+
+    def limits(self, account: Account[Upstream]) -> LimitsStore:
+        return account.auth.limits
 
     def no_account(self) -> UpstreamError:
         return UpstreamError(

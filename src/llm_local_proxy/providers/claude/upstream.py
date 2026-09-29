@@ -6,12 +6,10 @@ import http.client
 import json
 import math
 import sys
-import threading
-import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +18,7 @@ from ...errors import UpstreamError
 from ...ledger import TokenLedger, track_usage
 from ...status import Limit, window_label
 from .. import transport
+from ..limits import LimitsStore
 from .auth import OAUTH_BETA, ClaudeAuth, ClaudeAuthError
 from .usage import ClaudeUsage
 
@@ -29,11 +28,7 @@ MODELS_URL = "https://api.anthropic.com/v1/models"
 # Subscription utilization, the endpoint Claude usage trackers read.
 # Undocumented; needs the user:profile scope the login requests.
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-# Seconds between usage reads, however many dashboards are polling; after a
-# refusal (rate limit or credentials) the next read waits for the backoff.
-USAGE_TTL = 30
-USAGE_BACKOFF = 300
-# A usage read feeds a status page, so it must fail fast rather than hang.
+# A usage read feeds status and routing, so it must fail fast rather than hang.
 USAGE_TIMEOUT = 10
 ANTHROPIC_VERSION = "2023-06-01"
 # Beta the subscription edge uses to recognize Claude Code traffic; requests
@@ -71,68 +66,6 @@ def _message_events(response: Any) -> Iterator[dict[str, Any]]:
     yield {"type": "message_stop"}
 
 
-class UsageStore:
-    """Subscription utilization from the OAuth usage endpoint, read on demand.
-
-    The endpoint is read-only metadata: it generates nothing, costs no tokens
-    and cannot open a window, and it reports the whole subscription, other
-    clients included. Reads are spaced by ``USAGE_TTL`` so any number of
-    dashboards cost one request, and a failed read keeps the last bars along
-    with the stamp of when they were observed.
-
-    One read runs at a time and outside the lock: callers arriving meanwhile
-    get the last bars at once instead of queueing behind the network.
-    """
-
-    def __init__(self, read: Callable[[], Any]):
-        self._read = read
-        self._lock = threading.Lock()
-        self._bars: tuple[Limit, ...] = ()
-        self._updated_at: float | None = None
-        self._next_read = 0.0
-        self._reading = False
-        # Bumped by clear(), so a read begun for the previous login is dropped.
-        self._generation = 0
-        self._last_error = ""
-
-    def current(self) -> tuple[tuple[Limit, ...], float | None]:
-        """The latest bars and when they were observed, refreshed if due."""
-        with self._lock:
-            if self._reading or time.monotonic() < self._next_read:
-                return self._bars, self._updated_at
-            self._reading = True
-            generation = self._generation
-        bars, error = None, None
-        try:
-            bars = _limits(self._read())
-        except ClaudeUpstreamError as caught:
-            error = caught
-        with self._lock:
-            self._reading = False
-            if generation != self._generation:
-                return self._bars, self._updated_at
-            delay = USAGE_TTL
-            if bars is not None:
-                self._bars, self._updated_at = bars, time.time()
-                self._last_error = ""
-            else:
-                if error.status in {401, 403, 429}:
-                    delay = USAGE_BACKOFF
-                # Logged once per distinct failure, not on every retry.
-                if str(error) != self._last_error:
-                    self._last_error = str(error)
-                    sys.stderr.write(f"claude: usage unavailable: {error}\n")
-            self._next_read = time.monotonic() + delay
-            return self._bars, self._updated_at
-
-    def clear(self) -> None:
-        """Forget the bars of a login this slot no longer holds."""
-        with self._lock:
-            self._bars, self._updated_at, self._next_read = (), None, 0.0
-            self._generation += 1
-            self._last_error = ""
-
-
 def _limits(value: Any) -> tuple[Limit, ...]:
     """Dashboard bars from a usage response; unknown fields are ignored."""
     if not isinstance(value, dict):
@@ -163,6 +96,7 @@ def _limits(value: Any) -> tuple[Limit, ...]:
                     label=f"{name} {window_label('7d')}",
                     used_percent=float(entry["percent"]),
                     resets_at=entry.get("resets_at"),
+                    model=str(name),
                 )
             )
     return tuple(items)
@@ -187,8 +121,11 @@ class ClaudeUpstream:
     ):
         self.auth = auth
         self.timeout = timeout
-        self.usage = UsageStore(
-            lambda: self._get(USAGE_URL, "usage", timeout=USAGE_TIMEOUT)
+        # Read-only metadata: it costs no tokens and cannot open a window, and
+        # it covers the whole subscription, other clients included.
+        self.usage = LimitsStore(
+            "claude",
+            lambda: _limits(self._get(USAGE_URL, "usage", timeout=USAGE_TIMEOUT)),
         )
         self.ledger = TokenLedger(tokens_path)
         self._opener = transport.opener()

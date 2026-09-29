@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.base import ProviderContext
+from llm_local_proxy.providers.limits import LimitsStore
 from llm_local_proxy.providers.pool import (
     AUTH_FAILURE_COOLDOWN_SECONDS,
     RATE_LIMIT_COOLDOWN_SECONDS,
@@ -17,7 +18,7 @@ from llm_local_proxy.providers.pool import (
     AccountStore,
     PooledProvider,
 )
-from llm_local_proxy.status import AccountStatus
+from llm_local_proxy.status import AccountStatus, Limit
 
 
 class _Auth:
@@ -98,6 +99,38 @@ class AccountPoolTest(unittest.TestCase):
         self.assertEqual(list(pool._sessions), ["b", "c"])
         pool.remove("1")
         self.assertEqual(list(pool._sessions), [])
+
+    def test_new_sessions_skip_a_nearly_full_account_but_pinned_ones_stay(self):
+        usage = {"1": 95.0, "2": 10.0}
+        pool = AccountPool(
+            [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
+            used=lambda account: usage[account.id],
+        )
+        sessions = [f"s{n}" for n in range(50)]
+        self.assertEqual({pool.candidates(s)[0].id for s in sessions}, {"2"})
+        self.assertEqual(pool.candidates()[0].id, "2")
+        self.assertEqual(pool.candidates()[0].id, "2")
+
+        pool._remember("pinned", "1")
+        self.assertEqual(pool.candidates("pinned")[0].id, "1")
+        # Still a failover target, just last.
+        self.assertEqual([a.id for a in pool.candidates("s0")], ["2", "1"])
+
+    def test_routing_ignores_the_soft_limit_when_every_account_is_full(self):
+        pool = AccountPool(
+            [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
+            used=lambda account: 99.0,
+        )
+        starts = {pool.candidates(f"s{n}")[0].id for n in range(50)}
+        self.assertEqual(starts, {"1", "2"})
+
+    def test_unknown_usage_counts_as_room(self):
+        pool = AccountPool(
+            [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
+            used=lambda account: None,
+        )
+        self.assertFalse(pool.draining(pool.get("1")))
+        self.assertEqual(pool.candidates()[0].id, "1")
 
     def test_signed_out_accounts_are_not_candidates(self):
         pool = AccountPool(
@@ -245,6 +278,30 @@ class PooledProviderTest(unittest.TestCase):
             self.assertIsNone(fake._catalog)
             routes["accounts"]({"action": "remove", "account": "1"})
             self.assertEqual(self.provider(directory).store.ids(), ())
+
+    def test_status_marks_a_nearly_full_account_as_draining(self):
+        stores = {}
+
+        class Limited(self.Fake):
+            def new_account(self, slot):
+                return Account(slot, _Auth(), slot)
+
+            def account_status(self, account):
+                return account.auth.status()
+
+            def limits(self, account):
+                return stores[account.id]
+
+        with tempfile.TemporaryDirectory() as directory:
+            limited = Limited(ProviderContext(config=None, directory=Path(directory)))
+            for slot, percent in (("1", 95.0), ("2", 20.0)):
+                limited.store.add()
+                limited.pool.add(limited.new_account(slot))
+                store = LimitsStore(slot, lambda p=percent: (Limit("5 hour", p),))
+                store.current()
+                stores[slot] = store
+            accounts = limited.status().accounts
+        self.assertEqual([a.draining for a in accounts], [True, False])
 
 
 if __name__ == "__main__":

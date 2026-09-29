@@ -23,6 +23,8 @@ class Limit:
     used_percent: float
     #: Epoch seconds or an ISO timestamp; the page formats either.
     resets_at: Any = None
+    #: The model this bar is restricted to; empty when it limits the account.
+    model: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,8 @@ class AccountStatus:
     updated_at: float | None = None
     #: Set when the login could not be read; the row degrades to this.
     error: str = ""
+    #: Near a limit, so new sessions start on other accounts.
+    draining: bool = False
 
 
 @dataclass(frozen=True)

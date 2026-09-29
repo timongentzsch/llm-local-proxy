@@ -19,6 +19,7 @@ from ..status import AccountStatus, ProviderStatus
 from ..streaming import closing_iterator
 from .auth import Auth
 from .base import Provider, ProviderContext
+from .limits import LimitsStore, used
 from .reasoning import ReasoningCache
 
 T = TypeVar("T")
@@ -32,6 +33,9 @@ CATALOG_TTL_SECONDS = 60
 # keep. The table is bounded; the oldest entry goes first.
 SESSION_TTL_SECONDS = 3600
 SESSION_LIMIT = 4096
+# An account this full on a window that limits it whole takes no new sessions
+# while another has room; the sessions it serves stay, keeping their cache.
+SOFT_LIMIT_PERCENT = 90
 #: What a failing account or catalog degrades to instead of a whole-page error.
 DEGRADES = (ProviderError, OSError, ValueError)
 
@@ -50,13 +54,20 @@ class AccountPool(Generic[T]):
     preserves upstream prompt-cache locality; a session not seen recently
     starts on its rendezvous-hash account, so a change to the set of usable
     accounts moves only the sessions whose account left it. Requests without
-    a session round-robin. Rate limits and confirmed unusable credentials cool
+    a session round-robin. New sessions and sessionless requests prefer
+    accounts below ``SOFT_LIMIT_PERCENT``. Rate limits and confirmed unusable credentials cool
     that account locally and advance to the next login. Once an event has been
     yielded, retrying would duplicate output, so errors pass through unchanged.
     """
 
-    def __init__(self, accounts: Sequence[Account[T]]):
+    def __init__(
+        self,
+        accounts: Sequence[Account[T]],
+        used: Callable[[Account[T]], float | None] | None = None,
+    ):
         self._accounts = tuple(accounts)
+        #: An account's fullest whole-account window, in percent, if known.
+        self._used = used
         self._cursor = 0
         self._cooldown: dict[str, float] = {}
         self._account_errors: dict[str, str] = {}
@@ -111,6 +122,7 @@ class AccountPool(Generic[T]):
         signed_in = [account for account in self.accounts if _signed_in(account.auth)]
         if not signed_in:
             return ()
+        full = {account.id for account in signed_in if self.draining(account)}
         now = time.time()
         with self._lock:
             ready = [
@@ -122,14 +134,24 @@ class AccountPool(Generic[T]):
             if not session:
                 start = self._cursor % len(choices)
                 self._cursor += 1
-                return tuple(choices[start:] + choices[:start])
+                rotated = choices[start:] + choices[:start]
+                return tuple(sorted(rotated, key=lambda account: account.id in full))
             pinned = self._sessions.get(session)
-        ordered = sorted(
-            choices, key=lambda account: _affinity(session, account.id), reverse=True
+        kept = pinned[0] if pinned and now - pinned[1] < SESSION_TTL_SECONDS else None
+        return tuple(
+            sorted(
+                choices,
+                key=lambda account: (
+                    account.id != kept,
+                    account.id in full,
+                    -_affinity(session, account.id),
+                ),
+            )
         )
-        if pinned and now - pinned[1] < SESSION_TTL_SECONDS:
-            ordered.sort(key=lambda account: account.id != pinned[0])
-        return tuple(ordered)
+
+    def draining(self, account: Account[T]) -> bool:
+        value = self._used(account) if self._used else None
+        return value is not None and value >= SOFT_LIMIT_PERCENT
 
     def _remember(self, session: str | None, account_id: str) -> None:
         if not session:
@@ -311,7 +333,9 @@ class PooledProvider(Generic[T]):
     def __init__(self, context: ProviderContext):
         self.context = context
         self.store = AccountStore(context.directory, self.name)
-        self.pool = AccountPool([self.new_account(i) for i in self.store.ids()])
+        self.pool = AccountPool(
+            [self.new_account(i) for i in self.store.ids()], used=self._used
+        )
         self.cache = ReasoningCache()
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
         self._lock = threading.Lock()
@@ -331,6 +355,10 @@ class PooledProvider(Generic[T]):
     def no_account(self) -> ProviderError:
         raise NotImplementedError
 
+    def limits(self, account: Account[T]) -> LimitsStore | None:
+        """Where the account's usage bars are kept, when it reports any."""
+        return None
+
     def state_dirs(self, slot: str) -> list[Path]:
         return [self.context.directory / "accounts" / self.name / slot]
 
@@ -338,6 +366,10 @@ class PooledProvider(Generic[T]):
         """Release what a removed slot holds beyond its files."""
 
     # -- shared --------------------------------------------------------------
+
+    def _used(self, account: Account[T]) -> float | None:
+        store = self.limits(account)
+        return used(store.current(wait=False)[0]) if store else None
 
     def provider(self, **fields: Any) -> Provider:
         routes = {
@@ -428,7 +460,8 @@ class PooledProvider(Generic[T]):
                     signed_in=False,
                     error=f"reauthentication required: {observed}",
                 )
-            accounts.append(replace(value, id=account.id))
+            draining = value.signed_in and self.pool.draining(account)
+            accounts.append(replace(value, id=account.id, draining=draining))
         return ProviderStatus(
             signed_in=any(account.signed_in for account in accounts),
             accounts=tuple(accounts),
