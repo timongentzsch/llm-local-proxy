@@ -23,7 +23,7 @@ docker compose up --build   # published on 127.0.0.1:8787 only
 
 Open the URL printed at startup; its fragment carries the generated API key.
 Sign in to one or more accounts per subscription, then copy a base URL or a
-ready-made Codex CLI, Claude Code or OpenCode launch command from the dashboard.
+ready-made Codex CLI, Claude Code, OpenCode or OMP launch command from the dashboard.
 
 ```sh
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic ANTHROPIC_AUTH_TOKEN=$KEY \
@@ -109,7 +109,11 @@ cools it for one minute; either way the request moves to the next account.
 Nothing is retried after output starts.
 
 **Usage.** Token counts come from upstream usage and are recorded once per
-request, over rolling 5-hour and 7-day windows of proxy traffic only. A stream
+request, over rolling 5-hour and 7-day windows of proxy traffic only; the
+utilization bars come from the subscription itself and include other clients.
+A Claude window whose reset has passed shows as an idle 0% bar until the next
+request opens a new one, and the dashboard's usage check is skipped meanwhile
+so it never starts a window by itself. A stream
 that ends before final accounting keeps its last reported counts and is marked
 as partial; missing counts are never estimated. A stream that ends before its
 terminal event fails instead of looking complete.

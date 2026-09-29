@@ -202,7 +202,7 @@ class UsageStoreTest(unittest.TestCase):
         self.assertIsNone(limits["weekly"].resets_at)
         self.assertIsNotNone(store.updated_at())
 
-    def test_limits_hide_windows_whose_reset_has_passed(self):
+    def test_limits_show_windows_whose_reset_has_passed_as_idle(self):
         store = UsageStore()
         store.update(
             _headers(
@@ -214,7 +214,11 @@ class UsageStoreTest(unittest.TestCase):
                 }
             )
         )
-        self.assertEqual([limit.label for limit in store.limits()], ["weekly"])
+        limits = {limit.label: limit for limit in store.limits()}
+        self.assertEqual(limits["5 hour"].used_percent, 0)
+        self.assertIsNone(limits["5 hour"].resets_at)
+        self.assertAlmostEqual(limits["weekly"].used_percent, 33.0)
+        self.assertTrue(store.rolled_over())
 
     def test_limits_are_empty_without_usage(self):
         self.assertEqual(UsageStore().limits(), ())
@@ -421,6 +425,39 @@ class UpstreamRequestTest(unittest.TestCase):
             list(upstream.events({"model": "m", "messages": []}))
         limits = {limit.label: limit for limit in upstream.usage.limits()}
         self.assertAlmostEqual(limits["5 hour"].used_percent, 90.0)
+
+    def test_usage_ping_never_opens_a_rolled_over_window(self):
+        upstream = _upstream()
+        upstream.usage.update(
+            _headers(
+                **{
+                    "anthropic-ratelimit-unified-5h-utilization": "0.4",
+                    "anthropic-ratelimit-unified-5h-reset": "1000",
+                }
+            )
+        )
+        self.assertEqual(upstream.ping_usage("m"), upstream.usage.get())
+        self.assertEqual(upstream._opener.requests, [])
+
+    def test_usage_ping_refreshes_windows_that_are_still_open(self):
+        upstream = _upstream(
+            _SseResponse(
+                b"{}",
+                _headers(**{"anthropic-ratelimit-unified-5h-utilization": "0.5"}),
+            )
+        )
+        upstream.usage.update(
+            _headers(
+                **{
+                    "anthropic-ratelimit-unified-5h-utilization": "0.4",
+                    "anthropic-ratelimit-unified-5h-reset": "4102444800",
+                }
+            )
+        )
+        self.assertFalse(upstream.usage.rolled_over())
+        upstream.ping_usage("m")
+        self.assertEqual(len(upstream._opener.requests), 1)
+        self.assertAlmostEqual(upstream.usage.limits()[0].used_percent, 50.0)
 
 
 class ModelNormalizationTest(unittest.TestCase):

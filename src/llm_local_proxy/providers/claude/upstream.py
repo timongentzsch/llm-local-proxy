@@ -67,8 +67,9 @@ class UsageStore:
 
     Every /v1/messages response carries anthropic-ratelimit-unified-* headers
     (5h/7d utilization, resets, overage status); /v1/usage is 404, so these
-    are the only live usage numbers. Kept in memory and mirrored to disk so
-    the dashboard survives a proxy restart.
+    are the only live usage numbers. A window whose reset has passed reads as
+    idle (0%, no reset) until a response reports the new one. Kept in memory
+    and mirrored to disk so the dashboard survives a proxy restart.
     """
 
     def __init__(self, path: Path | None = None):
@@ -120,34 +121,40 @@ class UsageStore:
 
     def limits(self) -> tuple[Limit, ...]:
         """The unified utilization headers as dashboard bars."""
-        value = self.get() or {}
         items: list[Limit] = []
-        for key, raw in value.items():
-            if not key.endswith("-utilization"):
-                continue
+        for name, raw, reset in _windows(self.get() or {}):
             try:
                 used = float(raw)
             except (TypeError, ValueError):
                 continue
-            prefix = key[: -len("-utilization")]
-            if _expired(value.get(f"{prefix}-reset")):
-                # The window has rolled over since this was observed; its old
-                # utilization says nothing about the new one.
-                continue
-            name = prefix.removeprefix("anthropic-ratelimit-unified-")
+            if _expired(reset):
+                # The window rolled over since this was observed. A new one
+                # opens on the next request, so it reads as idle until then.
+                used, reset = 0.0, None
             items.append(
                 Limit(
-                    label=window_label(name),
-                    used_percent=used * 100,
-                    resets_at=value.get(f"{prefix}-reset"),
+                    label=window_label(name), used_percent=used * 100, resets_at=reset
                 )
             )
         return tuple(items)
+
+    def rolled_over(self) -> bool:
+        """Whether a window has reset since observed, so a request reopens it."""
+        return any(_expired(reset) for _, _, reset in _windows(self.get() or {}))
 
     def updated_at(self) -> float | None:
         value = self.get() or {}
         stamp = value.get("updated_at")
         return float(stamp) if isinstance(stamp, (int, float)) else None
+
+
+def _windows(value: dict[str, Any]) -> Iterator[tuple[str, Any, Any]]:
+    """(name, utilization, reset) for each window in captured headers."""
+    for key, raw in value.items():
+        if key.endswith("-utilization"):
+            prefix = key.removesuffix("-utilization")
+            name = prefix.removeprefix("anthropic-ratelimit-unified-")
+            yield name, raw, value.get(f"{prefix}-reset")
 
 
 def _expired(reset: Any) -> bool:
@@ -257,7 +264,14 @@ class ClaudeUpstream:
         return track_usage(events, self.ledger, ClaudeUsage().read, {"message_stop"})
 
     def ping_usage(self, model: str) -> dict[str, Any] | None:
-        """A 1-token call whose only job is to make the edge report usage."""
+        """A 1-token call whose only job is to make the edge report usage.
+
+        Skipped while any window has rolled over: the ping would itself open
+        a new window and start its clock. The bars then show that window as
+        idle and the others as last observed.
+        """
+        if self.usage.rolled_over():
+            return self.usage.get()
         body = {
             "model": model,
             "max_tokens": 1,
