@@ -113,8 +113,11 @@ Each provider is a `PooledProvider`: an `AccountStore` of slot ids
 Routing sees one provider per subscription, so model ids carry no account
 suffix.
 
-- **Selection.** A session id hashes to a stable signed-in account; without
-  one, the starting account advances round-robin. The session is
+- **Selection.** A session stays on the account that last served it for an
+  hour (the longest prompt-cache lifetime); otherwise it starts on its
+  rendezvous-hash account, so a cooldown moves only the sessions of the
+  account that left. Without a session the starting account advances
+  round-robin. The session is
   `X-Session-Id`, else a header the dialect names (`Dialect.session_headers`,
   e.g. Claude Code's), else the request's `prompt_cache_key`.
 - **Failover.** Before the first upstream event, a 429 cools the account for

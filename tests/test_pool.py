@@ -10,6 +10,8 @@ from llm_local_proxy.errors import RequestError
 from llm_local_proxy.providers.base import ProviderContext
 from llm_local_proxy.providers.pool import (
     AUTH_FAILURE_COOLDOWN_SECONDS,
+    RATE_LIMIT_COOLDOWN_SECONDS,
+    SESSION_TTL_SECONDS,
     Account,
     AccountPool,
     AccountStore,
@@ -56,6 +58,46 @@ class AccountPoolTest(unittest.TestCase):
         pool = self.pool()
         first = pool.candidates("session-42")[0].id
         self.assertEqual(pool.candidates("session-42")[0].id, first)
+
+    def test_cooling_one_account_moves_only_its_own_sessions(self):
+        pool = AccountPool([Account(i, _Auth(), i) for i in ("1", "2", "3")])
+        sessions = [f"session-{n}" for n in range(200)]
+        before = {s: pool.candidates(s)[0].id for s in sessions}
+        pool.mark_rate_limited("2")
+        after = {s: pool.candidates(s)[0].id for s in sessions}
+
+        moved = {s for s in sessions if before[s] != after[s]}
+        self.assertEqual(moved, {s for s in sessions if before[s] == "2"})
+        self.assertTrue(moved)
+
+    def test_a_session_stays_on_the_account_it_failed_over_to(self):
+        pool = self.pool()
+        session = next(
+            f"s{n}" for n in range(100) if pool.candidates(f"s{n}")[0].id == "1"
+        )
+
+        def events(account):
+            if account.id == "1":
+                raise _Error(429)
+            yield account.client
+
+        self.assertEqual(list(pool.stream(session, events, RuntimeError)), ["two"])
+        later = time.time() + RATE_LIMIT_COOLDOWN_SECONDS + 1
+        with patch("llm_local_proxy.providers.pool.time.time", return_value=later):
+            self.assertEqual(pool.candidates(session)[0].id, "2")
+        # Once its cache would be gone, the session returns to its own account.
+        much_later = later + SESSION_TTL_SECONDS
+        with patch("llm_local_proxy.providers.pool.time.time", return_value=much_later):
+            self.assertEqual(pool.candidates(session)[0].id, "1")
+
+    def test_remembered_sessions_are_bounded_oldest_first(self):
+        pool = self.pool()
+        with patch("llm_local_proxy.providers.pool.SESSION_LIMIT", 2):
+            for session in ("a", "b", "c"):
+                pool._remember(session, "1")
+        self.assertEqual(list(pool._sessions), ["b", "c"])
+        pool.remove("1")
+        self.assertEqual(list(pool._sessions), [])
 
     def test_signed_out_accounts_are_not_candidates(self):
         pool = AccountPool(

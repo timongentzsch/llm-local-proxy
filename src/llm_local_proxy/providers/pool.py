@@ -7,6 +7,7 @@ import json
 import shutil
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,6 +27,11 @@ E = TypeVar("E")
 RATE_LIMIT_COOLDOWN_SECONDS = 300
 AUTH_FAILURE_COOLDOWN_SECONDS = 60
 CATALOG_TTL_SECONDS = 60
+# A session stays on the account that last served it for this long: past the
+# longest upstream prompt-cache lifetime (Anthropic's 1h) there is nothing to
+# keep. The table is bounded; the oldest entry goes first.
+SESSION_TTL_SECONDS = 3600
+SESSION_LIMIT = 4096
 #: What a failing account or catalog degrades to instead of a whole-page error.
 DEGRADES = (ProviderError, OSError, ValueError)
 
@@ -40,11 +46,13 @@ class Account(Generic[T]):
 class AccountPool(Generic[T]):
     """Select signed-in accounts and retry a request before its first event.
 
-    A downstream session hashes to a stable starting account, which preserves
-    upstream prompt-cache locality. Requests without a session round-robin.
-    Rate limits and confirmed unusable credentials cool that account locally
-    and advance to the next login. Once an event has been yielded, retrying
-    would duplicate output, so errors pass through unchanged.
+    A downstream session stays on the account that last served it, which
+    preserves upstream prompt-cache locality; a session not seen recently
+    starts on its rendezvous-hash account, so a change to the set of usable
+    accounts moves only the sessions whose account left it. Requests without
+    a session round-robin. Rate limits and confirmed unusable credentials cool
+    that account locally and advance to the next login. Once an event has been
+    yielded, retrying would duplicate output, so errors pass through unchanged.
     """
 
     def __init__(self, accounts: Sequence[Account[T]]):
@@ -52,6 +60,8 @@ class AccountPool(Generic[T]):
         self._cursor = 0
         self._cooldown: dict[str, float] = {}
         self._account_errors: dict[str, str] = {}
+        #: session -> (account id, last served), oldest first.
+        self._sessions: OrderedDict[str, tuple[str, float]] = OrderedDict()
         self._lock = threading.Lock()
 
     @property
@@ -77,6 +87,9 @@ class AccountPool(Generic[T]):
             )
             self._cooldown.pop(account_id, None)
             self._account_errors.pop(account_id, None)
+            for session, (pinned, _) in list(self._sessions.items()):
+                if pinned == account_id:
+                    del self._sessions[session]
             return account
 
     def get(self, account_id: str) -> Account[T]:
@@ -106,13 +119,26 @@ class AccountPool(Generic[T]):
                 if self._cooldown.get(account.id, 0) <= now
             ]
             choices = ready or signed_in
-            if session:
-                digest = hashlib.sha256(session.encode()).digest()
-                start = int.from_bytes(digest[:8], "big") % len(choices)
-            else:
+            if not session:
                 start = self._cursor % len(choices)
                 self._cursor += 1
-        return tuple(choices[start:] + choices[:start])
+                return tuple(choices[start:] + choices[:start])
+            pinned = self._sessions.get(session)
+        ordered = sorted(
+            choices, key=lambda account: _affinity(session, account.id), reverse=True
+        )
+        if pinned and now - pinned[1] < SESSION_TTL_SECONDS:
+            ordered.sort(key=lambda account: account.id != pinned[0])
+        return tuple(ordered)
+
+    def _remember(self, session: str | None, account_id: str) -> None:
+        if not session:
+            return
+        with self._lock:
+            self._sessions[session] = (account_id, time.time())
+            self._sessions.move_to_end(session)
+            while len(self._sessions) > SESSION_LIMIT:
+                self._sessions.popitem(last=False)
 
     def mark_rate_limited(self, account_id: str) -> None:
         with self._lock:
@@ -155,6 +181,7 @@ class AccountPool(Generic[T]):
                         if not started:
                             started = True
                             self.clear_account_error(account.id)
+                            self._remember(session, account.id)
                         yield event
                 if not started:
                     self.clear_account_error(account.id)
@@ -192,6 +219,12 @@ class AccountPool(Generic[T]):
             self.stream(session, create, no_account, retry_if)
         ) as events:
             return next(events)
+
+
+def _affinity(session: str, account_id: str) -> int:
+    """Rendezvous score: a session starts on its highest-scoring account."""
+    digest = hashlib.sha256(f"{session}\0{account_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 def account_file(directory: Path, provider: str, account_id: str, name: str) -> Path:
