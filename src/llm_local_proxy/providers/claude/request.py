@@ -424,7 +424,10 @@ def build(
         return body, betas
 
     effort = None
-    if request.reasoning_effort:
+    # A model that declares no effort tiers (reasoning_efforts == []) cannot
+    # express one, so the effort stays a preference, like a cache hint; do not
+    # approximate named tiers with fabricated token budgets.
+    if request.reasoning_effort and reasoning_efforts != []:
         effort = str(request.reasoning_effort).casefold()
         supported = {str(item).casefold() for item in reasoning_efforts or ()}
         if supported and effort not in supported:
@@ -432,7 +435,6 @@ def build(
                 f"unsupported reasoning_effort: {request.reasoning_effort}"
             )
         # Claude's native effort control is independent of its thinking mode.
-        # Do not approximate named effort tiers with fabricated token budgets.
         body.setdefault("output_config", {})["effort"] = effort
 
     budget = request.thinking_budget
@@ -459,15 +461,15 @@ def build(
             "budget_tokens": budget,
             "display": display,
         }
-    elif (
+    elif thinking != "enabled" and (
         thinking == "adaptive"
         or effort is not None
         or request.thinking_display
         or request.reasoning_summary
     ):
         # Some live catalog entries advertise effort but omit their thinking
-        # capability even though the model accepts adaptive thinking. An
-        # explicit OpenAI-shaped reasoning request must therefore activate it
-        # without relying solely on catalog metadata.
+        # capability even though the model accepts adaptive thinking, so an
+        # OpenAI-shaped reasoning request activates it unless the catalog says
+        # the model only takes a budget, which such a request does not name.
         body["thinking"] = {"type": "adaptive", "display": display}
     return body, betas

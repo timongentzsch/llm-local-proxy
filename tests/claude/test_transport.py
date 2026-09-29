@@ -421,6 +421,25 @@ class ModelNormalizationTest(unittest.TestCase):
         self.assertEqual(model["max_output_tokens"], 12345)
         self.assertEqual(model["modalities"], ["text", "image"])
 
+    def test_a_model_without_effort_tiers_says_so(self):
+        model = _normalize_model(
+            {
+                "id": "claude-budget-only",
+                "capabilities": {
+                    "effort": {"supported": False, "high": {"supported": False}},
+                    "thinking": {
+                        "types": {
+                            "enabled": {"supported": True},
+                            "adaptive": {"supported": False},
+                        }
+                    },
+                },
+            }
+        )
+        self.assertEqual(model["reasoning_efforts"], [])
+        self.assertEqual(model["thinking"], "enabled")
+        self.assertNotIn("reasoning_efforts", _normalize_model({"id": "unknown"}))
+
 
 if __name__ == "__main__":
     unittest.main()

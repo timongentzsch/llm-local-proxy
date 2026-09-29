@@ -362,11 +362,11 @@ def _normalize_model(item: Any) -> dict[str, Any] | None:
         ]
         efforts = capabilities.get("effort")
         if isinstance(efforts, dict):
-            supported = [
+            # Empty when the model declares no effort tiers, which is not the
+            # same as a catalog entry that says nothing about effort.
+            value["reasoning_efforts"] = [
                 str(name) for name, support in efforts.items() if _supported(support)
             ]
-            if supported:
-                value["reasoning_efforts"] = supported
         thinking = capabilities.get("thinking")
         types = thinking.get("types") if isinstance(thinking, dict) else None
         if isinstance(types, dict):

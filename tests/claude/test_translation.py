@@ -3,6 +3,7 @@
 import unittest
 
 from llm_local_proxy.dialects.anthropic.egress import MessageEncoder
+from llm_local_proxy.dialects.anthropic.ingress import parse as parse_messages
 from llm_local_proxy.dialects.openai.egress import ChunkEncoder
 from llm_local_proxy.dialects.openai.ingress import parse
 from llm_local_proxy.dialects.openai.responses_egress import ResponseEncoder
@@ -99,6 +100,33 @@ class BuildMessagesRequestTest(unittest.TestCase):
             "claude-fake-1",
         )
         self.assertNotIn("tools", request)
+
+    def test_effort_is_a_preference_on_a_budget_only_model(self):
+        # Haiku 4.5's live catalog: no effort tiers, only budget thinking.
+        # Clients such as OMP send an effort on every request.
+        request, _ = claude_request(
+            {**BASE, "reasoning_effort": "high"},
+            "claude-fake-1",
+            thinking="enabled",
+            reasoning_efforts=[],
+        )
+        self.assertNotIn("output_config", request)
+        self.assertNotIn("thinking", request)
+        # An explicit budget is something it can honour.
+        request, _ = build(
+            parse_messages(
+                {
+                    "model": "claude-fake-1",
+                    "max_tokens": 4096,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "thinking": {"type": "enabled", "budget_tokens": 2048},
+                }
+            ),
+            "claude-fake-1",
+            thinking="enabled",
+            reasoning_efforts=[],
+        )
+        self.assertEqual(request["thinking"]["budget_tokens"], 2048)
 
     def test_reasoning_effort_uses_claudes_native_output_config(self):
         request, _ = claude_request(

@@ -79,7 +79,9 @@ its transport accepts, using a validation-only probe.
 resend opaque reasoning items; Anthropic clients resend thinking blocks; Chat
 Completions clients rely on a bounded in-memory cache keyed by tool-call id.
 Claude thinking defaults to `display: "summarized"` so its text and signature
-survive tool loops. Codex streams reasoning summaries whenever a client asks
+survive tool loops. A reasoning effort sent to a model whose catalog lists no
+effort tiers (e.g. Haiku 4.5, which takes only a thinking budget) is a
+preference it cannot express, like a cache hint, and is not sent. Codex streams reasoning summaries whenever a client asks
 for reasoning or to see it, in the summary mode it named. The Responses
 endpoint rejects `store: true`, `previous_response_id`, `conversation` and
 `background`.
