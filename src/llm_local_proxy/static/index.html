@@ -161,7 +161,7 @@ async function loadOnce(){
     if(error.status===401){
     // A key that no longer works, e.g. after the proxy regenerated one.
     // Drop it rather than retrying with it until the user clears storage.
-      clearInterval(timer);forgetKey();showKey();q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#state").textContent="api key rejected · reopen the link printed at startup";
+      clearInterval(timer);timer=null;forgetKey();showKey();q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#state").textContent="api key rejected · reopen the link printed at startup";
     }else{q("#dot").classList.remove("on");q("#state").textContent=`${error.message} · showing last data`;if(initial){q("#providers").textContent="unavailable";q("#clients").textContent="unavailable"}}
   });
   const models=refreshing?null:api("/v1/models").then(value=>showModels(value.data)).catch(()=>{if(initial){q("#models").textContent="unavailable";q("#command-model").hidden=true}});
@@ -173,6 +173,8 @@ function showKey(){q("#key").textContent=key||(authRequired?"open the link print
 q("#copy").onclick=async()=>{try{await navigator.clipboard.writeText(key);q("#copy").textContent="copied";setTimeout(()=>q("#copy").textContent="copy",1500)}catch(e){alert(e.message)}};
 q("#forget").onclick=()=>{forgetKey();location.reload()};
 showKey();
-if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load();timer=setInterval(load,60000)}
+// A hidden tab stops polling (each poll reads upstream usage) and catches up
+// as soon as it is shown again.
+if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load();timer=setInterval(()=>{if(!document.hidden)load()},60000);addEventListener("visibilitychange",()=>{if(!document.hidden&&timer)load()})}
 </script>
 </html>
