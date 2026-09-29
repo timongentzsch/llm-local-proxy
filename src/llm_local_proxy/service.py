@@ -67,14 +67,7 @@ class Service:
                     **value.payload(),
                 }
             )
-        return {"dialects": self.base_urls(self.config.origin), "providers": cards}
-
-    def base_urls(self, origin: str) -> list[dict[str, str]]:
-        """Where a client reaches each dialect, from one listener's origin."""
-        return [
-            {"name": dialect.name, "base_url": origin + dialect.base_path}
-            for dialect in DIALECTS
-        ]
+        return {"dialects": base_urls(self.config.origin), "providers": cards}
 
     def usage(self) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
         """Proxy token windows per calling key, then per provider."""
@@ -91,3 +84,11 @@ class Service:
     def close(self) -> None:
         for provider in self.providers:
             provider.close()
+
+
+def base_urls(origin: str) -> list[dict[str, str]]:
+    """Where a client reaches each dialect, from one listener's origin."""
+    return [
+        {"name": dialect.name, "base_url": origin + dialect.base_path}
+        for dialect in DIALECTS
+    ]

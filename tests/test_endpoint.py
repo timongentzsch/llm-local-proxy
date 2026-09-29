@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import tempfile
 import threading
 import unittest
 from pathlib import Path
-from types import MethodType, SimpleNamespace
+from types import SimpleNamespace
 
 import mock_provider
 
@@ -22,7 +23,6 @@ from llm_local_proxy.http.server import Server
 from llm_local_proxy.ir import Finish, ToolCallArgs, ToolCallEnd, ToolCallStart, Usage
 from llm_local_proxy.keys import KeyStore
 from llm_local_proxy.providers.pool import account_id
-from llm_local_proxy.service import Service
 
 SESSIONS = []
 CALLERS = []
@@ -79,7 +79,6 @@ def _service(api_key="", keys=None):
         models=lambda refresh=False: catalog,
         status=lambda: {"providers": []},
     )
-    service.base_urls = MethodType(Service.base_urls, service)
     return service
 
 
@@ -564,6 +563,55 @@ class KeyAccessTest(unittest.TestCase):
                     {"action": "add", "name": "x"},
                 )[0]
                 self.assertEqual(code, 404 if public else 403)
+
+    def test_a_named_key_never_reaches_account_routes(self):
+        for public in (False, True):
+            for route in ("login", "logout", "accounts", "code"):
+                with self.subTest(public=public, route=route):
+                    code = self.request(
+                        public,
+                        "POST",
+                        f"/api/mock/{route}",
+                        self.alice,
+                        {"account": "1"},
+                    )[0]
+                    self.assertEqual(code, 404 if public else 403)
+
+    def test_a_damaged_key_file_refuses_named_keys_but_not_the_master(self):
+        keys = KeyStore(Path(tempfile.mkdtemp()) / "keys.json")
+        keys.path.write_text("not json")
+        server = Server(("127.0.0.1", 0), make_handler(_service(self.MASTER, keys)))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
+            for key, expected in ((self.MASTER, 200), (self.alice, 401)):
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                connection.request(
+                    "GET", "/v1/models", headers={"Authorization": f"Bearer {key}"}
+                )
+                self.assertEqual(connection.getresponse().status, expected)
+                connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_a_refused_post_does_not_leave_its_body_as_a_next_request(self):
+        port = self.servers[True].server_address[1]
+        smuggled = (
+            f"GET /v1/models HTTP/1.1\r\nHost: x\r\n"
+            f"Authorization: Bearer {self.alice}\r\n\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
+            raw.sendall(
+                b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n"
+                + f"Content-Length: {len(smuggled)}\r\n\r\n".encode()
+                + smuggled
+            )
+            received = b""
+            while chunk := raw.recv(65536):
+                received += chunk
+        self.assertIn(b" 401 ", received)
+        self.assertNotIn(b" 200 ", received)
 
     def test_the_public_listener_refuses_the_master_key_and_admin_routes(self):
         self.assertEqual(self.request(True, "GET", "/v1/models", self.MASTER)[0], 401)

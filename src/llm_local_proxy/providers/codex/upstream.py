@@ -55,7 +55,9 @@ class Upstream:
     def _tracked(
         self, events: Iterator[dict[str, Any]], caller: str = ""
     ) -> Iterator[dict[str, Any]]:
-        return track_usage(events, self.ledger, read_usage, TERMINAL_EVENTS, caller)
+        return track_usage(
+            events, self.ledger, read_usage, TERMINAL_EVENTS, caller=caller
+        )
 
     def _open(self, body: dict[str, Any], refresh: bool):
         try:

@@ -175,7 +175,7 @@ the port published to `127.0.0.1` as supplied.
 The optional public listener is off unless `public_port` is set:
 
 ```toml
-public_host = "0.0.0.0"            # the only setting that may leave loopback
+public_host = "127.0.0.1"          # "0.0.0.0" for a direct network bind
 public_port = 8788                 # must differ from port; needs api_key
 public_url = "https://mac.example.ts.net"   # how remote clients reach it
 ```

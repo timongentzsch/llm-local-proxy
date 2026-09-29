@@ -26,7 +26,7 @@ class KeyStore:
         self.path = path
         self._lock = threading.Lock()
 
-    def items(self) -> dict[str, str]:
+    def all(self) -> dict[str, str]:
         """Every name with its key."""
         with self._lock:
             return self._read()
@@ -55,7 +55,7 @@ class KeyStore:
     def identify(self, token: str) -> str | None:
         """The name whose key this is; every key is compared in constant time."""
         found = None
-        for name, key in self.items().items():
+        for name, key in self.all().items():
             if hmac.compare_digest(token.encode(), key.encode()):
                 found = name
         return found

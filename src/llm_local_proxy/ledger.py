@@ -19,6 +19,7 @@ from typing import Any
 
 from .atomic import atomic_write_json
 from .ir import Usage
+from .keys import MASTER
 from .streaming import closing_iterator
 
 #: (label, seconds) windows mirroring the subscription utilisation buckets.
@@ -99,15 +100,19 @@ class TokenLedger:
     def windows(self) -> dict[str, dict[str, int]]:
         """Summed tokens per window (``{"5h": {...}, "7d": {...}}``)."""
         with self._lock:
-            return self._windows(list(self._records))
+            records = list(self._records)
+        return self._windows(records)
 
     def by_caller(self) -> dict[str, dict[str, dict[str, int]]]:
-        """The same windows per calling key's name; unattributed records under ""."""
+        """The same windows per calling key's name.
+
+        Records from before keys had names were all made with the master key.
+        """
         with self._lock:
             records = list(self._records)
         groups: dict[str, list[dict[str, Any]]] = {}
         for record in records:
-            groups.setdefault(str(record.get("caller", "")), []).append(record)
+            groups.setdefault(str(record.get("caller") or MASTER), []).append(record)
         return {caller: self._windows(items) for caller, items in groups.items()}
 
     def _windows(self, records: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -155,6 +160,7 @@ def track_usage(
     ledger: TokenLedger,
     read: Callable[[dict[str, Any]], Usage | None],
     terminal_events: set[str],
+    *,
     caller: str = "",
 ) -> Iterator[dict[str, Any]]:
     """Record one request before its terminal event, or partial usage on exit.

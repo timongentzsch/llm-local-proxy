@@ -37,10 +37,10 @@ class TokenLedgerTest(unittest.TestCase):
         ledger.add(input_tokens=20, output_tokens=2, caller="alice")
         ledger.add(input_tokens=30, output_tokens=3, caller="alice")
         callers = ledger.by_caller()
-        self.assertEqual(callers[""]["5h"]["input"], 10)
+        self.assertEqual(callers["master"]["5h"]["input"], 10)
         self.assertEqual(callers["alice"]["7d"]["output"], 5)
         self.assertEqual(
-            merge([callers[""], callers["alice"]])["5h"], ledger.windows()["5h"]
+            merge([callers["master"], callers["alice"]])["5h"], ledger.windows()["5h"]
         )
 
     def test_prunes_expired_records(self):

@@ -20,8 +20,8 @@ class Config:
     request_timeout: int
     path: Path
     #: The optional listener for named keys only (0 = none). It may bind a
-    #: network address, unlike ``host``, which stays loopback.
-    public_host: str = "0.0.0.0"
+    #: network address, unlike ``host``, but only when told to explicitly.
+    public_host: str = "127.0.0.1"
     public_port: int = 0
     #: The address remote clients use (e.g. a Tailscale Serve URL), for the
     #: launch commands a named key is shown.
@@ -105,7 +105,7 @@ def load(path: Path | None = None) -> Config:
         codex_binary=str(data.get("codex_binary", "codex")),
         request_timeout=max(1, int(data.get("request_timeout", 600))),
         path=resolved,
-        public_host=str(data.get("public_host", "0.0.0.0")),
+        public_host=str(data.get("public_host", "127.0.0.1")),
         public_port=public_port,
         public_url=str(data.get("public_url", "")).rstrip("/"),
     )

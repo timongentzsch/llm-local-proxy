@@ -21,7 +21,7 @@ from ..dialects.base import Route
 from ..errors import ProviderError, RequestError
 from ..keys import MASTER
 from ..providers import Provider
-from ..service import Service
+from ..service import Service, base_urls
 from ..streaming import closing_iterator
 from . import security
 from .sse import SseStream, with_heartbeats
@@ -35,9 +35,20 @@ def make_handler(service: Service, public: bool = False):
     the master key, and never reaches account, key or status routes.
     """
 
+    def _named(token: str) -> str | None:
+        try:
+            return service.keys.identify(token)
+        except (ValueError, TypeError) as error:
+            # A damaged keys.json refuses every named key; the master still works.
+            sys.stderr.write(f"keys: {error}\n")
+            return None
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         server_version = "llm-local-proxy/0.1"
+        # Per socket operation, so a stalled client cannot hold a thread for
+        # good; a quiet upstream still streams keepalives well within this.
+        timeout = 60
 
         def do_GET(self) -> None:
             if not public and not self._valid_host():
@@ -51,7 +62,7 @@ def make_handler(service: Service, public: bool = False):
                     .read_text()
                     .replace(
                         "__AUTH_REQUIRED__",
-                        "true" if public or service.config.api_key else "false",
+                        "true" if service.config.api_key else "false",
                     )
                 )
                 return self._reply(
@@ -72,8 +83,8 @@ def make_handler(service: Service, public: bool = False):
             try:
                 if path == "/api/me":
                     return self._json(HTTPStatus.OK, self._me(caller))
-                if path.startswith("/api/") and not self._admin(caller):
-                    return None
+                if path.startswith("/api/") and caller != MASTER:
+                    return self._refuse_admin()
                 if path == "/api/status":
                     return self._json(HTTPStatus.OK, service.status())
                 if path == "/api/keys":
@@ -100,6 +111,9 @@ def make_handler(service: Service, public: bool = False):
                 self._api_error(dialect, error.status, str(error))
 
         def do_POST(self) -> None:
+            # A refusal leaves the body unread, so the connection must not be
+            # reused: its bytes would be parsed as the next request.
+            self.close_connection = True
             if not public and not self._valid_host():
                 return self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "bad host"})
             dialect, path = resolve(urlparse(self.path).path)
@@ -110,8 +124,8 @@ def make_handler(service: Service, public: bool = False):
                 return self._json(HTTPStatus.FORBIDDEN, {"error": "bad origin"})
             try:
                 body = self._body()
-                if path.startswith("/api/") and not self._admin(caller):
-                    return None
+                if path.startswith("/api/") and caller != MASTER:
+                    return self._refuse_admin()
                 if path == "/api/keys":
                     return self._json(HTTPStatus.OK, self._manage_keys(body))
                 provider_route = self._provider_route(path)
@@ -232,18 +246,16 @@ def make_handler(service: Service, public: bool = False):
 
         def _caller(self) -> str | None:
             """The name of the request's key; the master key only locally."""
-            caller = security.identify(
-                self.headers, service.config.api_key, service.keys.identify
-            )
+            caller = security.identify(self.headers, service.config.api_key, _named)
             return None if public and caller == MASTER else caller
 
-        def _admin(self, caller: str) -> bool:
-            """Admit master-only routes, answering the refusal otherwise."""
+        def _refuse_admin(self) -> None:
+            # The public listener does not have these routes at all.
             if public:
-                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            elif caller != MASTER:
-                self._json(HTTPStatus.FORBIDDEN, {"error": "requires the master key"})
-            return not public and caller == MASTER
+                return self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return self._json(
+                HTTPStatus.FORBIDDEN, {"error": "requires the master key"}
+            )
 
         def _me(self, caller: str) -> dict[str, Any]:
             """What a key's own dashboard shows: its base URLs and its usage."""
@@ -255,20 +267,21 @@ def make_handler(service: Service, public: bool = False):
             return {
                 "name": caller,
                 "role": "master" if caller == MASTER else "user",
-                "dialects": service.base_urls(origin),
-                "usage": service.usage().get(caller, {}),
+                "dialects": base_urls(origin),
+                # The master's dashboard reads every key's usage from /api/keys.
+                "usage": {} if caller == MASTER else service.usage().get(caller, {}),
             }
 
         def _keys(self) -> dict[str, Any]:
             return {
                 "keys": [
                     {"name": name, "key": key}
-                    for name, key in service.keys.items().items()
+                    for name, key in service.keys.all().items()
                 ],
                 "usage": service.usage(),
                 "public_url": service.config.public_url,
                 # Where a named key's launch commands point, when it is set.
-                "public_dialects": service.base_urls(service.config.public_url)
+                "public_dialects": base_urls(service.config.public_url)
                 if service.config.public_url
                 else [],
             }

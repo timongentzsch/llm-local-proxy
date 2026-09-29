@@ -28,7 +28,6 @@ class ServiceTest(unittest.TestCase):
         ]
         service.route = MethodType(Service.route, service)
         service.provider = MethodType(Service.provider, service)
-        service.base_urls = MethodType(Service.base_urls, service)
         return service
 
     def test_route_picks_the_provider_whose_catalog_claims_the_model(self):

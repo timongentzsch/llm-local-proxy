@@ -109,6 +109,9 @@ addEventListener("hashchange",()=>{if(hashKey())location.reload()});
 // The 60s reload re-renders only what changed, so it does not steal a text
 // selection, an open model list or focus from the panels below.
 let key=takeKey(),active=0,providers=[],dialects=[],modelList=[],shownDialects="",shownModels="",shownCommands="",refreshing=false,loading=null,again=false,timer,keysInfo=null;
+// Named keys start with llp_: hide the master-only panels before /api/me
+// answers, rather than flashing them at a key that will never get them.
+document.body.classList.toggle("user",key.startsWith("llp_"));
 function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
 async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json().catch(()=>({}));if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
 const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});

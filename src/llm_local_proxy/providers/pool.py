@@ -15,7 +15,6 @@ from typing import Any, Generic, TypeVar
 
 from ..atomic import atomic_write_json
 from ..errors import ProviderError, RequestError
-from ..keys import MASTER
 from ..ledger import TokenLedger, merge
 from ..status import AccountStatus, ProviderStatus
 from ..streaming import closing_iterator
@@ -390,15 +389,12 @@ class PooledProvider(Generic[T]):
     # -- shared --------------------------------------------------------------
 
     def callers(self) -> dict[str, dict[str, dict[str, int]]]:
-        """Token windows per calling key, over every account of this provider.
-
-        Records from before keys had names were all made with the master key.
-        """
+        """Token windows per calling key, over every account of this provider."""
         groups: dict[str, list[dict[str, dict[str, int]]]] = {}
         for account in self.pool.accounts:
             ledger = self.ledger(account)
             for caller, windows in (ledger.by_caller() if ledger else {}).items():
-                groups.setdefault(caller or MASTER, []).append(windows)
+                groups.setdefault(caller, []).append(windows)
         return {caller: merge(items) for caller, items in groups.items()}
 
     def _usage(self, account: Account[T]) -> float | None:

@@ -49,7 +49,7 @@ class ConfigTest(unittest.TestCase):
                     continue
                 config = load(path)
                 self.assertEqual(
-                    (config.public_host, config.public_port), ("0.0.0.0", 8788)
+                    (config.public_host, config.public_port), ("127.0.0.1", 8788)
                 )
                 self.assertEqual(config.public_url, "https://mac.example.ts.net")
 

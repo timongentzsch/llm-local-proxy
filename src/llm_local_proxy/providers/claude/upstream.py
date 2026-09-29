@@ -175,7 +175,7 @@ class ClaudeUpstream:
         self, events: Iterator[dict[str, Any]], caller: str = ""
     ) -> Iterator[dict[str, Any]]:
         return track_usage(
-            events, self.ledger, ClaudeUsage().read, {"message_stop"}, caller
+            events, self.ledger, ClaudeUsage().read, {"message_stop"}, caller=caller
         )
 
     def count_tokens(
