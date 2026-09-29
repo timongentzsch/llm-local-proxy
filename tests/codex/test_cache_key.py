@@ -106,7 +106,7 @@ class _Pool:
     def __init__(self):
         self.sessions = []
 
-    def stream(self, session, create, no_account):
+    def stream(self, session, create, no_account, starting=True):
         self.sessions.append(session)
         return iter(())
 

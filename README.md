@@ -106,8 +106,10 @@ the request's `prompt_cache_key`) pins a conversation to one account for
 prompt-cache locality. Codex requests without any are pinned by a key derived
 from their instructions and first user turn; remaining sessionless traffic
 round-robins. A session stays on the account that served it for an hour, so
-another account's cooldown never moves it; new sessions skip an account at 90%
-of a window that limits it whole while another has room. Before any output is
+another account's cooldown never moves it. A request that starts a
+conversation (no assistant turn yet) skips an account at 90% of a window that
+limits it whole while another has room; one that continues a conversation
+keeps its account, even after a restart. Before any output is
 streamed, a 429 cools the account for five minutes and a rejected credential
 (expired login or missing inference scope) marks it for reauthentication and
 cools it for one minute; either way the request moves to the next account.

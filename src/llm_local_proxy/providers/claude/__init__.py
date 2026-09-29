@@ -94,6 +94,7 @@ class Claude(PooledProvider[ClaudeUpstream]):
             request.session,
             lambda account: account.client.events(body, betas),
             self.no_account,
+            starting=request.starts_conversation,
         )
         return events, ClaudeDecoder(self.cache, flatten(request.tools)[1])
 
@@ -108,6 +109,7 @@ class Claude(PooledProvider[ClaudeUpstream]):
             request.session,
             lambda account: account.client.count_tokens(counted, betas),
             self.no_account,
+            starting=request.starts_conversation,
         )
 
     def models(self) -> list[dict[str, Any]]:

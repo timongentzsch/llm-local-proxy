@@ -395,3 +395,8 @@ class ChatRequest:
     #: cannot constrain its upstream must reject this rather than answer with
     #: unconstrained prose the client will fail to parse.
     output_format: OutputFormat | None = None
+
+    @property
+    def starts_conversation(self) -> bool:
+        """No assistant turn yet, so no upstream prompt cache to keep warm."""
+        return not any(turn.role == "assistant" for turn in self.turns)

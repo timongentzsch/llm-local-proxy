@@ -111,6 +111,22 @@ class AccountPoolTest(unittest.TestCase):
         # Still a failover target, just last.
         self.assertEqual([a.id for a in pool.candidates("s0")], ["2", "1"])
 
+    def test_a_continuing_conversation_keeps_its_account_even_when_full(self):
+        # After a restart nothing is remembered; the request's own history
+        # says it has a prompt cache to keep, so it goes to its account.
+        usage = {"1": 95.0, "2": 10.0}
+        pool = AccountPool(
+            [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
+            usage=lambda account: usage[account.id],
+        )
+        session = next(
+            f"s{n}"
+            for n in range(100)
+            if pool.candidates(f"s{n}", starting=False)[0].id == "1"
+        )
+        self.assertEqual(pool.candidates(session, starting=False)[0].id, "1")
+        self.assertEqual(pool.candidates(session)[0].id, "2")
+
     def test_routing_ignores_the_soft_limit_when_every_account_is_full(self):
         pool = AccountPool(
             [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],

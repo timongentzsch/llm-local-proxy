@@ -115,12 +115,24 @@ class AccountPool(Generic[T]):
                     "sign in or remove the existing unsigned account first"
                 )
 
-    def candidates(self, session: str | None = None) -> tuple[Account[T], ...]:
+    def candidates(
+        self, session: str | None = None, starting: bool = True
+    ) -> tuple[Account[T], ...]:
+        """Accounts to try in order.
+
+        Only a request ``starting`` a conversation avoids nearly-full accounts:
+        one that continues a conversation has a prompt cache on its account,
+        remembered or not (e.g. after a restart), so it goes there regardless.
+        """
         signed_in = [account for account in self.accounts if _signed_in(account.auth)]
         if not signed_in:
             return ()
         # With one account there is nowhere else to go, so skip the read.
-        full = {a.id for a in signed_in if len(signed_in) > 1 and self.draining(a)}
+        full = (
+            {a.id for a in signed_in if self.draining(a)}
+            if starting and len(signed_in) > 1
+            else set()
+        )
         with self._lock:
             now = time.time()
             ready = [
@@ -190,10 +202,11 @@ class AccountPool(Generic[T]):
         create: Callable[[Account[T]], Iterator[E]],
         no_account: Callable[[], Exception],
         retry_if: Callable[[Exception], bool] | None = None,
+        starting: bool = True,
     ) -> Iterator[E]:
         """Fail over on rate limits or unusable auth before output begins."""
 
-        candidates = self.candidates(session)
+        candidates = self.candidates(session, starting)
         if not candidates:
             raise no_account()
         last: Exception | None = None
@@ -233,6 +246,7 @@ class AccountPool(Generic[T]):
         invoke: Callable[[Account[T]], E],
         no_account: Callable[[], Exception],
         retry_if: Callable[[Exception], bool] | None = None,
+        starting: bool = True,
     ) -> E:
         """Non-streaming equivalent used by token counting and usage probes."""
 
@@ -240,7 +254,7 @@ class AccountPool(Generic[T]):
             yield invoke(account)
 
         with closing_iterator(
-            self.stream(session, create, no_account, retry_if)
+            self.stream(session, create, no_account, retry_if, starting)
         ) as events:
             return next(events)
 

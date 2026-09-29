@@ -104,6 +104,7 @@ class Codex(PooledProvider[Upstream]):
             request.session or cache_key,
             lambda account: account.client.events(body),
             self.no_account,
+            starting=request.starts_conversation,
         )
         return events, CodexDecoder(self.cache)
 

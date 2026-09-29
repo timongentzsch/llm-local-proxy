@@ -117,9 +117,10 @@ suffix.
   hour (the longest prompt-cache lifetime); otherwise it starts on its
   rendezvous-hash account, so a cooldown moves only the sessions of the
   account that left. Without a session the starting account advances
-  round-robin. New sessions and sessionless requests prefer accounts below
-  `SOFT_LIMIT_PERCENT` of every whole-account window, read from
-  `providers/limits.py` without waiting; sessions already served stay put.
+  round-robin. A request that starts a conversation (no assistant turn)
+  prefers accounts below `SOFT_LIMIT_PERCENT` of every whole-account window,
+  read from `providers/limits.py` without waiting; one that continues a
+  conversation keeps its account, as its history already has a cache there.
   The session is
   `X-Session-Id`, else a header the dialect names (`Dialect.session_headers`,
   e.g. Claude Code's), else the request's `prompt_cache_key`.
