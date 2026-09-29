@@ -129,21 +129,28 @@ class OriginValidationTest(unittest.TestCase):
 
 
 class AuthTest(unittest.TestCase):
-    def test_local_key_is_checked_in_every_accepted_form(self):
+    def test_keys_are_identified_in_every_accepted_form(self):
         # The key is the proxy's own, not a vendor's, so a mount must not
         # refuse it merely for arriving in the other vendor's header.
+        named = {"llp_alice": "alice"}.get
         cases = (
-            ({"Authorization": "Bearer secret"}, "secret", True),
-            ({"x-api-key": "secret"}, "secret", True),
-            ({"Authorization": "Bearer nope"}, "secret", False),
-            ({"x-api-key": "nope"}, "secret", False),
-            ({"Authorization": "secret"}, "secret", False),  # missing scheme
-            ({"Authorization": "Bearer stale", "x-api-key": "secret"}, "secret", True),
-            ({}, "", True),  # no configured key
+            ({"Authorization": "Bearer secret"}, "secret", "master"),
+            ({"x-api-key": "secret"}, "secret", "master"),
+            ({"x-api-key": "llp_alice"}, "secret", "alice"),
+            ({"Authorization": "Bearer llp_alice"}, "", "alice"),
+            ({"Authorization": "Bearer nope"}, "secret", None),
+            ({"x-api-key": "nope"}, "secret", None),
+            ({"Authorization": "secret"}, "secret", None),  # missing scheme
+            (
+                {"Authorization": "Bearer stale", "x-api-key": "secret"},
+                "secret",
+                "master",
+            ),
+            ({}, "", "master"),  # no configured key: auth is off
         )
         for headers, key, expected in cases:
             with self.subTest(headers=headers, key=key):
-                self.assertIs(security.authorized(headers, key), expected)
+                self.assertEqual(security.identify(headers, key, named), expected)
 
     def test_host_and_origin_must_be_local(self):
         self.assertTrue(security.valid_host({"Host": "127.0.0.1:8787"}, "127.0.0.1"))

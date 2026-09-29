@@ -385,6 +385,8 @@ class ChatRequest:
     stream: bool = False
     #: Account affinity: requests of one session start on the same account.
     session: str = ""
+    #: The name of the proxy key the request came with, for usage attribution.
+    caller: str = ""
     #: The client's own prompt-cache key, for an upstream that takes one.
     cache_key: str = ""
     #: A breakpoint the upstream places automatically at the end of the prompt.

@@ -15,6 +15,8 @@ from typing import Any, Generic, TypeVar
 
 from ..atomic import atomic_write_json
 from ..errors import ProviderError, RequestError
+from ..keys import MASTER
+from ..ledger import TokenLedger, merge
 from ..status import AccountStatus, ProviderStatus
 from ..streaming import closing_iterator
 from .auth import Auth
@@ -375,6 +377,10 @@ class PooledProvider(Generic[T]):
         """Where the account's usage bars are kept, when it reports any."""
         return None
 
+    def ledger(self, account: Account[T]) -> TokenLedger | None:
+        """Where the account's proxy token counts are kept."""
+        return None
+
     def state_dirs(self, slot: str) -> list[Path]:
         return [self.context.directory / "accounts" / self.name / slot]
 
@@ -382,6 +388,18 @@ class PooledProvider(Generic[T]):
         """Release what a removed slot holds beyond its files."""
 
     # -- shared --------------------------------------------------------------
+
+    def callers(self) -> dict[str, dict[str, dict[str, int]]]:
+        """Token windows per calling key, over every account of this provider.
+
+        Records from before keys had names were all made with the master key.
+        """
+        groups: dict[str, list[dict[str, dict[str, int]]]] = {}
+        for account in self.pool.accounts:
+            ledger = self.ledger(account)
+            for caller, windows in (ledger.by_caller() if ledger else {}).items():
+                groups.setdefault(caller or MASTER, []).append(windows)
+        return {caller: merge(items) for caller, items in groups.items()}
 
     def _usage(self, account: Account[T]) -> float | None:
         store = self.limits(account)
@@ -397,6 +415,7 @@ class PooledProvider(Generic[T]):
         return Provider(
             name=self.name,
             status=self.status,
+            callers=self.callers,
             forget=self.forget,
             routes=routes,
             **fields,

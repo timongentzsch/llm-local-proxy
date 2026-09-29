@@ -8,6 +8,7 @@ from typing import Any
 
 from ...errors import RequestError
 from ...ir import ChatRequest
+from ...ledger import TokenLedger
 from ...status import AccountStatus
 from ...tools import flatten
 from ..base import Provider, ProviderContext
@@ -62,6 +63,9 @@ class Claude(PooledProvider[ClaudeUpstream]):
             updated_at=updated_at,
         )
 
+    def ledger(self, account: Account[ClaudeUpstream]) -> TokenLedger:
+        return account.client.ledger
+
     def limits(self, account: Account[ClaudeUpstream]) -> LimitsStore:
         return account.client.limits
 
@@ -92,7 +96,7 @@ class Claude(PooledProvider[ClaudeUpstream]):
         body, betas = self._request(canonical, request)
         events = self.pool.stream(
             request.session,
-            lambda account: account.client.events(body, betas),
+            lambda account: account.client.events(body, betas, request.caller),
             self.no_account,
             starting=request.starts_conversation,
         )

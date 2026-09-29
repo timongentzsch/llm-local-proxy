@@ -91,8 +91,10 @@ class UsageAccountingTest(unittest.TestCase):
                             if provider == "claude"
                             else [codex_terminal()]
                         )
-                        for event in client._tracked(iter(events)):
+                        for event in client._tracked(iter(events), "alice"):
                             output.feed(event)
+                        # Every provider attributes the request to its key.
+                        self.assertEqual(list(client.ledger.by_caller()), ["alice"])
                         if streaming:
                             frames = output.finish()
                             if encoder is ResponseEncoder:

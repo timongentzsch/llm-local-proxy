@@ -138,7 +138,7 @@ class ClaudeUpstream:
         return [model for model in map(_normalize_model, items) if model]
 
     def events(
-        self, body: dict[str, Any], betas: tuple[str, ...] = ()
+        self, body: dict[str, Any], betas: tuple[str, ...] = (), caller: str = ""
     ) -> Iterator[dict[str, Any]]:
         betas_header = ",".join((CLAUDE_CODE_BETA, OAUTH_BETA, *betas))
         prewarm = body.get("max_tokens") == 0
@@ -169,10 +169,14 @@ class ClaudeUpstream:
             if prewarm
             else transport.read_events(response, {"message_stop", "error"})
         )
-        yield from self._tracked(events)
+        yield from self._tracked(events, caller)
 
-    def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-        return track_usage(events, self.ledger, ClaudeUsage().read, {"message_stop"})
+    def _tracked(
+        self, events: Iterator[dict[str, Any]], caller: str = ""
+    ) -> Iterator[dict[str, Any]]:
+        return track_usage(
+            events, self.ledger, ClaudeUsage().read, {"message_stop"}, caller
+        )
 
     def count_tokens(
         self, body: dict[str, Any], betas: tuple[str, ...] = ()

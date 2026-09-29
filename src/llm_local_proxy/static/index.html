@@ -28,18 +28,28 @@
   .skeleton-line,.skeleton-code,.skeleton-button{display:block;background:linear-gradient(90deg,#8881 25%,#8883 50%,#8881 75%);background-size:200% 100%;animation:shimmer 1.4s ease-in-out infinite}.skeleton-line{height:9px}.skeleton-provider .provider-head{height:43px}.skeleton-provider .account-slot{min-height:76px}.skeleton-provider .actions{margin-top:12px}.skeleton-client .skeleton-line+ .skeleton-line{margin-top:7px}.skeleton-code{height:31px}.skeleton-button{width:48px;height:27px;border:1px solid var(--line)}.skeleton-code .skeleton-button{position:absolute;inset:-1px -1px -1px auto;height:auto}.skeleton-model .skeleton-line{margin-top:1px}.skeleton-model .efforts{margin-top:7px}.skeleton-model .efforts .skeleton-line{height:12px}
   @media(max-width:720px){body{margin-top:18px}#providers,#clients,#models{grid-template-columns:1fr}.command{grid-template-columns:1fr;gap:5px}#command-model{max-width:65%}}
   @media(prefers-reduced-motion:reduce){.skeleton-line,.skeleton-code,.skeleton-button{animation:none}}
+  body.user .master,body:not(.user) .user-only{display:none!important}
+  .keys-add{display:flex;gap:6px}.key-item{border-top:1px solid var(--line);padding:9px 0}.key-item:first-child{border-top:0}.key-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.key-head code{opacity:.7}.key-actions{display:flex;gap:6px}.key-actions button{padding:2px 7px;font-size:11px}#command-key{max-width:14em}
   [hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shimmer{to{background-position:-200% 0}}
 </style>
 <header><h1>llm local proxy</h1><span><i class="spin"></i><i id="dot" class="dot"></i><span id="state" role="status">loading</span></span></header>
 <main>
-  <div id="providers"></div>
+  <div id="providers" class="master"></div>
+  <section class="panel user-only">
+    <div class="section-head"><h2>your usage</h2></div>
+    <div id="usage" class="usage"></div>
+  </section>
+  <section class="panel master">
+    <div class="section-head"><h2>keys</h2><span class="keys-add"><input id="key-name" placeholder="new key name" aria-label="new key name" autocomplete="off"><button id="add-key">add key</button></span></div>
+    <div id="keys"></div>
+  </section>
   <section class="panel">
     <div class="section-head"><h2>connection</h2></div>
     <div id="clients"></div>
     <div class="row key-row"><span class="muted">api key</span><code id="key"></code><span><button id="copy">copy</button> <button id="forget">forget</button></span></div>
   </section>
   <section class="panel">
-    <div class="section-head"><h2>launch a client</h2><select id="command-model" aria-label="model" disabled><option>loading models</option></select></div>
+    <div class="section-head"><h2>launch a client</h2><span><select id="command-key" class="master" aria-label="key"></select> <select id="command-model" aria-label="model" disabled><option>loading models</option></select></span></div>
     <div id="commands"></div>
   </section>
   <section class="panel">
@@ -98,7 +108,7 @@ function takeKey(){const v=hashKey();if(!v)return storedKey();history.replaceSta
 addEventListener("hashchange",()=>{if(hashKey())location.reload()});
 // The 60s reload re-renders only what changed, so it does not steal a text
 // selection, an open model list or focus from the panels below.
-let key=takeKey(),active=0,providers=[],dialects=[],modelList=[],shownDialects="",shownModels="",shownCommands="",refreshing=false,loading=null,again=false,timer;
+let key=takeKey(),active=0,providers=[],dialects=[],modelList=[],shownDialects="",shownModels="",shownCommands="",refreshing=false,loading=null,again=false,timer,keysInfo=null;
 function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
 async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json().catch(()=>({}));if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
 const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});
@@ -108,7 +118,7 @@ function windowLabel(w){return w==="5h"?"5 hour":w==="7d"?"weekly":w}
 function bar(root,label,percent,resetsAt){const pct=Math.min(100,Math.round(percent||0));const box=document.createElement("div"),line=document.createElement("div"),fill=document.createElement("i");const reset=resetsAt?` · resets ${fmtTime(resetsAt)}`:"";box.className="limit";box.textContent=`${label} · ${pct}% used${reset}`;line.className="bar";fill.style.width=pct+"%";line.append(fill);box.append(line);root.append(box)}
 function hasTokens(t){return !!(t&&Object.values(t).some(w=>w&&(w.input||w.output||w.cache_read||w.cache_write||w.partial_requests)))}
 function tokenLine(t){const read=t.cache_read||0,input=(t.input||0)+read+(t.cache_write||0);let s=`${fmtTokens(input)} in`;if(input&&read)s+=` · ${Math.round(read/input*100)}% cache hits`;return`${s} · ${fmtTokens(t.output||0)} out${t.partial_requests?" · includes partial usage":""}`}
-function showTokens(root,tokens){if(!hasTokens(tokens))return;let shown="";for(const w of Object.keys(tokens)){const t=tokens[w];if(!t||(!t.input&&!t.output&&!t.cache_read&&!t.cache_write&&!t.partial_requests))continue;const line=tokenLine(t);if(line===shown)continue;shown=line;const div=document.createElement("div");div.className="limit";div.textContent=`proxy tokens · ${windowLabel(w)}: ${line}`;root.append(div)}}
+function showTokens(root,tokens,prefix="proxy tokens"){if(!hasTokens(tokens))return;let shown="";for(const w of Object.keys(tokens)){const t=tokens[w];if(!t||(!t.input&&!t.output&&!t.cache_read&&!t.cache_write&&!t.partial_requests))continue;const line=tokenLine(t);if(line===shown)continue;shown=line;const div=document.createElement("div");div.className="limit";div.textContent=`${prefix} · ${windowLabel(w)}: ${line}`;root.append(div)}}
 function providerCard(name){let c=document.getElementById(`provider-${name}`);if(c)return c;q("#providers").querySelectorAll(".skeleton-provider").forEach(item=>item.remove());c=q("#provider-card").content.firstElementChild.cloneNode(true);c.id=`provider-${name}`;c.querySelector(".add-account").onclick=async()=>{try{await api(`/api/${name}/accounts`,{method:"POST",body:JSON.stringify({action:"add"})});load()}catch(e){alert(e.message)}};q("#providers").append(c);return c}
 function accountCard(name,id,root){let c=root.querySelector(`[data-account="${id}"]`);if(c)return c;c=q("#account-card").content.firstElementChild.cloneNode(true);c.dataset.account=id;root.append(c);wire(name,id,c);return c}
 function accountBody(id,extra={}){return JSON.stringify({...extra,...(id?{account:id}:{})})}
@@ -136,21 +146,34 @@ function shell(v){return"'"+String(v).replaceAll("'","'\\''")+"'"}
 // OMP has no base URL flag; its litellm provider reads one from the
 // environment and discovers the proxy's models from /models.
 function showCommands(){
-  const root=q("#commands"),model=q("#command-model").value,selected=modelList.find(item=>item.id===model),context=Number(selected?.context_length)||0,claudeModel=context>=1e6&&!/\[1m\]$/i.test(model)?`${model}[1m]`:model,openai=dialects.find(d=>d.name==="openai")?.base_url,anthropic=dialects.find(d=>d.name==="anthropic")?.base_url,clientKey=key||"local";
+  const root=q("#commands"),model=q("#command-model").value,selected=modelList.find(item=>item.id===model),context=Number(selected?.context_length)||0,claudeModel=context>=1e6&&!/\[1m\]$/i.test(model)?`${model}[1m]`:model,named=keysInfo?.keys.find(k=>k.name===q("#command-key").value),urls=named&&keysInfo.public_dialects.length?keysInfo.public_dialects:dialects,openai=urls.find(d=>d.name==="openai")?.base_url,anthropic=urls.find(d=>d.name==="anthropic")?.base_url,clientKey=named?.key||key||"local";
   if(!model||!openai||!anthropic){if(!root.querySelector(".skeleton-command"))root.textContent="unavailable";return}
   const codexContext=context>0?` -c ${shell(`model_context_window=${context}`)}`:"",codex=`LLM_PROXY_API_KEY=${shell(clientKey)} codex --model ${shell(model)} -c 'model_provider="local_proxy"' -c ${shell(`model_providers.local_proxy={ name="LLM Local Proxy", base_url="${openai}", env_key="LLM_PROXY_API_KEY", wire_api="responses" }`)}${codexContext}`,claude=`ANTHROPIC_BASE_URL=${shell(anthropic)} ANTHROPIC_AUTH_TOKEN=${shell(clientKey)} claude --model ${shell(claudeModel)}`,modelConfig={name:model};
   if(context>0)modelConfig.limit={context};
   const config={"$schema":"https://opencode.ai/config.json",provider:{"local-proxy":{npm:"@ai-sdk/openai",name:"LLM Local Proxy",options:{baseURL:openai,apiKey:"{env:LLM_PROXY_API_KEY}"},models:{[model]:modelConfig}}}},opencode=`LLM_PROXY_API_KEY=${shell(clientKey)} OPENCODE_CONFIG_CONTENT=${shell(JSON.stringify(config))} opencode --model ${shell(`local-proxy/${model}`)}`,omp=`LITELLM_BASE_URL=${shell(openai)} LITELLM_API_KEY=${shell(clientKey)} omp --model ${shell(`litellm/${model}`)}`;
   const commands=[["codex",codex],["claude code",claude],["opencode",opencode],["omp",omp]],sig=JSON.stringify(commands);if(sig===shownCommands&&root.querySelector(".command-copy"))return;shownCommands=sig;
   root.replaceChildren();for(const [name,command] of commands){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=document.createElement("button");let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;copy.className="command-copy";copy.textContent="copy";copy.setAttribute("aria-label",`copy ${name} command`);copy.onclick=async()=>{try{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.textContent="copied";reset=setTimeout(()=>copy.textContent="copy",1500)}catch(e){alert(e.message)}};box.append(code,copy);row.append(label,box);root.append(row)}}
-q("#command-model").onchange=showCommands;
+q("#command-model").onchange=showCommands;q("#command-key").onchange=showCommands;
+// Named keys (master only): each with its usage per provider, a share link
+// that opens that key's own reduced dashboard, and revocation.
+function usageLines(root,usage){for(const [provider,windows] of Object.entries(usage||{}))showTokens(root,windows,provider);if(!root.children.length){const none=document.createElement("div");none.className="limit muted";none.textContent="no proxy tokens yet";root.append(none)}}
+function keyButton(label,run){const b=document.createElement("button");b.textContent=label;b.onclick=async()=>{try{await run(b)}catch(e){alert(e.message)}};return b}
+async function copied(button,text){await navigator.clipboard.writeText(text);button.textContent="copied";setTimeout(()=>button.textContent=button.dataset.label,1500)}
+function showKeys(info){keysInfo=info;const root=q("#keys"),select=q("#command-key"),chosen=select.value;root.replaceChildren();select.replaceChildren(new Option("master key","master"));for(const k of [{name:"master"},...info.keys]){const item=document.createElement("div"),head=document.createElement("div"),name=document.createElement("strong"),actions=document.createElement("span"),usage=document.createElement("div");item.className="key-item";head.className="key-head";actions.className="key-actions";usage.className="usage";name.textContent=k.name;head.append(name);if(k.key){const masked=document.createElement("code"),link=`${info.public_url||location.origin}/#key=${encodeURIComponent(k.key)}`;masked.textContent=`${k.key.slice(0,8)}…${k.key.slice(-4)}`;head.append(masked);for(const [label,run] of [["copy key",b=>copied(b,k.key)],["copy link",b=>copied(b,link)],["revoke",async()=>{if(confirm(`revoke ${k.name}?`)){await api("/api/keys",{method:"POST",body:JSON.stringify({action:"remove",name:k.name})});load()}}]]){const b=keyButton(label,run);b.dataset.label=label;actions.append(b)}select.append(new Option(`key: ${k.name}`,k.name))}head.append(actions);usageLines(usage,info.usage[k.name]);item.append(head,usage);root.append(item)}if([...select.options].some(o=>o.value===chosen))select.value=chosen;showCommands()}
+q("#add-key").onclick=async()=>{const input=q("#key-name");try{await api("/api/keys",{method:"POST",body:JSON.stringify({action:"add",name:input.value.trim()})});input.value="";load()}catch(e){alert(e.message)}};
 q("#refresh-models").onclick=async()=>{const button=q("#refresh-models"),previous=modelList;button.disabled=true;refreshing=true;shownModels="";q("#models").replaceChildren();fillSkeleton("#models","#skeleton-model",Math.max(previous.length,4));try{showModels((await api("/v1/models?refresh=1")).data)}catch(e){showModels(previous);alert(e.message)}finally{refreshing=false;button.disabled=false}};
 // One reload at a time; a call arriving meanwhile runs once it finishes.
 function load(){if(loading){again=true;return loading}loading=loadOnce().finally(()=>{loading=null;if(again){again=false;load()}});return loading}
 async function loadOnce(){
   const initial=!document.body.classList.contains("ready");
-  const status=api("/api/status").then(value=>{
-    showDialects(value.dialects||[]);
+  const status=api("/api/me").then(async me=>{
+    document.body.classList.toggle("user",me.role!=="master");
+    if(me.role!=="master"){
+      showDialects(me.dialects||[]);const usage=q("#usage");usage.replaceChildren();usageLines(usage,me.usage);
+      q("#dot").classList.add("on");q("#state").textContent=`signed in as ${me.name}`;return;
+    }
+    const [value,keys]=await Promise.all([api("/api/status"),api("/api/keys")]);
+    showDialects(value.dialects||[]);showKeys(keys);
     providers=value.providers||[];
     const providerRoot=q("#providers");for(const node of [...providerRoot.childNodes])if(!node.matches?.(".provider:not(.skeleton-provider)"))node.remove();
     if(!providers.length)providerRoot.textContent="no providers configured";

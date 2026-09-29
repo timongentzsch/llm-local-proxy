@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from ..dialects import Dialect, resolve
 from ..dialects.base import Route
 from ..errors import ProviderError, RequestError
+from ..keys import MASTER
 from ..providers import Provider
 from ..service import Service
 from ..streaming import closing_iterator
@@ -26,13 +27,20 @@ from . import security
 from .sse import SseStream, with_heartbeats
 
 
-def make_handler(service: Service):
+def make_handler(service: Service, public: bool = False):
+    """Handlers for the admin listener, or with ``public`` for named keys only.
+
+    The public listener may face a network, so trust comes from the socket:
+    it serves only the model API and a key's own reduced dashboard, refuses
+    the master key, and never reaches account, key or status routes.
+    """
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         server_version = "llm-local-proxy/0.1"
 
         def do_GET(self) -> None:
-            if not self._valid_host():
+            if not public and not self._valid_host():
                 return self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "bad host"})
             parsed = urlparse(self.path)
             dialect, path = resolve(parsed.path)
@@ -43,7 +51,7 @@ def make_handler(service: Service):
                     .read_text()
                     .replace(
                         "__AUTH_REQUIRED__",
-                        "true" if service.config.api_key else "false",
+                        "true" if public or service.config.api_key else "false",
                     )
                 )
                 return self._reply(
@@ -52,17 +60,24 @@ def make_handler(service: Service):
             if path == "/favicon.ico":
                 # Browsers ask for it unprompted; a 401 here is console noise.
                 return self._reply(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
-            if path == "/healthz":
+            if path == "/healthz" and not public:
                 healthy = service.healthy()
                 return self._json(
                     HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE,
                     {"status": "ok" if healthy else "unhealthy"},
                 )
-            if not self._authorized():
+            caller = self._caller()
+            if caller is None:
                 return self._unauthorized(dialect)
             try:
+                if path == "/api/me":
+                    return self._json(HTTPStatus.OK, self._me(caller))
+                if path.startswith("/api/") and not self._admin(caller):
+                    return None
                 if path == "/api/status":
                     return self._json(HTTPStatus.OK, service.status())
+                if path == "/api/keys":
+                    return self._json(HTTPStatus.OK, self._keys())
                 if path == "/v1/models":
                     params = parse_qs(parsed.query)
                     refresh = params.get("refresh", [""])[0] in {"1", "true"}
@@ -85,15 +100,20 @@ def make_handler(service: Service):
                 self._api_error(dialect, error.status, str(error))
 
         def do_POST(self) -> None:
-            if not self._valid_host():
+            if not public and not self._valid_host():
                 return self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "bad host"})
             dialect, path = resolve(urlparse(self.path).path)
-            if not self._authorized():
+            caller = self._caller()
+            if caller is None:
                 return self._unauthorized(dialect)
             if not self._same_origin():
                 return self._json(HTTPStatus.FORBIDDEN, {"error": "bad origin"})
             try:
                 body = self._body()
+                if path.startswith("/api/") and not self._admin(caller):
+                    return None
+                if path == "/api/keys":
+                    return self._json(HTTPStatus.OK, self._manage_keys(body))
                 provider_route = self._provider_route(path)
                 if provider_route:
                     provider, route = provider_route
@@ -104,7 +124,7 @@ def make_handler(service: Service):
                 route = dialect.routes.get(path)
                 if route is None:
                     return self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-                self._serve(dialect, route, body)
+                self._serve(dialect, route, body, caller)
             except RequestError as error:
                 self._api_error(dialect, HTTPStatus.BAD_REQUEST, str(error))
             except ProviderError as error:
@@ -132,8 +152,11 @@ def make_handler(service: Service):
                     return self.headers[name]
             return ""
 
-        def _serve(self, dialect: Dialect, route: Route, body: dict[str, Any]) -> None:
+        def _serve(
+            self, dialect: Dialect, route: Route, body: dict[str, Any], caller: str
+        ) -> None:
             request = route.parse(body, self._session_id(dialect))
+            request.caller = caller
             provider, canonical = self._route(request.model)
             if route.encode is None:
                 if provider.count_tokens is None:
@@ -207,8 +230,60 @@ def make_handler(service: Service):
                 raise RequestError("request body must be an object")
             return value
 
-        def _authorized(self) -> bool:
-            return security.authorized(self.headers, service.config.api_key or "")
+        def _caller(self) -> str | None:
+            """The name of the request's key; the master key only locally."""
+            caller = security.identify(
+                self.headers, service.config.api_key, service.keys.identify
+            )
+            return None if public and caller == MASTER else caller
+
+        def _admin(self, caller: str) -> bool:
+            """Admit master-only routes, answering the refusal otherwise."""
+            if public:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            elif caller != MASTER:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "requires the master key"})
+            return not public and caller == MASTER
+
+        def _me(self, caller: str) -> dict[str, Any]:
+            """What a key's own dashboard shows: its base URLs and its usage."""
+            if public:
+                host = self.headers.get("Host", "")
+                origin = service.config.public_url or f"http://{host}"
+            else:
+                origin = service.config.origin
+            return {
+                "name": caller,
+                "role": "master" if caller == MASTER else "user",
+                "dialects": service.base_urls(origin),
+                "usage": service.usage().get(caller, {}),
+            }
+
+        def _keys(self) -> dict[str, Any]:
+            return {
+                "keys": [
+                    {"name": name, "key": key}
+                    for name, key in service.keys.items().items()
+                ],
+                "usage": service.usage(),
+                "public_url": service.config.public_url,
+                # Where a named key's launch commands point, when it is set.
+                "public_dialects": service.base_urls(service.config.public_url)
+                if service.config.public_url
+                else [],
+            }
+
+        def _manage_keys(self, body: dict[str, Any]) -> dict[str, Any]:
+            name = body.get("name")
+            if not isinstance(name, str):
+                raise RequestError("name is required")
+            action = body.get("action")
+            if action == "add":
+                return {"name": name, "key": service.keys.add(name)}
+            if action == "remove":
+                service.keys.remove(name)
+                return {"ok": True}
+            raise RequestError("action must be add or remove")
 
         def _valid_host(self) -> bool:
             return security.valid_host(self.headers, service.config.host)

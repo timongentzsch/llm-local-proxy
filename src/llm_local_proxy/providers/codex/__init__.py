@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ...ir import ChatRequest
+from ...ledger import TokenLedger
 from ...status import AccountStatus
 from ..base import Provider, ProviderContext
 from ..catalog import match_model
@@ -74,6 +75,9 @@ class Codex(PooledProvider[Upstream]):
     def account_status(self, account: Account[Upstream]) -> AccountStatus:
         return replace(account.auth.status(), tokens=account.client.ledger.windows())
 
+    def ledger(self, account: Account[Upstream]) -> TokenLedger:
+        return account.client.ledger
+
     def limits(self, account: Account[Upstream]) -> LimitsStore:
         return account.auth.limits
 
@@ -102,7 +106,7 @@ class Codex(PooledProvider[Upstream]):
         # would hand every turn of one conversation a different one.
         events = self.pool.stream(
             request.session or cache_key,
-            lambda account: account.client.events(body),
+            lambda account: account.client.events(body, request.caller),
             self.no_account,
             starting=request.starts_conversation,
         )

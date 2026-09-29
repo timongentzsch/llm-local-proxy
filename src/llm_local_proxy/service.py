@@ -12,6 +12,7 @@ from typing import Any
 from .config import Config
 from .dialects import DIALECTS
 from .errors import ProviderError
+from .keys import KeyStore
 from .providers import REGISTRY, Provider, ProviderContext
 from .status import ProviderStatus
 
@@ -24,6 +25,7 @@ class Service:
         self.config = config
         context = ProviderContext(config=config, directory=config.path.parent)
         self.providers: list[Provider] = [create(context) for create in REGISTRY]
+        self.keys = KeyStore(config.path.parent / "keys.json")
 
     def provider(self, name: str) -> Provider | None:
         return next((item for item in self.providers if item.name == name), None)
@@ -65,16 +67,26 @@ class Service:
                     **value.payload(),
                 }
             )
-        return {
-            "dialects": [
-                {
-                    "name": dialect.name,
-                    "base_url": self.config.origin + dialect.base_path,
-                }
-                for dialect in DIALECTS
-            ],
-            "providers": cards,
-        }
+        return {"dialects": self.base_urls(self.config.origin), "providers": cards}
+
+    def base_urls(self, origin: str) -> list[dict[str, str]]:
+        """Where a client reaches each dialect, from one listener's origin."""
+        return [
+            {"name": dialect.name, "base_url": origin + dialect.base_path}
+            for dialect in DIALECTS
+        ]
+
+    def usage(self) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
+        """Proxy token windows per calling key, then per provider."""
+        result: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+        for provider in self.providers:
+            try:
+                callers = provider.callers()
+            except DEGRADES:
+                continue
+            for caller, windows in callers.items():
+                result.setdefault(caller, {})[provider.name] = windows
+        return result
 
     def close(self) -> None:
         for provider in self.providers:

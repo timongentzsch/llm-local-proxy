@@ -19,6 +19,13 @@ class Config:
     codex_binary: str
     request_timeout: int
     path: Path
+    #: The optional listener for named keys only (0 = none). It may bind a
+    #: network address, unlike ``host``, which stays loopback.
+    public_host: str = "0.0.0.0"
+    public_port: int = 0
+    #: The address remote clients use (e.g. a Tailscale Serve URL), for the
+    #: launch commands a named key is shown.
+    public_url: str = ""
 
     @property
     def origin(self) -> str:
@@ -82,6 +89,14 @@ def load(path: Path | None = None) -> Config:
         raise ValueError("port must be between 1 and 65535")
     if api_key and len(api_key) < 24:
         raise ValueError("api_key must be empty or contain at least 24 characters")
+    public_port = int(data.get("public_port", 0))
+    if public_port and not 1 <= public_port <= 65535:
+        raise ValueError("public_port must be between 1 and 65535")
+    if public_port and not api_key:
+        # A network port must never sit next to an admin side with auth off.
+        raise ValueError("public_port requires an api_key")
+    if public_port and public_port == port:
+        raise ValueError("public_port must differ from port")
     return Config(
         host=host,
         port=port,
@@ -90,4 +105,7 @@ def load(path: Path | None = None) -> Config:
         codex_binary=str(data.get("codex_binary", "codex")),
         request_timeout=max(1, int(data.get("request_timeout", 600))),
         path=resolved,
+        public_host=str(data.get("public_host", "0.0.0.0")),
+        public_port=public_port,
+        public_url=str(data.get("public_url", "")).rstrip("/"),
     )

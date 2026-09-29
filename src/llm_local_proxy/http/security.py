@@ -8,8 +8,10 @@ name it does not serve (DNS rebinding).
 from __future__ import annotations
 
 import hmac
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from urllib.parse import urlparse
+
+from ..keys import MASTER
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -57,11 +59,16 @@ def same_origin(headers: Mapping[str, str]) -> bool:
         return False
 
 
-def authorized(headers: Mapping[str, str], api_key: str) -> bool:
-    """Whether the request carries the local key, in any accepted form."""
-    if not api_key:
-        return True
-    expected = api_key.encode("utf-8")
+def identify(
+    headers: Mapping[str, str],
+    master: str,
+    named: Callable[[str], str | None],
+) -> str | None:
+    """Who the request's key belongs to, in any accepted form, or None.
+
+    ``MASTER`` for the configured key (or for anyone when none is configured,
+    as auth is then off), otherwise the name of a matching named key.
+    """
     for header, scheme in CREDENTIALS:
         value = headers.get(header, "")
         if not value:
@@ -70,6 +77,9 @@ def authorized(headers: Mapping[str, str], api_key: str) -> bool:
             sent, _, value = value.partition(" ")
             if sent.casefold() != scheme:
                 continue
-        if hmac.compare_digest(value.encode("utf-8"), expected):
-            return True
-    return False
+        if master and hmac.compare_digest(value.encode(), master.encode()):
+            return MASTER
+        name = named(value)
+        if name:
+            return name
+    return None if master else MASTER

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import socket
+import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
@@ -40,6 +41,14 @@ def main() -> None:
             return
         service = Service(config)
         server = Server((config.host, config.port), make_handler(service))
+        public = (
+            Server(
+                (config.public_host, config.public_port),
+                make_handler(service, public=True),
+            )
+            if config.public_port
+            else None
+        )
     except (OSError, ValueError, ProviderError) as error:
         if service:
             service.close()
@@ -47,11 +56,18 @@ def main() -> None:
     fragment = f"#key={quote(config.api_key)}" if config.api_key else ""
     print(f"LLM Local Proxy: {config.origin}/{fragment}")
     print(f"Config: {config.path}")
+    if public:
+        where = config.public_url or f"{config.public_host}:{config.public_port}"
+        print(f"Named keys only: {where}")
+        threading.Thread(target=public.serve_forever, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if public:
+            public.shutdown()
+            public.server_close()
         server.server_close()
         service.close()
 

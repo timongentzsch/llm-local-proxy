@@ -46,6 +46,8 @@ class Provider:
     #: None when the upstream cannot count exactly; callers then get a 404
     #: rather than an estimate they would wrongly trust.
     count_tokens: Callable[[str, ChatRequest], dict[str, Any]] | None = None
+    #: Proxy token windows per calling key name, summed over accounts.
+    callers: Callable[[], dict[str, dict[str, dict[str, int]]]] = dict
     #: Drops the cached catalog, e.g. after a login changes what is visible.
     forget: Callable[[], None] = lambda: None
     #: Defaults suit a provider that is just an HTTPS client.

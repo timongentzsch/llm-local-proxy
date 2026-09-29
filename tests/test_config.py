@@ -26,6 +26,33 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "loopback"):
                 load(path)
 
+    def test_a_public_listener_needs_a_key_and_its_own_port(self):
+        key = 'api_key="123456789012345678901234"\n'
+        for body, error in (
+            ("public_port=8788\n", None),
+            ('api_key=""\npublic_port=8788\n', "requires an api_key"),
+            ("public_port=8787\n", "must differ"),
+            ("public_port=70000\n", "between 1 and 65535"),
+        ):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.toml"
+                path.write_text(
+                    'host="127.0.0.1"\nport=8787\n'
+                    + ("" if "api_key" in body else key)
+                    + body
+                    + 'public_url="https://mac.example.ts.net/"\n'
+                )
+                path.chmod(0o600)
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        load(path)
+                    continue
+                config = load(path)
+                self.assertEqual(
+                    (config.public_host, config.public_port), ("0.0.0.0", 8788)
+                )
+                self.assertEqual(config.public_url, "https://mac.example.ts.net")
+
     def test_allows_explicit_no_auth(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

@@ -50,7 +50,7 @@ without importing provider code.
 src/llm_local_proxy/
   ir.py  tools.py  errors.py  streaming.py
   service.py         provider registry, merged catalog, status
-  config.py  atomic.py  ledger.py  status.py
+  config.py  atomic.py  ledger.py  status.py  keys.py
   http/              server, request routing, SSE framing, loopback security
   dialects/
     base.py          Dialect, Route, Encoder base
@@ -59,6 +59,7 @@ src/llm_local_proxy/
   providers/
     base.py          Provider, ProviderContext
     pool.py          AccountPool, AccountStore, PooledProvider
+    limits.py        LimitsStore: usage bars read without blocking
     auth.py          Auth: one login's lifecycle
     catalog.py  reasoning.py  transport.py
     codex/           app-server client, auth, request, events, catalog
@@ -131,6 +132,15 @@ suffix.
   keep their status, and nothing switches accounts once output has started.
 - **Catalog.** Discovery uses the same pool without affinity and accepts the
   first live catalog, so one stale login cannot hide a provider's models.
+- **Keys.** `security.identify()` names the caller: `master` for the configured
+  key, or a named key from `keys.KeyStore`. The name rides on
+  `ChatRequest.caller` into each provider's token ledger, which keeps windows
+  per caller (`TokenLedger.by_caller`, merged across accounts by
+  `PooledProvider.callers`). The admin listener serves everything, gating
+  `/api/*` except `/api/me` to the master key; the optional public listener
+  (`make_handler(..., public=True)`) serves only the model API, `/` and
+  `/api/me`, and refuses the master key, so trust comes from the socket rather
+  than from headers or peer addresses.
 - **Slots.** Added and removed live from the dashboard. Only one unsigned slot
   may exist, and a slot must be signed out before removal. Codex state lives
   in `codex_home/accounts/<slot>`, proxy state in `accounts/<provider>/<slot>`.

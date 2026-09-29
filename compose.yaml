@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8787:8787"
+      # The named-key listener, once public_port = 8788 is set in config.toml.
+      # Publish it as widely as its users need, e.g. behind Tailscale Serve.
+      # - "127.0.0.1:8788:8788"
     volumes:
       - proxy-config:/config
       - codex-home:/codex

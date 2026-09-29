@@ -127,6 +127,32 @@ reported counts and is marked as partial; missing counts are never estimated.
 A stream that ends before its terminal event fails instead of looking
 complete.
 
+## Keys and remote access
+
+The `api_key` in the config is the master key: it alone opens the full
+dashboard, signs accounts in and out, and manages keys, and it is accepted only
+on the admin listener (`host`/`port`). From the dashboard's **keys** panel the
+master adds named keys (`alice`, `ci-bot`, ...), stored readable in
+`keys.json` next to the config and private to its owner. A named key calls
+every model endpoint, and its **copy link** opens that key's own reduced
+dashboard: the model catalogue, launch commands with the key filled in, and
+its own usage. Proxy token usage is attributed per key and provider; traffic
+sent with the master key shows as `master`. Revoking a key takes effect on the
+next request.
+
+Other machines reach the proxy through the public listener, which serves only
+the model API and the reduced dashboard, and refuses the master key. Trust
+comes from the socket, so no header can promote a remote request to master.
+Two ways to expose it:
+
+- **Tailscale Serve (recommended).** Keep `public_host = "127.0.0.1"`, run
+  `tailscale serve --bg 8788`, and set `public_url` to the served
+  `https://<machine>.<tailnet>.ts.net`. Traffic is encrypted and only tailnet
+  members can connect.
+- **Direct bind.** `public_host = "0.0.0.0"` (under Docker, also publish the
+  port in `compose.yaml`). This is plain HTTP, so keys and prompts cross the
+  network unencrypted; put your own TLS proxy in front of it.
+
 ## Configuration
 
 `~/.config/llm-local-proxy/config.toml`, or `--config PATH`
@@ -145,6 +171,14 @@ request_timeout = 600
 An empty `api_key` disables authentication; otherwise it needs at least 24
 characters. Native installs bind only to loopback addresses. Under Docker keep
 the port published to `127.0.0.1` as supplied.
+
+The optional public listener is off unless `public_port` is set:
+
+```toml
+public_host = "0.0.0.0"            # the only setting that may leave loopback
+public_port = 8788                 # must differ from port; needs api_key
+public_url = "https://mac.example.ts.net"   # how remote clients reach it
+```
 
 Account slots are added and removed from the dashboard; each provider allows
 one unsigned slot at a time, and a slot must be signed out before removal.

@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 
-from llm_local_proxy.ledger import TokenLedger
+from llm_local_proxy.ledger import TokenLedger, merge
 
 
 class TokenLedgerTest(unittest.TestCase):
@@ -30,6 +30,18 @@ class TokenLedgerTest(unittest.TestCase):
         self.assertEqual(windows["5h"]["cache_write"], 5)
         self.assertEqual(windows["7d"]["input"], 500)
         self.assertEqual(windows["7d"]["output"], 250)
+
+    def test_usage_is_grouped_by_calling_key(self):
+        ledger = TokenLedger()
+        ledger.add(input_tokens=10, output_tokens=1)  # before keys had names
+        ledger.add(input_tokens=20, output_tokens=2, caller="alice")
+        ledger.add(input_tokens=30, output_tokens=3, caller="alice")
+        callers = ledger.by_caller()
+        self.assertEqual(callers[""]["5h"]["input"], 10)
+        self.assertEqual(callers["alice"]["7d"]["output"], 5)
+        self.assertEqual(
+            merge([callers[""], callers["alice"]])["5h"], ledger.windows()["5h"]
+        )
 
     def test_prunes_expired_records(self):
         path = pathlib.Path(tempfile.mkdtemp()) / "tokens.json"

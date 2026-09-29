@@ -26,10 +26,12 @@ class Upstream:
         self.ledger = TokenLedger(tokens_path, input_includes_cache=True)
         self._opener = transport.opener()
 
-    def events(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def events(
+        self, body: dict[str, Any], caller: str = ""
+    ) -> Iterator[dict[str, Any]]:
         response = self._open(body, refresh=False)
         return self._tracked(
-            transport.read_events(response, TERMINAL_EVENTS | {"error"})
+            transport.read_events(response, TERMINAL_EVENTS | {"error"}), caller
         )
 
     def reasoning_efforts(self, model: str) -> set[str] | None:
@@ -50,8 +52,10 @@ class Upstream:
         response.close()
         return None
 
-    def _tracked(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-        return track_usage(events, self.ledger, read_usage, TERMINAL_EVENTS)
+    def _tracked(
+        self, events: Iterator[dict[str, Any]], caller: str = ""
+    ) -> Iterator[dict[str, Any]]:
+        return track_usage(events, self.ledger, read_usage, TERMINAL_EVENTS, caller)
 
     def _open(self, body: dict[str, Any], refresh: bool):
         try:

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import tempfile
 import threading
 import unittest
-from types import SimpleNamespace
+from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 import mock_provider
 
@@ -18,14 +20,18 @@ from llm_local_proxy.errors import UpstreamError
 from llm_local_proxy.http.handler import make_handler
 from llm_local_proxy.http.server import Server
 from llm_local_proxy.ir import Finish, ToolCallArgs, ToolCallEnd, ToolCallStart, Usage
+from llm_local_proxy.keys import KeyStore
 from llm_local_proxy.providers.pool import account_id
+from llm_local_proxy.service import Service
 
 SESSIONS = []
+CALLERS = []
 
 
 def _reply(canonical, request):
     """The scripted answer, or the failure the model name asks for."""
     SESSIONS.append(request.session)
+    CALLERS.append(request.caller)
     if canonical.startswith("mock-fail-"):
         raise UpstreamError(int(canonical.rsplit("-", 1)[1]), "upstream said no")
     if canonical == "mock-burst":
@@ -42,7 +48,7 @@ def _reply(canonical, request):
     return mock_provider.REPLY
 
 
-def _service():
+def _service(api_key="", keys=None):
     provider = mock_provider.provider(
         models=("mock-1", "mock-fail-429", "mock-broken-tool", "mock-burst"),
         reply=_reply,
@@ -56,8 +62,15 @@ def _service():
     # A provider whose upstream has no way to count.
     uncounted = mock_provider.provider(name="uncounted", models=("gpt-1",))
     catalog = {"object": "list", "data": provider.models()}
-    return SimpleNamespace(
-        config=SimpleNamespace(api_key="", host="127.0.0.1"),
+    service = SimpleNamespace(
+        config=SimpleNamespace(
+            api_key=api_key,
+            host="127.0.0.1",
+            origin="http://127.0.0.1:8787",
+            public_url="https://proxy.example.ts.net",
+        ),
+        keys=keys or KeyStore(Path(tempfile.mkdtemp()) / "keys.json"),
+        usage=lambda: {"alice": {"mock": {"5h": {"input": 7}}}, "master": {}},
         healthy=lambda: True,
         route=lambda model: (
             (uncounted, model) if model.startswith("gpt") else (provider, model)
@@ -66,6 +79,8 @@ def _service():
         models=lambda refresh=False: catalog,
         status=lambda: {"providers": []},
     )
+    service.base_urls = MethodType(Service.base_urls, service)
+    return service
 
 
 class EndpointTest(unittest.TestCase):
@@ -469,6 +484,109 @@ class EndpointTest(unittest.TestCase):
         response.read()
         connection.close()
         self.assertEqual(response.status, 400)
+
+
+class KeyAccessTest(unittest.TestCase):
+    """Named keys on the admin listener and on the public one."""
+
+    MASTER = "m" * 32
+
+    @classmethod
+    def setUpClass(cls):
+        keys = KeyStore(Path(tempfile.mkdtemp()) / "keys.json")
+        cls.alice = keys.add("alice")
+        service = _service(api_key=cls.MASTER, keys=keys)
+        cls.servers = {}
+        for public in (False, True):
+            server = Server(("127.0.0.1", 0), make_handler(service, public=public))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            cls.servers[public] = server
+
+    @classmethod
+    def tearDownClass(cls):
+        for server in cls.servers.values():
+            server.shutdown()
+            server.server_close()
+
+    def request(self, public, method, path, key, body=None):
+        port = self.servers[public].server_address[1]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        payload = json.dumps(body) if body is not None else None
+        if payload:
+            headers["Content-Type"] = "application/json"
+        connection.request(method, path, payload, headers)
+        response = connection.getresponse()
+        text = response.read().decode()
+        connection.close()
+        return response.status, text
+
+    def test_a_named_key_uses_the_model_api_on_both_listeners(self):
+        for public in (False, True):
+            with self.subTest(public=public):
+                CALLERS.clear()
+                status, _ = self.request(
+                    public,
+                    "POST",
+                    "/v1/chat/completions",
+                    self.alice,
+                    {
+                        "model": "mock-1",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(CALLERS, ["alice"])
+                self.assertEqual(
+                    self.request(public, "GET", "/v1/models", self.alice)[0], 200
+                )
+
+    def test_a_named_key_sees_only_its_own_dashboard(self):
+        for public, origin in (
+            (False, "http://127.0.0.1:8787"),
+            (True, "https://proxy.example.ts.net"),
+        ):
+            with self.subTest(public=public):
+                status, text = self.request(public, "GET", "/api/me", self.alice)
+                self.assertEqual(status, 200)
+                me = json.loads(text)
+                self.assertEqual((me["name"], me["role"]), ("alice", "user"))
+                self.assertEqual(me["usage"], {"mock": {"5h": {"input": 7}}})
+                self.assertTrue(me["dialects"][0]["base_url"].startswith(origin))
+                for path in ("/api/status", "/api/keys"):
+                    code = self.request(public, "GET", path, self.alice)[0]
+                    self.assertEqual(code, 404 if public else 403)
+                code = self.request(
+                    public,
+                    "POST",
+                    "/api/keys",
+                    self.alice,
+                    {"action": "add", "name": "x"},
+                )[0]
+                self.assertEqual(code, 404 if public else 403)
+
+    def test_the_public_listener_refuses_the_master_key_and_admin_routes(self):
+        self.assertEqual(self.request(True, "GET", "/v1/models", self.MASTER)[0], 401)
+        self.assertEqual(self.request(True, "GET", "/v1/models", "")[0], 401)
+        self.assertEqual(self.request(True, "GET", "/healthz", self.alice)[0], 404)
+        status, page = self.request(True, "GET", "/", "")
+        self.assertEqual(status, 200)
+        self.assertIn("authRequired=true", page)
+
+    def test_the_master_key_manages_keys_on_the_admin_listener(self):
+        status, text = self.request(
+            False, "POST", "/api/keys", self.MASTER, {"action": "add", "name": "bob"}
+        )
+        self.assertEqual(status, 200)
+        bob = json.loads(text)["key"]
+        listed = json.loads(self.request(False, "GET", "/api/keys", self.MASTER)[1])
+        self.assertIn({"name": "bob", "key": bob}, listed["keys"])
+        self.assertEqual(self.request(True, "GET", "/v1/models", bob)[0], 200)
+        self.request(
+            False, "POST", "/api/keys", self.MASTER, {"action": "remove", "name": "bob"}
+        )
+        # Revocation takes effect on the next request.
+        self.assertEqual(self.request(True, "GET", "/v1/models", bob)[0], 401)
 
 
 if __name__ == "__main__":

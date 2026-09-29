@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,7 @@ class TokenLedger:
         cache_read: int = 0,
         cache_write: int = 0,
         partial: bool = False,
+        caller: str = "",
     ) -> None:
         record = {
             "ts": int(time.time()),
@@ -73,6 +74,8 @@ class TokenLedger:
         }
         if partial:
             record["partial"] = True
+        if caller:
+            record["caller"] = caller
         cutoff = time.time() - MAX_AGE
         with self._lock:
             self._records.append(record)
@@ -80,7 +83,7 @@ class TokenLedger:
             if self.path:
                 atomic_write_json(self.path, self._records)
 
-    def record(self, usage: Usage, *, partial: bool = False) -> None:
+    def record(self, usage: Usage, *, partial: bool = False, caller: str = "") -> None:
         """Persist canonical usage in the existing provider-native layout."""
         self.add(
             input_tokens=usage.prompt
@@ -90,13 +93,25 @@ class TokenLedger:
             cache_read=usage.cache_read,
             cache_write=usage.cache_write,
             partial=partial,
+            caller=caller,
         )
 
     def windows(self) -> dict[str, dict[str, int]]:
         """Summed tokens per window (``{"5h": {...}, "7d": {...}}``)."""
-        now = time.time()
+        with self._lock:
+            return self._windows(list(self._records))
+
+    def by_caller(self) -> dict[str, dict[str, dict[str, int]]]:
+        """The same windows per calling key's name; unattributed records under ""."""
         with self._lock:
             records = list(self._records)
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for record in records:
+            groups.setdefault(str(record.get("caller", "")), []).append(record)
+        return {caller: self._windows(items) for caller, items in groups.items()}
+
+    def _windows(self, records: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+        now = time.time()
         result: dict[str, dict[str, int]] = {}
         for label, seconds in WINDOWS:
             since = now - seconds
@@ -122,11 +137,25 @@ class TokenLedger:
         return result
 
 
+def merge(
+    windows: Iterable[dict[str, dict[str, int]]],
+) -> dict[str, dict[str, int]]:
+    """Sum several ``windows()`` results field by field."""
+    total: dict[str, dict[str, int]] = {}
+    for item in windows:
+        for label, counts in item.items():
+            into = total.setdefault(label, {})
+            for field, value in counts.items():
+                into[field] = into.get(field, 0) + value
+    return total
+
+
 def track_usage(
     events: Iterator[dict[str, Any]],
     ledger: TokenLedger,
     read: Callable[[dict[str, Any]], Usage | None],
     terminal_events: set[str],
+    caller: str = "",
 ) -> Iterator[dict[str, Any]]:
     """Record one request before its terminal event, or partial usage on exit.
 
@@ -145,8 +174,8 @@ def track_usage(
                     if event.get("type") in terminal_events:
                         terminal = True
                         if pending is not None:
-                            ledger.record(pending)
+                            ledger.record(pending, caller=caller)
                 yield event
         finally:
             if not terminal and pending is not None:
-                ledger.record(pending, partial=True)
+                ledger.record(pending, partial=True, caller=caller)

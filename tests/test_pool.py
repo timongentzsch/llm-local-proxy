@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from llm_local_proxy.errors import RequestError
+from llm_local_proxy.ledger import TokenLedger
 from llm_local_proxy.providers.base import ProviderContext
 from llm_local_proxy.providers.limits import LimitsStore
 from llm_local_proxy.providers.pool import (
@@ -299,6 +300,25 @@ class PooledProviderTest(unittest.TestCase):
                 stores[slot] = store
             accounts = limited.status().accounts
         self.assertEqual([a.draining for a in accounts], [True, False])
+
+    def test_usage_per_caller_merges_accounts_and_names_legacy_records(self):
+        ledgers = {"1": TokenLedger(), "2": TokenLedger()}
+        ledgers["1"].add(input_tokens=5)
+        ledgers["1"].add(input_tokens=7, caller="alice")
+        ledgers["2"].add(input_tokens=11, caller="alice")
+        ledgers["2"].add(input_tokens=13, caller="master")
+
+        class Ledgered(self.Fake):
+            def ledger(self, account):
+                return ledgers[account.id]
+
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Ledgered(ProviderContext(config=None, directory=Path(directory)))
+            for slot in ("1", "2"):
+                fake.pool.add(Account(slot, _Auth(), slot))
+            callers = fake.callers()
+        self.assertEqual(callers["alice"]["5h"]["input"], 18)
+        self.assertEqual(callers["master"]["5h"]["input"], 18)
 
 
 if __name__ == "__main__":
