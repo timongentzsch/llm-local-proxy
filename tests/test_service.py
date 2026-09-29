@@ -90,7 +90,7 @@ class ServiceWiringTest(unittest.TestCase):
                 seen["claude_tokens"].append(tokens_path)
                 return SimpleNamespace(
                     ledger=SimpleNamespace(windows=dict),
-                    usage=SimpleNamespace(current=lambda: ((), None)),
+                    limits=SimpleNamespace(current=lambda: ((), None)),
                 )
 
             with (
@@ -337,7 +337,7 @@ class MultiAccountCatalogTest(unittest.TestCase):
             self.calls = 0
             self.usage_reads = 0
             self.ledger = SimpleNamespace(windows=dict)
-            self.usage = SimpleNamespace(current=self.read_usage)
+            self.limits = SimpleNamespace(current=self.read_usage)
 
         def read_usage(self):
             self.usage_reads += 1
@@ -429,7 +429,7 @@ class MultiAccountCatalogTest(unittest.TestCase):
         cleared = []
         claude = Claude.__new__(Claude)
         claude.pool = self.accounts(self.Client([]), self.Client([]))
-        claude.pool.get("2").client.usage.clear = lambda: cleared.append("2")
+        claude.pool.get("2").client.limits.clear = lambda: cleared.append("2")
         claude.pool.get("2").auth.finish = lambda code: {"ok": True}
         claude._lock = Lock()
         claude._catalog = None

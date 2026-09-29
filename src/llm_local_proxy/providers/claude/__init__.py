@@ -54,7 +54,7 @@ class Claude(PooledProvider[ClaudeUpstream]):
         # A login awaiting reauthentication would only fail the read again.
         if not status.signed_in or self.pool.account_error(account.id):
             return status
-        limits, updated_at = account.client.usage.current()
+        limits, updated_at = account.client.limits.current()
         return replace(
             status,
             limits=limits,
@@ -63,7 +63,7 @@ class Claude(PooledProvider[ClaudeUpstream]):
         )
 
     def limits(self, account: Account[ClaudeUpstream]) -> LimitsStore:
-        return account.client.usage
+        return account.client.limits
 
     def no_account(self) -> ClaudeAuthError:
         return ClaudeAuthError(
@@ -124,7 +124,7 @@ class Claude(PooledProvider[ClaudeUpstream]):
         account = account_id(body)
         result = self.pool.get(account).auth.finish(code)
         # The slot may now hold a different login; its old bars are not ours.
-        self.pool.get(account).client.usage.clear()
+        self.pool.get(account).client.limits.clear()
         self.pool.clear_account_error(account)
         self.forget()
         return result

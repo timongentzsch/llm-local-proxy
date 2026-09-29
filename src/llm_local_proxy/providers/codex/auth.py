@@ -64,13 +64,14 @@ def _limits(value: dict[str, Any]) -> tuple[Limit, ...]:
     items: list[tuple[int, str, Limit]] = []
     # The top-level entry is the account's own limit; any other is one
     # model's (it restricts only that model, not the whole account).
-    default = (value or {}).get("rateLimits")
-    default = default if isinstance(default, dict) else {}
-    for entry in (value or {}).get("rateLimitsByLimitId", {}).values():
+    value = value or {}
+    default = value.get("rateLimits")
+    default_id = default.get("limitId") if isinstance(default, dict) else None
+    for entry in value.get("rateLimitsByLimitId", {}).values():
         if not isinstance(entry, dict):
             continue
         name = entry.get("limitName") or entry.get("limitId") or "limit"
-        scoped = bool(default) and entry.get("limitId") != default.get("limitId")
+        scoped = default_id is not None and entry.get("limitId") != default_id
         for window in (entry.get("primary"), entry.get("secondary")):
             if not isinstance(window, dict):
                 continue

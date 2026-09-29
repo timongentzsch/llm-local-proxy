@@ -64,11 +64,10 @@ class LimitsStore:
             self._last_error = ""
 
     def _refresh(self, generation: int) -> tuple[Bars, float | None]:
-        bars, error = None, None
         try:
-            bars = self._read()
-        except ProviderError as caught:
-            error = caught
+            bars, error = self._read(), None
+        except Exception as caught:  # noqa: BLE001 - never leave the store busy
+            bars, error = None, caught
         with self._lock:
             self._reading = False
             if generation != self._generation:
@@ -78,17 +77,17 @@ class LimitsStore:
                 self._bars, self._updated_at = bars, time.time()
                 self._last_error = ""
             else:
-                if getattr(error, "status", None) in {401, 403, 429}:
+                if isinstance(error, ProviderError) and error.status in {401, 403, 429}:
                     delay = BACKOFF
                 # Logged once per distinct failure, not on every retry.
                 if str(error) != self._last_error:
                     self._last_error = str(error)
-                    sys.stderr.write(f"{self._name}: usage unavailable: {error}\n")
+                    sys.stderr.write(f"{self._name}: limits unavailable: {error}\n")
             self._next_read = time.monotonic() + delay
             return self._bars, self._updated_at
 
 
-def used(bars: Bars) -> float | None:
+def fullest(bars: Bars) -> float | None:
     """The fullest window that limits the whole account, if any is known."""
     values = [bar.used_percent for bar in bars if not bar.model]
     return max(values) if values else None

@@ -118,9 +118,9 @@ suffix.
   rendezvous-hash account, so a cooldown moves only the sessions of the
   account that left. Without a session the starting account advances
   round-robin. New sessions and sessionless requests prefer accounts below
-  `SOFT_LIMIT_PERCENT` of every whole-account window (`providers/limits.py`
-  reads the bars without waiting); sessions already served stay put. The
-  session is
+  `SOFT_LIMIT_PERCENT` of every whole-account window, read from
+  `providers/limits.py` without waiting; sessions already served stay put.
+  The session is
   `X-Session-Id`, else a header the dialect names (`Dialect.session_headers`,
   e.g. Claude Code's), else the request's `prompt_cache_key`.
 - **Failover.** Before the first upstream event, a 429 cools the account for

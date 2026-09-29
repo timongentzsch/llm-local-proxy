@@ -104,7 +104,7 @@ class AccountPoolTest(unittest.TestCase):
         usage = {"1": 95.0, "2": 10.0}
         pool = AccountPool(
             [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
-            used=lambda account: usage[account.id],
+            usage=lambda account: usage[account.id],
         )
         sessions = [f"s{n}" for n in range(50)]
         self.assertEqual({pool.candidates(s)[0].id for s in sessions}, {"2"})
@@ -119,7 +119,7 @@ class AccountPoolTest(unittest.TestCase):
     def test_routing_ignores_the_soft_limit_when_every_account_is_full(self):
         pool = AccountPool(
             [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
-            used=lambda account: 99.0,
+            usage=lambda account: 99.0,
         )
         starts = {pool.candidates(f"s{n}")[0].id for n in range(50)}
         self.assertEqual(starts, {"1", "2"})
@@ -127,7 +127,7 @@ class AccountPoolTest(unittest.TestCase):
     def test_unknown_usage_counts_as_room(self):
         pool = AccountPool(
             [Account("1", _Auth(), "one"), Account("2", _Auth(), "two")],
-            used=lambda account: None,
+            usage=lambda account: None,
         )
         self.assertFalse(pool.draining(pool.get("1")))
         self.assertEqual(pool.candidates()[0].id, "1")

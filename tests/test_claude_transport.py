@@ -380,7 +380,7 @@ class UpstreamRequestTest(unittest.TestCase):
         upstream = _upstream(
             _http_error(401, "{}"), _SseResponse(json.dumps(USAGE).encode())
         )
-        limits, _ = upstream.usage.current()
+        limits, _ = upstream.limits.current()
         self.assertEqual(len(limits), 3)
         request = upstream._opener.requests[-1]
         self.assertEqual(request.full_url, USAGE_URL)

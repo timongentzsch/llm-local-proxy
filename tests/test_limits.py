@@ -7,7 +7,7 @@ import time
 import unittest
 
 from llm_local_proxy.errors import UpstreamError
-from llm_local_proxy.providers.limits import TTL, LimitsStore, used
+from llm_local_proxy.providers.limits import TTL, LimitsStore, fullest
 from llm_local_proxy.status import Limit
 
 BARS = (
@@ -38,7 +38,7 @@ class LimitsStoreTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as log:
             self.assertEqual(store.current(), first)
         self.assertEqual(len(reads), 2)
-        self.assertIn("test: usage unavailable: rate limited", log.getvalue())
+        self.assertIn("test: limits unavailable: rate limited", log.getvalue())
         self.assertGreater(store._next_read - time.monotonic(), TTL)
 
     def test_callers_do_not_wait_for_a_read_in_flight(self):
@@ -59,15 +59,35 @@ class LimitsStoreTest(unittest.TestCase):
         self.assertEqual(store.current()[0], BARS)
 
     def test_a_non_waiting_read_runs_in_the_background(self):
-        release = threading.Event()
-        store = LimitsStore("test", lambda: release.wait(5) and BARS)
+        release, done = threading.Event(), threading.Event()
+
+        def read():
+            release.wait(5)
+            done.set()
+            return BARS
+
+        store = LimitsStore("test", read)
         self.assertEqual(store.current(wait=False), ((), None))
         release.set()
-        for _ in range(100):
-            if store.current(wait=False)[0]:
-                break
-            time.sleep(0.01)
+        done.wait(5)
+        while store._reading:
+            time.sleep(0.001)
         self.assertEqual(store.current(wait=False)[0], BARS)
+
+    def test_an_unexpected_failure_does_not_freeze_the_store(self):
+        answers = [OSError("pipe closed"), BARS]
+
+        def read():
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        store = LimitsStore("test", read)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(store.current(), ((), None))
+        store._next_read = 0
+        self.assertEqual(store.current()[0], BARS)
 
     def test_clear_forgets_the_bars_and_drops_a_read_in_flight(self):
         reads = []
@@ -84,10 +104,10 @@ class LimitsStoreTest(unittest.TestCase):
         store = LimitsStore("test", read_then_clear)
         self.assertEqual(store.current(), ((), None))
 
-    def test_used_is_the_fullest_whole_account_window(self):
-        self.assertEqual(used(BARS), 75.0)
-        self.assertIsNone(used(BARS[2:]))
-        self.assertIsNone(used(()))
+    def test_fullest_is_the_fullest_whole_account_window(self):
+        self.assertEqual(fullest(BARS), 75.0)
+        self.assertIsNone(fullest(BARS[2:]))
+        self.assertIsNone(fullest(()))
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from ..status import AccountStatus, ProviderStatus
 from ..streaming import closing_iterator
 from .auth import Auth
 from .base import Provider, ProviderContext
-from .limits import LimitsStore, used
+from .limits import LimitsStore, fullest
 from .reasoning import ReasoningCache
 
 T = TypeVar("T")
@@ -50,24 +50,21 @@ class Account(Generic[T]):
 class AccountPool(Generic[T]):
     """Select signed-in accounts and retry a request before its first event.
 
-    A downstream session stays on the account that last served it, which
-    preserves upstream prompt-cache locality; a session not seen recently
-    starts on its rendezvous-hash account, so a change to the set of usable
-    accounts moves only the sessions whose account left it. Requests without
-    a session round-robin. New sessions and sessionless requests prefer
-    accounts below ``SOFT_LIMIT_PERCENT``. Rate limits and confirmed unusable credentials cool
-    that account locally and advance to the next login. Once an event has been
-    yielded, retrying would duplicate output, so errors pass through unchanged.
+    A session stays on the account that last served it, for prompt-cache
+    locality; a new one starts on its rendezvous-hash account, and sessionless
+    requests round-robin. Both prefer accounts below ``SOFT_LIMIT_PERCENT``.
+    Rate limits and unusable credentials cool an account and advance to the
+    next. Once an event has been yielded, errors pass through unchanged.
     """
 
     def __init__(
         self,
         accounts: Sequence[Account[T]],
-        used: Callable[[Account[T]], float | None] | None = None,
+        usage: Callable[[Account[T]], float | None] | None = None,
     ):
         self._accounts = tuple(accounts)
         #: An account's fullest whole-account window, in percent, if known.
-        self._used = used
+        self._usage = usage or (lambda account: None)
         self._cursor = 0
         self._cooldown: dict[str, float] = {}
         self._account_errors: dict[str, str] = {}
@@ -122,36 +119,41 @@ class AccountPool(Generic[T]):
         signed_in = [account for account in self.accounts if _signed_in(account.auth)]
         if not signed_in:
             return ()
-        full = {account.id for account in signed_in if self.draining(account)}
-        now = time.time()
+        # With one account there is nowhere else to go, so skip the read.
+        full = {a.id for a in signed_in if len(signed_in) > 1 and self.draining(a)}
         with self._lock:
+            now = time.time()
             ready = [
                 account
                 for account in signed_in
                 if self._cooldown.get(account.id, 0) <= now
             ]
             choices = ready or signed_in
-            if not session:
+            kept = None
+            if session:
+                pinned = self._sessions.get(session)
+                if pinned and now - pinned[1] < SESSION_TTL_SECONDS:
+                    kept = pinned[0]
+                order = {a.id: -_affinity(session, a.id) for a in choices}
+            else:
                 start = self._cursor % len(choices)
                 self._cursor += 1
-                rotated = choices[start:] + choices[:start]
-                return tuple(sorted(rotated, key=lambda account: account.id in full))
-            pinned = self._sessions.get(session)
-        kept = pinned[0] if pinned and now - pinned[1] < SESSION_TTL_SECONDS else None
+                order = {
+                    a.id: (i - start) % len(choices) for i, a in enumerate(choices)
+                }
         return tuple(
             sorted(
                 choices,
                 key=lambda account: (
                     account.id != kept,
                     account.id in full,
-                    -_affinity(session, account.id),
+                    order[account.id],
                 ),
             )
         )
 
     def draining(self, account: Account[T]) -> bool:
-        value = self._used(account) if self._used else None
-        return value is not None and value >= SOFT_LIMIT_PERCENT
+        return (self._usage(account) or 0) >= SOFT_LIMIT_PERCENT
 
     def _remember(self, session: str | None, account_id: str) -> None:
         if not session:
@@ -334,7 +336,7 @@ class PooledProvider(Generic[T]):
         self.context = context
         self.store = AccountStore(context.directory, self.name)
         self.pool = AccountPool(
-            [self.new_account(i) for i in self.store.ids()], used=self._used
+            [self.new_account(i) for i in self.store.ids()], usage=self._usage
         )
         self.cache = ReasoningCache()
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
@@ -367,9 +369,9 @@ class PooledProvider(Generic[T]):
 
     # -- shared --------------------------------------------------------------
 
-    def _used(self, account: Account[T]) -> float | None:
+    def _usage(self, account: Account[T]) -> float | None:
         store = self.limits(account)
-        return used(store.current(wait=False)[0]) if store else None
+        return fullest(store.current(wait=False)[0]) if store else None
 
     def provider(self, **fields: Any) -> Provider:
         routes = {

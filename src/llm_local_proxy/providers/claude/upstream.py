@@ -123,7 +123,7 @@ class ClaudeUpstream:
         self.timeout = timeout
         # Read-only metadata: it costs no tokens and cannot open a window, and
         # it covers the whole subscription, other clients included.
-        self.usage = LimitsStore(
+        self.limits = LimitsStore(
             "claude",
             lambda: _limits(self._get(USAGE_URL, "usage", timeout=USAGE_TIMEOUT)),
         )
