@@ -4,19 +4,21 @@ version = "0.4.0"
 edition = "2021"
 description = "A local OpenAI- and Anthropic-compatible gateway for Codex and Claude subscriptions"
 license = "MIT"
-rust-version = "1.80"
+rust-version = "1.82"
 
 [[bin]]
 name = "llm-local-proxy"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
 base64 = "0.22"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.2"
-indexmap = "2"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+indexmap = { version = "2", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
@@ -31,4 +33,6 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 strip = true
-panic = "abort"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

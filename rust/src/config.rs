@@ -71,7 +71,11 @@ fn container_mode() -> bool {
 }
 
 fn write_default(path: &Path) -> Result<(), String> {
-    let host = if container_mode() { "0.0.0.0" } else { "127.0.0.1" };
+    let host = if container_mode() {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
     let codex_home = std::env::var("CODEX_HOME").unwrap_or_else(|_| "~/.codex".into());
     let text = format!(
         "host = \"{host}\"\nport = 8787\napi_key = \"{}\"\ncodex_home = \"{codex_home}\"\n\
@@ -84,8 +88,10 @@ fn write_default(path: &Path) -> Result<(), String> {
 fn string(data: &toml::Table, key: &str, default: &str) -> String {
     match data.get(key) {
         Some(toml::Value::String(text)) => text.clone(),
-        Some(other) => other.to_string(),
-        None => default.to_string(),
+        Some(toml::Value::Integer(value)) => value.to_string(),
+        Some(toml::Value::Float(value)) => value.to_string(),
+        Some(toml::Value::Boolean(value)) => value.to_string(),
+        _ => default.to_string(),
     }
 }
 
@@ -124,7 +130,9 @@ pub fn load(path: Option<&Path>) -> Result<Config, String> {
         ));
     }
     let text = std::fs::read_to_string(&resolved).map_err(|error| error.to_string())?;
-    let data: toml::Table = text.parse().map_err(|error: toml::de::Error| error.to_string())?;
+    let data: toml::Table = text
+        .parse()
+        .map_err(|error: toml::de::Error| error.to_string())?;
 
     let host = string(&data, "host", "127.0.0.1");
     let api_key = string(&data, "api_key", "");
@@ -156,6 +164,8 @@ pub fn load(path: Option<&Path>) -> Result<Config, String> {
         path: resolved,
         public_host: string(&data, "public_host", "127.0.0.1"),
         public_port,
-        public_url: string(&data, "public_url", "").trim_end_matches('/').to_string(),
+        public_url: string(&data, "public_url", "")
+            .trim_end_matches('/')
+            .to_string(),
     })
 }

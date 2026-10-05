@@ -8,7 +8,10 @@ use std::path::Path;
 
 /// Create `path` and its parents, private to the owner.
 pub fn private_dir(path: &Path) -> io::Result<()> {
-    fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
 }
 
 /// Write `data` to `path` via a same-directory O_EXCL temp file and a rename.

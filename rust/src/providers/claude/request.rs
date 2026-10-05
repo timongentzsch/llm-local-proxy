@@ -609,7 +609,7 @@ pub fn build(
     // express one, so the effort stays a preference, like a cache hint; do not
     // approximate named tiers with fabricated token budgets.
     let tiers = options.reasoning_efforts;
-    if truthy(&request.reasoning_effort) && tiers.map_or(true, |tiers| !tiers.is_empty()) {
+    if truthy(&request.reasoning_effort) && tiers.is_none_or(|tiers| !tiers.is_empty()) {
         let wanted = py_str(&request.reasoning_effort).to_lowercase();
         let supported: Vec<String> = tiers
             .unwrap_or(&[])

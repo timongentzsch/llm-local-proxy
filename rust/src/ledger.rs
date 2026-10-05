@@ -14,6 +14,8 @@
 use crate::atomic;
 use crate::ir::Usage;
 use crate::keys::MASTER;
+use crate::providers::EventStream;
+use futures_util::StreamExt;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -293,7 +295,10 @@ impl<R: FnMut(&Value) -> Option<Usage>> UsageTracker<R> {
         if let Some(usage) = (self.read)(event) {
             self.pending = Some(usage);
         }
-        let kind = event.get("type").and_then(Value::as_str).unwrap_or_default();
+        let kind = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if self.terminal_events.contains(&kind) {
             self.terminal = true;
             if let Some(usage) = &self.pending {
@@ -311,6 +316,19 @@ impl<R: FnMut(&Value) -> Option<Usage>> Drop for UsageTracker<R> {
             }
         }
     }
+}
+
+/// Pass a stream through `tracker`, which is dropped with it.
+pub fn track<R>(events: EventStream, mut tracker: UsageTracker<R>) -> EventStream
+where
+    R: FnMut(&Value) -> Option<Usage> + Send + 'static,
+{
+    Box::pin(events.map(move |item| {
+        if let Ok(event) = &item {
+            tracker.observe(event);
+        }
+        item
+    }))
 }
 
 #[cfg(test)]
@@ -342,7 +360,12 @@ mod tests {
     #[test]
     fn a_stream_dropped_before_its_terminal_event_is_partial() {
         let ledger = TokenLedger::new(None, false);
-        let read = |event: &Value| event.get("n").and_then(Value::as_i64).map(|n| usage(n, 0, 0));
+        let read = |event: &Value| {
+            event
+                .get("n")
+                .and_then(Value::as_i64)
+                .map(|n| usage(n, 0, 0))
+        };
         {
             let mut tracker = UsageTracker::new(ledger.clone(), read, &["done"], "");
             tracker.observe(&json!({"type": "x", "n": 7}));

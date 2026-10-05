@@ -117,7 +117,9 @@ fn skip() -> Check {
     Err(SKIP.into())
 }
 
-/// Equal as JSON text: the same values in the same key order.
+/// Equal as JSON text: the same values in the same key order. (`Value`
+/// equality would accept reordered keys.)
+#[allow(clippy::cmp_owned)]
 fn same(what: &str, want: &Value, got: &Value) -> Check {
     if want.to_string() == got.to_string() {
         Ok(())

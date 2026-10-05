@@ -10,12 +10,19 @@
 //! [`providers`] is pure: JSON in, JSON out, no clock, no network. That is
 //! the part `tests/conformance.rs` replays against the Python reference.
 
+pub mod atomic;
+pub mod config;
 pub mod dialects;
 pub mod error;
+pub mod http;
 pub mod ids;
 pub mod ir;
 pub mod ir_json;
 pub mod json;
+pub mod keys;
+pub mod ledger;
 pub mod providers;
 pub mod reasoning;
+pub mod service;
+pub mod status;
 pub mod tools;

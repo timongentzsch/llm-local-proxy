@@ -83,7 +83,7 @@ impl ResponseEncoder {
             "status": status,
             "model": self.model,
             "output": if with_output { self.output.clone() } else { Vec::new() },
-            "parallel_tool_calls": request.map_or(true, |r| r.parallel_tool_calls != Some(false)),
+            "parallel_tool_calls": request.is_none_or(|r| r.parallel_tool_calls != Some(false)),
             "tool_choice": responses_choice(request.and_then(|r| r.tool_choice.as_ref())),
             "tools": tools,
             "usage": if with_output { json!(self.usage) } else { Value::Null },

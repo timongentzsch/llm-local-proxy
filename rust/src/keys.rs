@@ -91,7 +91,10 @@ impl KeyStore {
             Ok(Some(Err(_))) => return Err(invalid()),
             Err(error) => return Err(Error::upstream(error.to_string())),
         };
-        let keys = value.get("keys").and_then(Value::as_object).ok_or_else(invalid)?;
+        let keys = value
+            .get("keys")
+            .and_then(Value::as_object)
+            .ok_or_else(invalid)?;
         Ok(keys
             .iter()
             .map(|(name, key)| (name.clone(), crate::json::py_str(key)))

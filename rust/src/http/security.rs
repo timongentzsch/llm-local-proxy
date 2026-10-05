@@ -124,17 +124,36 @@ mod tests {
 
     #[test]
     fn only_loopback_hosts_are_served() {
-        for good in ["127.0.0.1:8787", "localhost:8787", "[::1]:8787", "LOCALHOST"] {
-            assert!(valid_host(&headers(&[("host", good)]), "127.0.0.1"), "{good}");
+        for good in [
+            "127.0.0.1:8787",
+            "localhost:8787",
+            "[::1]:8787",
+            "LOCALHOST",
+        ] {
+            assert!(
+                valid_host(&headers(&[("host", good)]), "127.0.0.1"),
+                "{good}"
+            );
         }
-        for bad in ["evil.com", "evil.com:8787", "127.0.0.1@evil.com", "", "[::1]x:1", "a/b"] {
-            assert!(!valid_host(&headers(&[("host", bad)]), "127.0.0.1"), "{bad}");
+        for bad in [
+            "evil.com",
+            "evil.com:8787",
+            "127.0.0.1@evil.com",
+            "",
+            "[::1]x:1",
+            "a/b",
+        ] {
+            assert!(
+                !valid_host(&headers(&[("host", bad)]), "127.0.0.1"),
+                "{bad}"
+            );
         }
     }
 
     #[test]
     fn a_foreign_origin_is_refused() {
-        let ok = |origin: &str| same_origin(&headers(&[("host", "127.0.0.1:8787"), ("origin", origin)]));
+        let ok =
+            |origin: &str| same_origin(&headers(&[("host", "127.0.0.1:8787"), ("origin", origin)]));
         assert!(same_origin(&headers(&[("host", "127.0.0.1:8787")])));
         assert!(ok("http://127.0.0.1:8787"));
         assert!(ok("http://localhost:8787"));
@@ -149,11 +168,30 @@ mod tests {
         let named = |token: &str| (token == "llp_x").then(|| "alice".to_string());
         let master = "m".repeat(24);
         let bearer = format!("Bearer {master}");
-        assert_eq!(identify(&headers(&[("authorization", &bearer)]), &master, named).as_deref(), Some("master"));
-        assert_eq!(identify(&headers(&[("x-api-key", &master)]), &master, named).as_deref(), Some("master"));
-        assert_eq!(identify(&headers(&[("x-api-key", "llp_x")]), &master, named).as_deref(), Some("alice"));
-        assert_eq!(identify(&headers(&[("authorization", "Basic llp_x")]), &master, named), None);
+        assert_eq!(
+            identify(&headers(&[("authorization", &bearer)]), &master, named).as_deref(),
+            Some("master")
+        );
+        assert_eq!(
+            identify(&headers(&[("x-api-key", &master)]), &master, named).as_deref(),
+            Some("master")
+        );
+        assert_eq!(
+            identify(&headers(&[("x-api-key", "llp_x")]), &master, named).as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            identify(
+                &headers(&[("authorization", "Basic llp_x")]),
+                &master,
+                named
+            ),
+            None
+        );
         assert_eq!(identify(&headers(&[]), &master, named), None);
-        assert_eq!(identify(&headers(&[]), "", named).as_deref(), Some("master"));
+        assert_eq!(
+            identify(&headers(&[]), "", named).as_deref(),
+            Some("master")
+        );
     }
 }
