@@ -16,7 +16,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const RATE_LIMIT_COOLDOWN_SECONDS: f64 = 300.0;
+/// How long a rate-limited account rests when the upstream did not say, and
+/// the longest it rests when it did: a reset days away is asked about again
+/// hourly, so a wrong hint cannot bench an account for a week.
+const RATE_LIMIT_COOLDOWN_SECONDS: u64 = 300;
+const MAX_COOLDOWN_SECONDS: u64 = 3600;
 const AUTH_FAILURE_COOLDOWN_SECONDS: f64 = 60.0;
 const CATALOG_TTL_SECONDS: f64 = 60.0;
 const CATALOG_RETRY_SECONDS: f64 = 5.0;
@@ -245,12 +249,19 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
         }
     }
 
-    pub fn mark_rate_limited(&self, account_id: &str) {
+    /// Rest an account for as long as its upstream asked, within bounds.
+    pub fn mark_rate_limited(&self, account_id: &str, asked: Option<u64>) {
+        let seconds = asked
+            .unwrap_or(RATE_LIMIT_COOLDOWN_SECONDS)
+            .min(MAX_COOLDOWN_SECONDS);
+        // Zero: the refusal was about the request, not the account.
+        if seconds == 0 {
+            return;
+        }
         let mut state = self.state.lock().unwrap();
-        state.cooldown.insert(
-            account_id.to_string(),
-            wall_clock() + RATE_LIMIT_COOLDOWN_SECONDS,
-        );
+        state
+            .cooldown
+            .insert(account_id.to_string(), wall_clock() + seconds as f64);
     }
 
     /// Latest terminal authentication failure observed for one account.
@@ -294,7 +305,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
         if unavailable {
             self.mark_account_error(account_id, error);
         } else if limited {
-            self.mark_rate_limited(account_id);
+            self.mark_rate_limited(account_id, error.cooldown());
         }
         true
     }
@@ -830,6 +841,26 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         // Cooling: account 1 now sorts after the ready one.
         assert_eq!(ids(&pool.candidates(None, true).await), ["2"]);
+    }
+
+    #[tokio::test]
+    async fn an_account_rests_as_long_as_its_upstream_asked() {
+        let pool = AccountPool::new(vec![account("1"), account("2"), account("3")]);
+        let rest = |id: &str| {
+            let state = pool.state.lock().unwrap();
+            state
+                .cooldown
+                .get(id)
+                .map(|until| (until - wall_clock()).round() as i64)
+        };
+        pool.mark_rate_limited("1", Some(42));
+        pool.mark_rate_limited("2", Some(86_400));
+        pool.mark_rate_limited("3", Some(0));
+        assert_eq!(rest("1"), Some(42));
+        assert_eq!(rest("2"), Some(MAX_COOLDOWN_SECONDS as i64));
+        assert_eq!(rest("3"), None);
+        pool.mark_rate_limited("3", None);
+        assert_eq!(rest("3"), Some(RATE_LIMIT_COOLDOWN_SECONDS as i64));
     }
 
     #[tokio::test]

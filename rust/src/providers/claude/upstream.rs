@@ -4,9 +4,9 @@ use super::auth::{ClaudeAuth, OAUTH_BETA};
 use super::usage::ClaudeUsage;
 use crate::error::{Error, Result};
 use crate::ids::{self, SharedIds};
-use crate::json::{dumps, get, py_str, truthy, Dumps, Object};
+use crate::json::{get, py_str, truthy, Object};
 use crate::ledger::{track, TokenLedger, UsageTracker};
-use crate::providers::transport::{endpoint, read_events, unreachable};
+use crate::providers::transport::{endpoint, read_events, retry_after, seconds_until, unreachable};
 use crate::providers::EventStream;
 use crate::status::{window_label, Limit};
 use futures_util::stream;
@@ -83,20 +83,24 @@ impl ClaudeUpstream {
     ) -> Result<EventStream> {
         let betas_header = betas_header(betas);
         let prewarm = body.get("max_tokens") == Some(&json!(0));
-        let mut outgoing = body.clone();
-        if prewarm {
-            outgoing.insert("stream".into(), json!(false));
-        }
-        let response = match self
-            .open(&outgoing, &betas_header, &endpoint(MESSAGES_URL))
-            .await
-        {
+        // The body is only copied when it has to change.
+        let warmed;
+        let outgoing = if prewarm {
+            let mut copy = body.clone();
+            copy.insert("stream".into(), json!(false));
+            warmed = copy;
+            &warmed
+        } else {
+            body
+        };
+        let messages = endpoint(MESSAGES_URL);
+        let response = match self.open(outgoing, &betas_header, &messages).await {
             Ok(response) => response,
             // Reported only once the failure is final: the budget retry below
             // recovers on its own, and dumping the turn for it would name a
             // fault that never reached the caller.
-            Err(error) if !thinking_rejected(&error, &outgoing) => {
-                report_block_shape(&error, &outgoing);
+            Err(error) if !thinking_rejected(&error, outgoing) => {
+                report_block_shape(&error, outgoing);
                 return Err(error);
             }
             Err(_) => {
@@ -105,14 +109,12 @@ impl ClaudeUpstream {
                 {
                     adaptive.insert("display".into(), display.clone());
                 }
-                outgoing.insert("thinking".into(), Value::Object(adaptive));
-                match self
-                    .open(&outgoing, &betas_header, &endpoint(MESSAGES_URL))
-                    .await
-                {
+                let mut retry = outgoing.clone();
+                retry.insert("thinking".into(), Value::Object(adaptive));
+                match self.open(&retry, &betas_header, &messages).await {
                     Ok(response) => response,
                     Err(retried) => {
-                        report_block_shape(&retried, &outgoing);
+                        report_block_shape(&retried, &retry);
                         return Err(retried);
                     }
                 }
@@ -181,13 +183,14 @@ impl ClaudeUpstream {
                 refresh = true;
                 continue;
             }
+            let headers = response.headers().clone();
             // A timeout or a cut connection while the body is still arriving.
             let raw = response
                 .text()
                 .await
                 .map_err(|_| upstream(502, format!("Claude {what} is unreadable")))?;
             if !status.is_success() {
-                return Err(upstream_error(status.as_u16(), &raw));
+                return Err(upstream_error(status.as_u16(), &raw, &headers));
             }
             return serde_json::from_str(&raw)
                 .map_err(|_| upstream(502, format!("Claude {what} is not valid JSON")));
@@ -201,14 +204,17 @@ impl ClaudeUpstream {
                 status,
                 message: error.message().to_string(),
                 account_unavailable: matches!(status, 400 | 401 | 403),
+                cooldown: error.cooldown(),
             }
         })
     }
 
     /// POST a body, refreshing the token once if the edge refuses it.
     async fn open(&self, body: &Object, betas: &str, url: &str) -> Result<reqwest::Response> {
-        // Byte for byte what the reference sends: compact, ASCII-escaped.
-        let payload = dumps(&Value::Object(body.clone()), Dumps::COMPACT);
+        // Serialised once, in the client's key order, and shared by a retry.
+        let payload = bytes::Bytes::from(
+            serde_json::to_vec(body).map_err(|error| upstream(502, error.to_string()))?,
+        );
         let mut refresh = false;
         loop {
             let response = self
@@ -237,8 +243,9 @@ impl ClaudeUpstream {
                 refresh = true;
                 continue;
             }
+            let headers = response.headers().clone();
             let raw = response.text().await.unwrap_or_default();
-            return Err(upstream_error(status.as_u16(), &raw));
+            return Err(upstream_error(status.as_u16(), &raw, &headers));
         }
     }
 }
@@ -469,7 +476,25 @@ fn normalize_model(item: &Value) -> Option<Value> {
     Some(Value::Object(value))
 }
 
-fn upstream_error(status: u16, raw: &str) -> Error {
+/// How long a rate-limited account should rest, from what the edge said.
+///
+/// `Retry-After` when present, else the unified window's reset. A 429 that
+/// asks for extra usage is about the model requested, not the account, and
+/// rests nothing.
+fn cooldown(headers: &reqwest::header::HeaderMap, message: &str) -> Option<u64> {
+    if message.to_lowercase().contains("extra usage") {
+        return Some(0);
+    }
+    retry_after(headers).or_else(|| {
+        let reset = headers
+            .get("anthropic-ratelimit-unified-reset")?
+            .to_str()
+            .ok()?;
+        seconds_until(reset.trim().parse().ok()?)
+    })
+}
+
+fn upstream_error(status: u16, raw: &str, headers: &reqwest::header::HeaderMap) -> Error {
     let mut message = error_message(raw);
     if status == 429 && (message.is_empty() || message == "Error") {
         message = "Claude usage limit reached; the subscription is rate limited".into();
@@ -477,10 +502,14 @@ fn upstream_error(status: u16, raw: &str) -> Error {
     // A 403 naming a scope is the credential, not the request: the same body
     // succeeds on a login that holds inference access.
     let scope_denied = status == 403 && message.to_lowercase().contains("scope");
+    let cooldown = (status == 429)
+        .then(|| cooldown(headers, &message))
+        .flatten();
     Error::Provider {
         status,
         message,
         account_unavailable: status == 401 || scope_denied,
+        cooldown,
     }
 }
 
@@ -538,14 +567,36 @@ mod tests {
 
     #[test]
     fn errors_keep_their_meaning() {
-        let limited = upstream_error(429, "Error");
+        let none = reqwest::header::HeaderMap::new();
+        let limited = upstream_error(429, "Error", &none);
         assert!(limited.message().contains("usage limit"));
         assert!(!limited.account_unavailable());
-        assert!(upstream_error(401, r#"{"error":{"message":"expired"}}"#).account_unavailable());
+        assert!(
+            upstream_error(401, r#"{"error":{"message":"expired"}}"#, &none).account_unavailable()
+        );
         let scope = r#"{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement any_of(user:inference)"}}"#;
-        assert!(upstream_error(403, scope).account_unavailable());
-        assert!(!upstream_error(403, r#"{"error":{"message":"forbidden"}}"#).account_unavailable());
-        assert_eq!(upstream_error(500, "not json").message(), "not json");
+        assert!(upstream_error(403, scope, &none).account_unavailable());
+        assert!(
+            !upstream_error(403, r#"{"error":{"message":"forbidden"}}"#, &none)
+                .account_unavailable()
+        );
+        assert_eq!(upstream_error(500, "not json", &none).message(), "not json");
+    }
+
+    #[test]
+    fn a_rate_limit_says_how_long_to_rest() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(upstream_error(429, "slow", &headers).cooldown(), None);
+        let soon = (crate::ledger::now() + 90).to_string();
+        headers.insert("anthropic-ratelimit-unified-reset", soon.parse().unwrap());
+        let rest = upstream_error(429, "slow", &headers).cooldown().unwrap();
+        assert!((88..=91).contains(&rest), "{rest}");
+        headers.insert("retry-after", "12".parse().unwrap());
+        assert_eq!(upstream_error(429, "slow", &headers).cooldown(), Some(12));
+        // About the model asked for, not the account.
+        let extra = r#"{"error":{"message":"Extra usage is required for long context requests."}}"#;
+        assert_eq!(upstream_error(429, extra, &headers).cooldown(), Some(0));
+        assert_eq!(upstream_error(500, "x", &headers).cooldown(), None);
     }
 
     #[test]

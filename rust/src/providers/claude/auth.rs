@@ -7,11 +7,11 @@
 //! refresh token, it does not contend with the token pairs held by Claude
 //! Code on other machines of the same subscription.
 
-use crate::atomic;
+use crate::atomic::{self, JsonFile};
 use crate::error::{Error, Result};
 use crate::json::{py_str, truthy, Object};
 use crate::providers::pool::Auth;
-use crate::providers::transport::endpoint;
+use crate::providers::transport::{endpoint, retry_after};
 use crate::providers::BoxFuture;
 use crate::status::AccountStatus;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -54,7 +54,7 @@ struct Login {
 
 /// The proxy's own Claude subscription login, independent of Claude Code.
 pub struct ClaudeAuth {
-    path: PathBuf,
+    file: JsonFile,
     http: reqwest::Client,
     /// Serialises the login flow and token refresh: a refresh token is spent
     /// by its first use, so two refreshes must never race.
@@ -65,7 +65,7 @@ pub struct ClaudeAuth {
 impl ClaudeAuth {
     pub fn new(path: PathBuf, http: reqwest::Client) -> Self {
         ClaudeAuth {
-            path,
+            file: JsonFile::new(path),
             http,
             lock: tokio::sync::Mutex::new(Login::default()),
             profile_attempted: AtomicBool::new(false),
@@ -75,21 +75,23 @@ impl ClaudeAuth {
     // -- private store --------------------------------------------------------
 
     fn read(&self) -> Option<Object> {
-        match atomic::read_json(&self.path) {
-            Ok(Some(Ok(Value::Object(value)))) => Some(value),
-            _ => None,
-        }
+        self.file.read().map(|value| value.as_ref().clone())
     }
 
     fn write(&self, value: &Object) -> Result<()> {
-        atomic::write_json(&self.path, &Value::Object(value.clone()))
-            .map_err(|error| Error::upstream(format!("could not store the Claude login: {error}")))
+        // Kept in memory either way: after a refresh the old token is spent,
+        // so losing the new one to a full disk would end the login.
+        if let Err(error) = self.file.write(value.clone()) {
+            eprintln!("claude: could not store the login, keeping it in memory: {error}");
+        }
+        Ok(())
     }
 
     fn login_path(&self) -> PathBuf {
-        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        let path = self.file.path();
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
         name.push(".login");
-        self.path.with_file_name(name)
+        path.with_file_name(name)
     }
 
     fn read_login(&self) -> Object {
@@ -191,13 +193,14 @@ impl ClaudeAuth {
         let mut login = self.lock.lock().await;
         *login = Login::default();
         self.clear_login();
-        let _ = std::fs::remove_file(&self.path);
+        self.file.remove();
     }
 
     // -- token access -----------------------------------------------------------
 
     pub fn has_login(&self) -> bool {
-        self.read()
+        self.file
+            .read()
             .is_some_and(|value| value.get("access_token").is_some_and(truthy))
     }
 
@@ -258,9 +261,16 @@ impl ClaudeAuth {
             .get("expires_at")
             .and_then(Value::as_f64)
             .unwrap_or(0.0) as i64;
-        let stale = expires_at <= crate::ledger::now() + REFRESH_SKEW_SECONDS;
+        let now = crate::ledger::now();
+        let stale = expires_at <= now + REFRESH_SKEW_SECONDS;
         if (force_refresh || stale) && value.get("refresh_token").is_some_and(truthy) {
-            value = self.refresh(value).await?;
+            match self.refresh(value.clone()).await {
+                Ok(refreshed) => value = refreshed,
+                // The token endpoint is busy or unreachable, not refusing the
+                // login: the token in hand is still good for its last minutes.
+                Err(error) if !force_refresh && expires_at > now && passing(&error) => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(py_str(&value["access_token"]))
     }
@@ -363,12 +373,11 @@ impl ClaudeAuth {
             .await
             .map_err(|error| auth_error(format!("Claude OAuth unreachable: {error}"), 502))?;
         let status = response.status();
+        let headers = response.headers().clone();
         let raw = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(auth_error(
-                format!("Claude OAuth failed: {}", error_message(&raw, status)),
-                400,
-            ));
+            let cooldown = retry_after(&headers);
+            return Err(token_failure(status, &raw).cooling(cooldown));
         }
         Ok(normalize(&raw))
     }
@@ -392,6 +401,35 @@ impl Auth for ClaudeAuth {
 
     fn status(&self) -> BoxFuture<'_, Result<AccountStatus>> {
         Box::pin(async { Ok(self.card()) })
+    }
+}
+
+/// A failure that says nothing about the login itself.
+fn passing(error: &Error) -> bool {
+    matches!(error.status(), 429 | 500..=599)
+}
+
+/// What a refused token request means for the login.
+///
+/// Only the grant being rejected ends it; a busy or broken token endpoint
+/// must not sign the account out.
+fn token_failure(status: reqwest::StatusCode, raw: &str) -> Error {
+    let message = format!("Claude OAuth failed: {}", error_message(raw, status));
+    let code = serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    match status.as_u16() {
+        429 => auth_error(message, 429),
+        500..=599 => auth_error(message, 502),
+        401 | 403 => auth_error(message, 401),
+        _ if code == "invalid_grant" => auth_error(message, 401),
+        _ => auth_error(message, 400),
     }
 }
 
@@ -593,6 +631,27 @@ mod tests {
         let narrow = crate::obj! { "scopes": ["user:profile"] };
         assert_eq!(require_inference(&narrow).unwrap_err().status(), 403);
         assert!(require_inference(&Object::new()).is_ok());
+    }
+
+    #[test]
+    fn only_a_rejected_grant_ends_the_login() {
+        let status = |code: u16| reqwest::StatusCode::from_u16(code).unwrap();
+        assert_eq!(
+            token_failure(status(400), r#"{"error":"invalid_grant"}"#).status(),
+            401
+        );
+        assert_eq!(token_failure(status(401), "").status(), 401);
+        assert_eq!(
+            token_failure(status(400), r#"{"error":"invalid_request"}"#).status(),
+            400
+        );
+        for code in [429, 500, 503] {
+            assert!(passing(&token_failure(status(code), "busy")), "{code}");
+        }
+        assert!(!passing(&token_failure(
+            status(400),
+            r#"{"error":"invalid_grant"}"#
+        )));
     }
 
     #[test]

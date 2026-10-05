@@ -63,6 +63,17 @@ injected source (`ids.rs`) so a test can hand back the ones a case recorded.
 - The Codex effort probe is sent once an hour, not at every catalog refresh.
 - A Codex token refresh that fails for a passing reason keeps using the token
   in hand while it is still valid; only a refused login asks for a new sign-in.
+- A rate-limited account rests for as long as its upstream says (`Retry-After`,
+  the Claude unified reset, the Codex usage window's reset), at most an hour
+  and five minutes when it does not say; a Claude 429 asking for extra usage
+  rests nothing, since it is about the model and not the account.
+- A Claude token refresh refused for a passing reason (429, 5xx, unreachable)
+  no longer marks the login as needing a new sign-in; only a rejected grant
+  does.
+- Logins are held in memory and re-read when their file changes, and a
+  refreshed token survives a failed write to disk.
+- Request bodies go upstream as UTF-8, as the first-party clients send them,
+  not with `\u` escapes.
 - Upstream connections are pooled; a client that hangs up closes its upstream
   request at once.
 - Connections per listener are capped, and request headers must arrive within

@@ -3,9 +3,9 @@
 use super::auth::{CodexAuth, USER_AGENT};
 use super::usage::read_usage;
 use crate::error::{Error, Result};
-use crate::json::{dumps, py_str, Dumps, Object};
+use crate::json::{py_str, Object};
 use crate::ledger::{track, TokenLedger, UsageTracker};
-use crate::providers::transport::{endpoint, read_events, unreachable};
+use crate::providers::transport::{endpoint, read_events, retry_after, seconds_until, unreachable};
 use crate::providers::EventStream;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -28,6 +28,7 @@ const STREAM_END: [&str; 4] = [
 /// The transport's effort enum changes with Codex releases, not by the
 /// minute, and asking costs a refused request against the live backend.
 const EFFORT_PROBE_TTL: Duration = Duration::from_secs(3600);
+const BURST_COOLDOWN_SECONDS: u64 = 60;
 
 type Efforts = Option<BTreeSet<String>>;
 
@@ -86,8 +87,10 @@ impl Upstream {
     }
 
     async fn open(&self, body: &Object) -> Result<reqwest::Response> {
-        // Byte for byte what the reference sends: compact, ASCII-escaped.
-        let payload = dumps(&Value::Object(body.clone()), Dumps::COMPACT);
+        // Serialised once, in the client's key order, and shared by a retry.
+        let payload = bytes::Bytes::from(
+            serde_json::to_vec(body).map_err(|error| Error::provider(502, error.to_string()))?,
+        );
         let mut refresh = false;
         loop {
             let (access, account) = self.auth.token(refresh).await?;
@@ -112,11 +115,13 @@ impl Upstream {
                 refresh = true;
                 continue;
             }
+            let headers = response.headers().clone();
             let raw = response.text().await.unwrap_or_default();
             return Err(Error::Provider {
                 status: status.as_u16(),
                 message: error_message(&raw, status),
                 account_unavailable: status.as_u16() == 401,
+                cooldown: (status.as_u16() == 429).then(|| cooldown(&raw, &headers)),
             });
         }
     }
@@ -137,6 +142,26 @@ fn error_message(raw: &str, status: reqwest::StatusCode) -> String {
             .to_string(),
         _ => raw.to_string(),
     }
+}
+
+/// How long a rate-limited account should rest.
+///
+/// An exhausted usage window names its own reset; any other 429 is a burst,
+/// over in about a minute unless the response says otherwise.
+fn cooldown(raw: &str, headers: &reqwest::header::HeaderMap) -> u64 {
+    let body: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let error = body.get("error").unwrap_or(&Value::Null);
+    if error.get("type").and_then(Value::as_str) == Some("usage_limit_reached") {
+        let reset = error
+            .get("resets_in_seconds")
+            .and_then(Value::as_f64)
+            .map(|seconds| seconds.ceil().max(1.0) as u64)
+            .or_else(|| seconds_until(error.get("resets_at")?.as_f64()?));
+        if let Some(reset) = reset {
+            return reset;
+        }
+    }
+    retry_after(headers).unwrap_or(BURST_COOLDOWN_SECONDS)
 }
 
 /// Parse the enum returned for an invalid reasoning effort probe.
@@ -183,6 +208,24 @@ mod tests {
         );
         assert_eq!(effort_values("Invalid value"), None);
         assert_eq!(effort_values("Supported values are: none"), None);
+    }
+
+    #[test]
+    fn an_exhausted_window_rests_until_it_resets_and_a_burst_for_a_minute() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let exhausted = r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":7200}}"#;
+        assert_eq!(cooldown(exhausted, &headers), 7200);
+        let at = format!(
+            r#"{{"error":{{"type":"usage_limit_reached","resets_at":{}}}}}"#,
+            crate::ledger::now() + 500
+        );
+        assert!((498..=501).contains(&cooldown(&at, &headers)));
+        assert_eq!(
+            cooldown(r#"{"error":{"message":"slow down"}}"#, &headers),
+            60
+        );
+        headers.insert("retry-after", "7".parse().unwrap());
+        assert_eq!(cooldown("not json", &headers), 7);
     }
 
     #[test]

@@ -39,6 +39,25 @@ pub fn endpoint(url: &str) -> String {
     }
 }
 
+/// `Retry-After` in whole seconds, when the upstream sent one.
+pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = headers.get("retry-after")?.to_str().ok()?.trim();
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|s| *s >= 0.0)
+        .map(|s| s.ceil() as u64)
+}
+
+/// Seconds from now until an epoch timestamp, at least one.
+pub fn seconds_until(epoch: f64) -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs_f64();
+    (epoch > 0.0).then(|| (epoch - now).ceil().max(1.0) as u64)
+}
+
 /// An `application/x-www-form-urlencoded` body.
 pub fn form(pairs: &[(&str, &str)]) -> String {
     let encode = |text: &str| -> String {

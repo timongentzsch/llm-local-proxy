@@ -16,6 +16,9 @@ pub enum Error {
         status: u16,
         message: String,
         account_unavailable: bool,
+        /// Seconds the upstream asked this account to stay away for, when a
+        /// rate limit said; zero when the refusal is not about the account.
+        cooldown: Option<u64>,
     },
     /// An upstream stream or value that was not what its protocol promises.
     /// Answered as 502.
@@ -34,6 +37,7 @@ impl Error {
             status,
             message: message.into(),
             account_unavailable: false,
+            cooldown: None,
         }
     }
 
@@ -47,6 +51,7 @@ impl Error {
             status,
             message: message.into(),
             account_unavailable: true,
+            cooldown: None,
         }
     }
 
@@ -65,6 +70,21 @@ impl Error {
             | Error::Upstream(message)
             | Error::Provider { message, .. } => message,
         }
+    }
+
+    pub fn cooldown(&self) -> Option<u64> {
+        match self {
+            Error::Provider { cooldown, .. } => *cooldown,
+            _ => None,
+        }
+    }
+
+    /// The same failure, with how long its account should be left alone.
+    pub fn cooling(mut self, seconds: Option<u64>) -> Self {
+        if let Error::Provider { cooldown, .. } = &mut self {
+            *cooldown = seconds;
+        }
+        self
     }
 
     pub fn account_unavailable(&self) -> bool {

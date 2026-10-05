@@ -8,7 +8,7 @@
 //! Established from the open-source CLI (`codex-rs/login`); none of it is a
 //! published API.
 
-use crate::atomic;
+use crate::atomic::JsonFile;
 use crate::error::{Error, Result};
 use crate::json::{get, py_str, truthy, Object};
 use crate::providers::limits::LimitsStore;
@@ -98,7 +98,7 @@ fn field(tokens: &Object, key: &str) -> String {
 
 /// One slot's ChatGPT login.
 pub struct CodexAuth {
-    path: PathBuf,
+    file: JsonFile,
     http: reqwest::Client,
     this: Weak<CodexAuth>,
     /// Serialises refreshes: a refresh token is spent by its first use.
@@ -112,7 +112,7 @@ impl CodexAuth {
     /// `path` is the slot's `auth.json`.
     pub fn new(path: PathBuf, http: reqwest::Client) -> Arc<Self> {
         Arc::new_cyclic(|this| CodexAuth {
-            path,
+            file: JsonFile::new(path),
             http,
             this: this.clone(),
             refreshing: tokio::sync::Mutex::new(()),
@@ -134,16 +134,11 @@ impl CodexAuth {
 
     // -- private store --------------------------------------------------------
 
-    async fn read(&self) -> Object {
-        // The CLI rewrites the file in place, so a read can land in between.
-        for _ in 0..3 {
-            match atomic::read_json(&self.path) {
-                Ok(Some(Ok(Value::Object(data)))) => return data,
-                Ok(None) | Ok(Some(Ok(_))) => return Object::new(),
-                _ => tokio::time::sleep(Duration::from_millis(20)).await,
-            }
-        }
-        Object::new()
+    fn read(&self) -> Object {
+        self.file
+            .read()
+            .map(|auth| auth.as_ref().clone())
+            .unwrap_or_default()
     }
 
     fn tokens(auth: &Object) -> Object {
@@ -174,9 +169,11 @@ impl CodexAuth {
         auth.entry("OPENAI_API_KEY").or_insert(Value::Null);
         auth.insert("tokens".into(), Value::Object(tokens));
         auth.insert("last_refresh".into(), json!(rfc3339(crate::ledger::now())));
-        atomic::write_json(&self.path, &Value::Object(auth.clone())).map_err(|error| {
-            Error::upstream(format!("could not store the Codex login: {error}"))
-        })?;
+        // Kept in memory either way: after a refresh the old token is spent,
+        // so losing the new one to a full disk would end the login.
+        if let Err(error) = self.file.write(auth.clone()) {
+            eprintln!("codex: could not store the login, keeping it in memory: {error}");
+        }
         Ok(auth)
     }
 
@@ -185,7 +182,7 @@ impl CodexAuth {
     /// The access token and ChatGPT account id for an upstream request.
     pub async fn token(&self, force_refresh: bool) -> Result<(String, String)> {
         let _guard = self.refreshing.lock().await;
-        let mut auth = self.read().await;
+        let mut auth = self.read();
         let mut tokens = Self::tokens(&auth);
         let access = field(&tokens, "access_token");
         let expiry = get(&Value::Object(jwt_claims(&access)), "exp")
@@ -273,6 +270,7 @@ impl CodexAuth {
                     status,
                     message: format!("Codex {what} failed: {}", error_detail(&raw).1),
                     account_unavailable: status == 401,
+                    cooldown: None,
                 });
             }
             return serde_json::from_str(&raw)
@@ -432,8 +430,8 @@ impl CodexAuth {
             polling.abort();
         }
         let _guard = self.refreshing.lock().await;
-        let refresh = field(&Self::tokens(&self.read().await), "refresh_token");
-        let _ = std::fs::remove_file(&self.path);
+        let refresh = field(&Self::tokens(&self.read()), "refresh_token");
+        self.file.remove();
         self.forget_limits();
         if refresh.is_empty() {
             return;
@@ -456,7 +454,7 @@ impl CodexAuth {
     }
 
     async fn card(&self) -> AccountStatus {
-        let tokens = Self::tokens(&self.read().await);
+        let tokens = Self::tokens(&self.read());
         if field(&tokens, "access_token").is_empty() {
             return AccountStatus::default();
         }
@@ -494,7 +492,7 @@ impl Auth for CodexAuth {
 
     fn signed_in(&self) -> BoxFuture<'_, Result<bool>> {
         Box::pin(async {
-            let tokens = Self::tokens(&self.read().await);
+            let tokens = Self::tokens(&self.read());
             Ok(!field(&tokens, "access_token").is_empty())
         })
     }
