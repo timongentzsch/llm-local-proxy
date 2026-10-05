@@ -27,6 +27,13 @@ from . import security
 from .sse import SseStream, with_heartbeats
 
 
+def _describe(error: Exception) -> str:
+    """A message for the client; a bug's bare KeyError text says too little."""
+    if isinstance(error, (RuntimeError, OSError, ValueError)):
+        return str(error)
+    return f"internal error: {type(error).__name__}: {error}"
+
+
 def make_handler(service: Service, public: bool = False):
     """Handlers for the admin listener, or with ``public`` for named keys only.
 
@@ -143,8 +150,13 @@ def make_handler(service: Service, public: bool = False):
                 self._api_error(dialect, HTTPStatus.BAD_REQUEST, str(error))
             except ProviderError as error:
                 self._api_error(dialect, error.status, str(error))
-            except (RuntimeError, OSError, ValueError) as error:
-                self._api_error(dialect, HTTPStatus.BAD_GATEWAY, str(error))
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                return
+            except Exception as error:  # noqa: BLE001 - always answer the client
+                try:
+                    self._api_error(dialect, HTTPStatus.BAD_GATEWAY, _describe(error))
+                except OSError:
+                    return
 
         def _provider_route(self, path: str) -> tuple[Provider, str] | None:
             parts = path.split("/")
@@ -210,19 +222,21 @@ def make_handler(service: Service, public: bool = False):
                             sse.send(chunk)
                 for chunk in stream.finish():
                     sse.send(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                # The client left or stopped reading; nothing can reach it.
                 return
-            except (RuntimeError, OSError, ValueError) as error:
+            except Exception as error:  # noqa: BLE001 - headers are sent; fail in-band
+                message = _describe(error)
                 try:
                     sse.send(
-                        stream.error(str(error))
-                        or dialect.error(HTTPStatus.BAD_GATEWAY, str(error))
+                        stream.error(message)
+                        or dialect.error(HTTPStatus.BAD_GATEWAY, message)
                     )
-                except (BrokenPipeError, ConnectionResetError):
+                except OSError:
                     return
             try:
                 sse.end()
-            except (BrokenPipeError, ConnectionResetError):
+            except OSError:
                 pass
 
         def _body(self) -> dict[str, Any]:
@@ -321,6 +335,8 @@ def make_handler(service: Service, public: bool = False):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")

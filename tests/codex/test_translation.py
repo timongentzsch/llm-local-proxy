@@ -325,7 +325,7 @@ class AppServerTokenTest(unittest.TestCase):
         access = _jwt(
             {
                 "exp": time.time() + 3600,
-                "https://api.openai.com/auth.chatgpt_account_id": "from-claim",
+                "https://api.openai.com/auth": {"chatgpt_account_id": "from-claim"},
             }
         )
         server = self._server_with_auth({"tokens": {"access_token": access}})

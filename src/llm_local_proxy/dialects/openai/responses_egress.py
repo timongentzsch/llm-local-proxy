@@ -235,6 +235,10 @@ class ResponseEncoder(Encoder):
                 "end_index": event.end_index or 0,
             }
             part = self._message["content"][0]
+            # An upstream may repeat an annotation on the finished item and in
+            # the completed response; the client is told once.
+            if annotation in part["annotations"]:
+                return []
             part["annotations"].append(annotation)
             return [
                 self._event(

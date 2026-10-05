@@ -67,7 +67,12 @@ def _limits(value: dict[str, Any]) -> tuple[Limit, ...]:
     value = value or {}
     default = value.get("rateLimits")
     default_id = default.get("limitId") if isinstance(default, dict) else None
-    for entry in value.get("rateLimitsByLimitId", {}).values():
+    # The protocol allows the map to be null; the default limit then stands
+    # alone.
+    entries = value.get("rateLimitsByLimitId")
+    if not isinstance(entries, dict):
+        entries = {"": default} if isinstance(default, dict) else {}
+    for entry in entries.values():
         if not isinstance(entry, dict):
             continue
         name = entry.get("limitName") or entry.get("limitId") or "limit"

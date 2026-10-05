@@ -127,9 +127,12 @@ class MessageEncoder(Encoder):
             )
             assert self._open is not None
             self._open["block"]["signature"] = event.signature
-            return frames + [
+            frames.append(
                 self._delta({"type": "signature_delta", "signature": event.signature})
-            ]
+            )
+            # The signature ends its block: thinking that follows is a new
+            # block with its own signature, never appended to this one.
+            return frames + self._close()
         if isinstance(event, RedactedThinkingDelta):
             frames = self._open_block(
                 "redacted_thinking",

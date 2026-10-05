@@ -42,7 +42,7 @@
           "delta": {
             "tool_calls": [
               {
-                "index": 1,
+                "index": 0,
                 "id": "toolu_1",
                 "type": "function",
                 "function": {
@@ -67,7 +67,7 @@
           "delta": {
             "tool_calls": [
               {
-                "index": 1,
+                "index": 0,
                 "function": {
                   "arguments": "{\"city\":"
                 }
@@ -89,7 +89,7 @@
           "delta": {
             "tool_calls": [
               {
-                "index": 1,
+                "index": 0,
                 "function": {
                   "arguments": "\"Berlin\"}"
                 }

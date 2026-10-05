@@ -29,6 +29,7 @@ E = TypeVar("E")
 RATE_LIMIT_COOLDOWN_SECONDS = 300
 AUTH_FAILURE_COOLDOWN_SECONDS = 60
 CATALOG_TTL_SECONDS = 60
+CATALOG_RETRY_SECONDS = 5
 # A session stays on the account that last served it for this long: past the
 # longest upstream prompt-cache lifetime (Anthropic's 1h) there is nothing to
 # keep. The table is bounded; the oldest entry goes first.
@@ -346,6 +347,7 @@ class PooledProvider(Generic[T]):
 
     name = ""
     retry_if: Callable[[Exception], bool] | None = None
+    _catalog_retry_at = 0.0
 
     def __init__(self, context: ProviderContext):
         self.context = context
@@ -355,6 +357,8 @@ class PooledProvider(Generic[T]):
         )
         self.cache = ReasoningCache()
         self._catalog: tuple[float, list[dict[str, Any]]] | None = None
+        self._catalog_retry_at = 0.0
+        self._catalog_refresh = threading.Lock()
         self._lock = threading.Lock()
         self._accounts_lock = threading.Lock()
 
@@ -461,21 +465,43 @@ class PooledProvider(Generic[T]):
     def forget(self) -> None:
         with self._lock:
             self._catalog = None
+            self._catalog_retry_at = 0.0
 
     def _live_catalog(self) -> list[dict[str, Any]]:
+        cached = self._fresh_catalog()
+        if cached is not None:
+            return cached
+        # One caller refreshes; the rest wait for its answer instead of each
+        # sending their own discovery upstream.
+        with self._catalog_refresh:
+            cached = self._fresh_catalog()
+            if cached is not None:
+                return cached
+            try:
+                items = self.pool.call(
+                    None, self.fetch_catalog, self.no_account, self.retry_if
+                )
+            except ProviderError:
+                # A failed discovery says nothing about which models exist:
+                # keep serving the last catalog and ask again shortly, rather
+                # than unrouting every model for a whole cache lifetime.
+                with self._lock:
+                    self._catalog_retry_at = time.time() + CATALOG_RETRY_SECONDS
+                    return self._catalog[1] if self._catalog else []
+            with self._lock:
+                self._catalog = (time.time(), items)
+                self._catalog_retry_at = 0.0
+            return items
+
+    def _fresh_catalog(self) -> list[dict[str, Any]] | None:
+        now = time.time()
         with self._lock:
             cached = self._catalog
-        if cached and time.time() - cached[0] < CATALOG_TTL_SECONDS:
-            return cached[1]
-        try:
-            items = self.pool.call(
-                None, self.fetch_catalog, self.no_account, self.retry_if
-            )
-        except ProviderError:
-            items = []
-        with self._lock:
-            self._catalog = (time.time(), items)
-        return items
+            if cached and now - cached[0] < CATALOG_TTL_SECONDS:
+                return cached[1]
+            if now < self._catalog_retry_at:
+                return cached[1] if cached else []
+        return None
 
     def status(self) -> ProviderStatus:
         accounts = []

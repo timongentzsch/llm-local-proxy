@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import socket
 import threading
 from http.server import ThreadingHTTPServer
@@ -18,10 +19,17 @@ from .handler import make_handler
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # socketserver's default of 5 drops SYNs when a client opens a burst of
+    # connections, which then wait out TCP retransmit timers.
+    request_queue_size = 512
 
     def __init__(self, address, handler):
         self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         super().__init__(address, handler)
+
+
+def _interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt
 
 
 def main() -> None:
@@ -60,6 +68,9 @@ def main() -> None:
         where = config.public_url or f"{config.public_host}:{config.public_port}"
         print(f"Named keys only: {where}")
         threading.Thread(target=public.serve_forever, daemon=True).start()
+    # `docker stop` sends SIGTERM; take the same path as Ctrl-C so the service
+    # and its app-server children are closed.
+    signal.signal(signal.SIGTERM, _interrupt)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

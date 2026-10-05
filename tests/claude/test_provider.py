@@ -52,6 +52,7 @@ class ClaudeProviderTest(unittest.TestCase):
         claude = Claude.__new__(Claude)
         claude.pool = two_accounts(narrow, live)
         claude._lock = Lock()
+        claude._catalog_refresh = Lock()
         claude._catalog = None
 
         self.assertEqual(claude._live_catalog()[0]["id"], "claude-live")
@@ -74,6 +75,7 @@ class ClaudeProviderTest(unittest.TestCase):
         claude.pool.get("2").client.limits.clear = lambda: cleared.append("2")
         claude.pool.get("2").auth.finish = lambda code: {"ok": True}
         claude._lock = Lock()
+        claude._catalog_refresh = Lock()
         claude._catalog = None
 
         claude.finish_login({"account": "2", "code": "abc"})

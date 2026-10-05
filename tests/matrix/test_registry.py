@@ -135,6 +135,7 @@ class RegistryTest(unittest.TestCase):
                 provider = service.__new__(service)
                 provider.pool = two_accounts(stale, live)
                 provider._lock = Lock()
+                provider._catalog_refresh = Lock()
                 provider._catalog = None
                 if service is Codex:
                     provider.fetch_catalog = lambda account: account.client.models()

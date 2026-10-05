@@ -48,6 +48,10 @@ class ChunkEncoder(Encoder):
         self.content = ""
         self.reasoning = ""
         self.calls: list[dict[str, Any]] = []
+        #: Upstream call index -> its position among this response's calls.
+        #: Clients accumulate deltas by a `tool_calls` index counted from 0,
+        #: while an upstream may number calls among its other content.
+        self._positions: dict[Any, int] = {}
         self.annotations: list[dict[str, Any]] = []
         self.usage: dict[str, Any] | None = None
         self._finish: str | None = None
@@ -127,7 +131,9 @@ class ChunkEncoder(Encoder):
                     {
                         "tool_calls": [
                             {
-                                "index": event.index,
+                                "index": self._positions.setdefault(
+                                    event.index, len(self._positions)
+                                ),
                                 "id": event.id,
                                 "type": "function",
                                 "function": {
@@ -145,7 +151,7 @@ class ChunkEncoder(Encoder):
                     {
                         "tool_calls": [
                             {
-                                "index": event.index,
+                                "index": self._positions.get(event.index, 0),
                                 "function": {"arguments": event.fragment},
                             }
                         ]

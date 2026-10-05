@@ -38,6 +38,7 @@ class CodexDecoder:
         self.web_searches: set[str] = set()
         self._search_phase: dict[str, str] = {}
         self._native_seen: set[str] = set()
+        self._cited_items: set[str] = set()
         self._thinking = ""
         self._usage: Usage | None = None
         self._stop: str | None = None
@@ -97,11 +98,17 @@ class CodexDecoder:
         if not isinstance(item, dict):
             return []
         events: list[StreamEvent] = self._web_search(item, _terminal(item))
-        content = item.get("content", [])
+        # The completed response lists every item again. A message's citations
+        # are read once: by then a later message may be the one being written,
+        # and they would attach to it.
+        item_id = str(item.get("id") or "")
+        content = item.get("content", []) if item_id not in self._cited_items else []
         for part in content if isinstance(content, list) else []:
-            if isinstance(part, dict):
-                for annotation in part.get("annotations", []):
-                    events.extend(_citation(annotation))
+            annotations = part.get("annotations") if isinstance(part, dict) else None
+            for annotation in annotations if isinstance(annotations, list) else []:
+                events.extend(_citation(annotation))
+        if item_id and item.get("type") == "message":
+            self._cited_items.add(item_id)
         if item.get("type") == "reasoning":
             return events + self._reasoning(item)
         if item.get("type") == "function_call":

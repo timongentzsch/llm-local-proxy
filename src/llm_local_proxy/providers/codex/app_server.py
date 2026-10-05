@@ -162,10 +162,9 @@ class AppServer:
             raise RpcError("not signed in; open the proxy status page")
         account_id = str(tokens.get("account_id", ""))
         if not account_id:
-            claims = _jwt_payload(access)
-            account_id = str(
-                claims.get("https://api.openai.com/auth.chatgpt_account_id", "")
-            )
+            claim = _jwt_payload(access).get("https://api.openai.com/auth")
+            if isinstance(claim, dict):
+                account_id = str(claim.get("chatgpt_account_id") or "")
         if not account_id:
             raise RpcError("ChatGPT account id is missing")
         return access, account_id
