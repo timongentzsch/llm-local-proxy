@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import io
 import itertools
 import json
@@ -55,8 +56,8 @@ _drawing: list[list[int]] = []
 
 def _uuid4() -> uuid.UUID:
     value = next(_counter)
-    if _drawing:
-        _drawing[-1].append(value)
+    for drawn in _drawing:
+        drawn.append(value)
     return uuid.UUID(int=value)
 
 
@@ -84,6 +85,19 @@ def failure(error: BaseException) -> dict:
     # A crash in Python (TypeError, KeyError...): the port must fail too, but
     # its wording is its own.
     return {"kind": "crash", "message": f"{type(error).__name__}: {error}"}
+
+
+def dump(value):
+    """The IR as JSON: a dataclass is its fields under its class name."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        fields = {
+            field.name: dump(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+        }
+        return {"type": type(value).__name__, **fields}
+    if isinstance(value, (list, tuple)):
+        return [dump(item) for item in value]
+    return value
 
 
 def jsonable(value) -> bool:
@@ -164,6 +178,7 @@ def _record_build(provider: str, request, options: dict, cache, run) -> None:
         "session": key[2],
         "options": options,
         "cache": state,
+        "ir": dump(request),
     }
     with drawing() as drawn:
         try:
@@ -245,6 +260,7 @@ def request_cases() -> list[dict]:
             cases.append(case)
             continue
         case["parse"] = {"ok": True}
+        case["ir"] = dump(_parse[dialect](copy.deepcopy(body), session))
 
         def fresh():
             return _parse[dialect](copy.deepcopy(body), session)
@@ -277,18 +293,94 @@ ENCODERS = {
     "messages": messages_egress.MessageEncoder,
     "responses": responses_egress.ResponseEncoder,
 }
+DECODERS = {
+    "codex": codex_events.CodexDecoder,
+    "claude": claude_events.ClaudeDecoder,
+}
 streams: list[dict] = []
+decoders: list[dict] = []
+#: The encoder step being recorded; the events its decoder returns join it.
+_encoding: list[dict] = []
 
 
-def _decoder(decoder) -> dict | None:
-    if type(decoder) is codex_events.CodexDecoder:
-        fresh = not (decoder.calls or decoder.reasoning_items or decoder._native_seen)  # noqa: SLF001
-        return {"kind": "codex"} if fresh else None
-    if type(decoder) is claude_events.ClaudeDecoder:
-        fresh = not (decoder.calls or decoder.reasoning_blocks)
-        names = {key: list(value) for key, value in decoder.names.items()}
-        return {"kind": "claude", "names": names} if fresh else None
-    return None
+def _decoded(op: str, events) -> None:
+    if _encoding:
+        _encoding[-1].setdefault("events", []).append(
+            {"op": op, "events": dump(events)}
+        )
+
+
+def _wrap_decoder(kind: str, cls) -> None:
+    init = cls.__init__
+
+    def __init__(self, *args, **kwargs):
+        with drawing() as drawn:
+            init(self, *args, **kwargs)
+        names = getattr(self, "names", {})
+        self._case = {
+            "kind": kind,
+            "names": {key: list(value) for key, value in names.items()},
+            "uuids": list(drawn),
+            "steps": [],
+        }
+        decoders.append(self._case)
+
+    cls.__init__ = __init__
+
+    def wrap(name: str):
+        original = getattr(cls, name)
+
+        def method(self, *args):
+            case = getattr(self, "_case", None)
+            if case is None:
+                return original(self, *args)
+            step = {"op": name}
+            if args:
+                step["input"] = copy.deepcopy(args[0])
+            with drawing() as drawn:
+                try:
+                    result = original(self, *args)
+                    step["output"] = dump(result)
+                except Exception as error:
+                    step["error"] = failure(error)
+                    raise
+                finally:
+                    step["uuids"] = list(drawn)
+                    if _encoding and drawn:
+                        # So an encoder can be replayed without its decoder.
+                        _encoding[-1].setdefault("decoder_uuids", []).extend(drawn)
+                    if jsonable(step):
+                        case["steps"].append(step)
+                    else:
+                        case["broken"] = True
+            _decoded(name, result)
+            return result
+
+        setattr(cls, name, method)
+
+    wrap("decode")
+    wrap("finish")
+
+
+def _describe(decoder) -> dict | None:
+    """A decoder the replay can construct itself, while it is still unused."""
+    case = getattr(decoder, "_case", None)
+    if case is None or type(decoder) not in DECODERS.values() or case["steps"]:
+        return None
+    return {"kind": case["kind"], "names": case["names"]}
+
+
+def _tap(decoder) -> None:
+    """Record what a decoder the replay cannot build (a test double) returns."""
+    for name in ("decode", "finish"):
+        original = getattr(decoder, name)
+
+        def method(*args, _original=original, _name=name):
+            result = _original(*args)
+            _decoded(_name, result)
+            return result
+
+        setattr(decoder, name, method)
 
 
 def _wrap_encoder(kind: str, cls) -> None:
@@ -300,9 +392,11 @@ def _wrap_encoder(kind: str, cls) -> None:
                 init(self, model, decoder, request)
             else:
                 init(self, model, decoder)
-        described = _decoder(decoder)
+        described = _describe(decoder)
+        if described is None and type(decoder) not in DECODERS.values():
+            _tap(decoder)
         origin = _origin(request) if request is not None else None
-        if described is None or (request is not None and origin is None):
+        if request is not None and origin is None:
             return
         case = {
             "encoder": kind,
@@ -314,11 +408,13 @@ def _wrap_encoder(kind: str, cls) -> None:
                 "dialect": origin[0],
                 "body": json.loads(origin[1]),
                 "session": origin[2],
+                "ir": dump(request),
             },
             "uuids": list(drawn),
             "steps": [],
         }
         self._case = case
+        self._recording = False
         streams.append(case)
 
     cls.__init__ = __init__
@@ -328,10 +424,8 @@ def _wrap_encoder(kind: str, cls) -> None:
 
         def method(self, *args):
             case = getattr(self, "_case", None)
-            if case is None or case.get("broken"):
-                return original(self, *args)
-            if _drawing:
-                # Nested: `finish` and `result` drain through the same paths.
+            # Nested: `finish` and `result` drain through the same paths.
+            if case is None or case.get("broken") or self._recording:
                 return original(self, *args)
             step = {"op": name}
             if args:
@@ -342,6 +436,8 @@ def _wrap_encoder(kind: str, cls) -> None:
             step["id"] = self.id
             if hasattr(self, "created"):
                 step["created"] = self.created
+            self._recording = True
+            _encoding.append(step)
             with drawing() as drawn:
                 try:
                     result = original(self, *args)
@@ -350,6 +446,8 @@ def _wrap_encoder(kind: str, cls) -> None:
                     step["error"] = failure(error)
                     raise
                 finally:
+                    _encoding.pop()
+                    self._recording = False
                     step["uuids"] = list(drawn)
                     if jsonable(step):
                         case["steps"].append(step)
@@ -363,13 +461,15 @@ def _wrap_encoder(kind: str, cls) -> None:
         wrap(name)
 
 
+for _kind, _cls in DECODERS.items():
+    _wrap_decoder(_kind, _cls)
 for _kind, _cls in ENCODERS.items():
     _wrap_encoder(_kind, _cls)
 
 
-def stream_cases() -> list[dict]:
+def distinct(cases: list[dict]) -> list[dict]:
     seen: dict[str, dict] = {}
-    for case in streams:
+    for case in cases:
         if case.get("broken") or not case["steps"]:
             continue
         seen.setdefault(json.dumps(case, sort_keys=True), case)
@@ -397,7 +497,8 @@ def main() -> None:
     OUT.mkdir(exist_ok=True)
     write("requests.jsonl", request_cases())
     write("builds.jsonl", list(builds.values()))
-    write("streams.jsonl", stream_cases())
+    write("streams.jsonl", distinct(streams))
+    write("decoders.jsonl", distinct(decoders))
 
 
 if __name__ == "__main__":
