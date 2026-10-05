@@ -487,8 +487,24 @@ def write(name: str, cases: list[dict]) -> None:
     print(f"{path.relative_to(ROOT)}: {len(cases)} cases")
 
 
+@contextlib.contextmanager
+def _numbered_uuids():
+    """The golden suite's own id patch, kept visible to the recorder.
+
+    It replaces `uuid.uuid4` outright, which would hide those draws; restarting
+    this recorder's counter yields the same ids and still records them.
+    """
+    global _counter
+    previous, _counter = _counter, itertools.count(1)
+    try:
+        yield
+    finally:
+        _counter = previous
+
+
 def main() -> None:
     suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"))
+    sys.modules["matrix.test_golden"]._fixed_uuids = _numbered_uuids  # noqa: SLF001
     with contextlib.redirect_stderr(io.StringIO()) as log:
         result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
     if not result.wasSuccessful():

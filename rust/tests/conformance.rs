@@ -81,7 +81,9 @@ fn failure(error: &Error) -> Value {
         Error::Provider {
             status, message, ..
         } => json!({"kind": "provider", "status": status, "message": message}),
-        Error::Upstream(message) => json!({"kind": "upstream", "message": message}),
+        Error::Upstream(message) | Error::Rpc(message) => {
+            json!({"kind": "upstream", "message": message})
+        }
     }
 }
 
