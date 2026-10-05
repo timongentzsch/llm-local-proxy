@@ -19,19 +19,18 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 indexmap = { version = "2", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
 sha2 = "0.10"
 subtle = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "process", "sync", "time", "macros", "signal", "fs"] }
-tokio-stream = "0.1"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 [profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 4
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
 strip = true
 
 [dev-dependencies]

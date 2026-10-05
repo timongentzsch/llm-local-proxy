@@ -1,6 +1,6 @@
 //! ChatGPT's private Codex transport.
 
-use super::app_server::AppServer;
+use super::auth::{CodexAuth, USER_AGENT};
 use super::usage::read_usage;
 use crate::error::{Error, Result};
 use crate::json::{dumps, py_str, Dumps, Object};
@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const USER_AGENT: &str = concat!("llm-local-proxy/", env!("CARGO_PKG_VERSION"));
 /// The events that end a response; `error` ends the stream without one.
 const TERMINAL_EVENTS: [&str; 3] = [
     "response.completed",
@@ -34,16 +33,16 @@ type Efforts = Option<BTreeSet<String>>;
 
 /// The only module coupled to ChatGPT's private Codex transport.
 pub struct Upstream {
-    pub app: Arc<AppServer>,
+    pub auth: Arc<CodexAuth>,
     pub ledger: Arc<TokenLedger>,
     http: reqwest::Client,
     probed: Mutex<Option<(Instant, String, Efforts)>>,
 }
 
 impl Upstream {
-    pub fn new(app: Arc<AppServer>, http: reqwest::Client, ledger: Arc<TokenLedger>) -> Self {
+    pub fn new(auth: Arc<CodexAuth>, http: reqwest::Client, ledger: Arc<TokenLedger>) -> Self {
         Upstream {
-            app,
+            auth,
             ledger,
             http,
             probed: Mutex::new(None),
@@ -91,11 +90,7 @@ impl Upstream {
         let payload = dumps(&Value::Object(body.clone()), Dumps::COMPACT);
         let mut refresh = false;
         loop {
-            let (access, account) = self
-                .app
-                .token(refresh)
-                .await
-                .map_err(|error| Error::unavailable(401, error.message()))?;
+            let (access, account) = self.auth.token(refresh).await?;
             let response = self
                 .http
                 .post(endpoint(RESPONSES_URL))

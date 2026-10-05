@@ -1,8 +1,7 @@
-//! The Codex provider: a ChatGPT subscription driven through codex app-server.
+//! The Codex provider: a ChatGPT subscription over the Codex backend.
 
-use super::app_server::AppServer;
 use super::auth::CodexAuth;
-use super::catalog::model_info;
+use super::catalog::catalog;
 use super::events::CodexDecoder;
 use super::request::build;
 use super::upstream::{accepted, Upstream};
@@ -11,6 +10,7 @@ use crate::ir::{ChatRequest, Decoder};
 use crate::json::{get, py_str, truthy, Object};
 use crate::ledger::{TokenLedger, Windows};
 use crate::providers::catalog::match_model;
+use crate::providers::limits::LimitsStore;
 use crate::providers::pool::{account_file, Account, AccountPool, Backend, Pooled};
 use crate::providers::{BoxFuture, EventStream, Provider};
 use crate::status::{AccountStatus, ProviderStatus};
@@ -23,7 +23,9 @@ use std::sync::Arc;
 pub struct CodexBackend {
     directory: PathBuf,
     codex_home: PathBuf,
-    binary: String,
+    /// The CLI version the model list is asked for; the backend offers a
+    /// client only the models that version can drive.
+    client_version: String,
     http: reqwest::Client,
 }
 
@@ -41,51 +43,52 @@ impl Backend for CodexBackend {
     const NAME: &'static str = "codex";
 
     fn new_account(&self, slot: &str) -> BoxFuture<'_, Result<Account<Client>>> {
-        let slot = slot.to_string();
-        Box::pin(async move {
-            let app = Arc::new(AppServer::start(&self.binary, self.home(&slot)).await?);
-            let tokens = account_file(&self.directory, Self::NAME, &slot, "tokens");
-            let ledger = TokenLedger::new(Some(tokens), true);
-            let auth = Arc::new(CodexAuth::new(app.clone()));
-            Ok(Account {
-                id: slot,
-                limits: Some(auth.limits.clone()),
-                auth,
-                client: Arc::new(Upstream::new(app, self.http.clone(), ledger.clone())),
-                ledger: Some(ledger),
-            })
-        })
+        let auth = CodexAuth::new(self.home(slot).join("auth.json"), self.http.clone());
+        let reader = auth.clone();
+        let limits = LimitsStore::new(
+            Self::NAME,
+            Box::new(move || {
+                let reader = reader.clone();
+                Box::pin(async move { reader.limits().await })
+            }),
+        );
+        auth.watch(limits.clone());
+        let tokens = account_file(&self.directory, Self::NAME, slot, "tokens");
+        let ledger = TokenLedger::new(Some(tokens), true);
+        let account = Account {
+            id: slot.to_string(),
+            limits: Some(limits),
+            client: Arc::new(Upstream::new(
+                auth.clone(),
+                self.http.clone(),
+                ledger.clone(),
+            )),
+            auth,
+            ledger: Some(ledger),
+        };
+        Box::pin(async move { Ok(account) })
     }
 
     fn fetch_catalog(
         &self,
         account: Arc<Account<Client>>,
     ) -> BoxFuture<'static, Result<Vec<Value>>> {
+        let client_version = self.client_version.clone();
         Box::pin(async move {
             let upstream = &account.client;
-            let listing = json!({"limit": 100, "includeHidden": false});
-            let result = upstream.app.call("model/list", listing).await?;
-            let contexts = upstream.app.model_contexts().await;
-            let items: Vec<&Value> = result
-                .get("data")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|item| item.is_object())
-                .collect();
-            let first_model = items
+            let models = upstream.auth.models(&client_version).await?;
+            let first_model = models
                 .iter()
-                .flat_map(|item| [get(item, "model"), get(item, "id")])
-                .find(|name| truthy(name))
+                .filter(|item| get(item, "visibility") == "list")
+                .min_by_key(|item| get(item, "priority").as_i64().unwrap_or(i64::MAX))
+                .map(|item| get(item, "slug"))
+                .filter(|slug| truthy(slug))
                 .map(py_str);
             let transport_efforts = match first_model {
                 Some(model) => accepted(&upstream.reasoning_efforts(&model).await?),
                 None => None,
             };
-            Ok(items
-                .into_iter()
-                .filter_map(|item| model_info(item, &contexts, transport_efforts.as_deref()))
-                .collect())
+            Ok(catalog(&models, transport_efforts.as_deref()))
         })
     }
 
@@ -114,14 +117,6 @@ impl Backend for CodexBackend {
             self.home(slot),
         ]
     }
-
-    fn closed<'a>(&'a self, account: &'a Account<Client>) -> BoxFuture<'a, ()> {
-        Box::pin(account.client.app.close())
-    }
-
-    fn retry_if(error: &Error) -> bool {
-        matches!(error, Error::Rpc(_))
-    }
 }
 
 pub struct Codex {
@@ -132,13 +127,13 @@ impl Codex {
     pub async fn new(
         directory: &Path,
         codex_home: &Path,
-        binary: &str,
+        client_version: &str,
         http: reqwest::Client,
     ) -> Result<Self> {
         let backend = CodexBackend {
             directory: directory.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
-            binary: binary.to_string(),
+            client_version: client_version.to_string(),
             http,
         };
         Ok(Codex {
@@ -222,21 +217,9 @@ impl Provider for Codex {
         self.pooled.forget()
     }
 
-    fn healthy(&self) -> BoxFuture<'_, bool> {
-        Box::pin(async move {
-            for account in self.pooled.pool.accounts() {
-                if !account.client.app.alive().await {
-                    return false;
-                }
-            }
-            true
-        })
-    }
-
     fn close(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             for account in self.pooled.pool.accounts() {
-                account.client.app.close().await;
                 account.client.ledger.flush();
             }
         })

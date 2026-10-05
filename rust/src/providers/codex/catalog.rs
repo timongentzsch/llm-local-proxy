@@ -3,35 +3,46 @@
 use crate::json::{get, py_str, truthy};
 use crate::providers::catalog::{model_info as shared, ModelInfo};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
-/// One `model/list` entry as the listing entry clients see. Effort tiers are
-/// intersected with what the transport accepts, when it said.
-pub fn model_info(
+/// The backend's model records as listing entries, in its own order of
+/// preference. Hidden models are not offered; the first one is the default.
+/// Effort tiers are intersected with what the transport accepts, when it said.
+pub fn catalog(models: &[Value], transport_efforts: Option<&[String]>) -> Vec<Value> {
+    let mut listed: Vec<&Value> = models
+        .iter()
+        .filter(|item| get(item, "visibility") == "list")
+        .collect();
+    listed.sort_by_key(|item| get(item, "priority").as_i64().unwrap_or(i64::MAX));
+    listed
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| model_info(item, transport_efforts, index == 0))
+        .collect()
+}
+
+fn model_info(
     item: &Value,
-    context_windows: &HashMap<String, i64>,
     transport_efforts: Option<&[String]>,
+    is_default: bool,
 ) -> Option<Value> {
-    let model = [get(item, "model"), get(item, "id")]
-        .into_iter()
-        .find(|value| truthy(value))
-        .map(py_str)?;
+    let slug = get(item, "slug");
+    let model = truthy(slug).then(|| py_str(slug))?;
     let accepts = |effort: &Value| match transport_efforts {
         None => true,
         Some(accepted) => effort
             .as_str()
             .is_some_and(|e| accepted.iter().any(|a| a == e)),
     };
-    let efforts: Vec<Value> = get(item, "supportedReasoningEfforts")
+    let efforts: Vec<Value> = get(item, "supported_reasoning_levels")
         .as_array()
         .into_iter()
         .flatten()
-        .map(|effort| get(effort, "reasoningEffort"))
+        .map(|level| get(level, "effort"))
         .filter(|effort| truthy(effort) && accepts(effort))
         .cloned()
         .collect();
-    let default_effort = get(item, "defaultReasoningEffort");
-    let display = get(item, "displayName");
+    let default_effort = get(item, "default_reasoning_level");
+    let display = get(item, "display_name");
     Some(shared(ModelInfo {
         model: &model,
         name: if truthy(display) {
@@ -40,15 +51,18 @@ pub fn model_info(
             json!(model)
         },
         owned_by: "openai",
-        modalities: get(item, "inputModalities")
+        modalities: get(item, "input_modalities")
             .as_array()
             .filter(|list| !list.is_empty())
             .map(|list| list.iter().map(py_str).collect()),
         default_parameters: (truthy(default_effort) && accepts(default_effort))
             .then(|| json!({ "reasoning_effort": default_effort })),
         reasoning_efforts: efforts,
-        context_length: context_windows.get(&model).copied().unwrap_or(0),
-        is_default: truthy(get(item, "isDefault")),
+        context_length: get(item, "context_window")
+            .as_i64()
+            .filter(|n| *n > 0)
+            .unwrap_or(0),
+        is_default,
         ..Default::default()
     }))
 }
@@ -58,28 +72,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn efforts_the_transport_rejects_are_left_out() {
-        let item = json!({
-            "model": "gpt-x",
-            "displayName": "GPT X",
-            "supportedReasoningEfforts": [
-                {"reasoningEffort": "low"},
-                {"reasoningEffort": "xhigh"},
-            ],
-            "defaultReasoningEffort": "xhigh",
-            "inputModalities": ["text", "image"],
-            "isDefault": true,
-        });
-        let contexts = HashMap::from([("gpt-x".to_string(), 400_000)]);
+    fn hidden_models_are_left_out_and_the_preferred_one_is_the_default() {
+        let models = [
+            json!({"slug": "b", "display_name": "B", "visibility": "list", "priority": 5}),
+            json!({"slug": "hidden", "visibility": "hide", "priority": 0}),
+            json!({
+                "slug": "a",
+                "display_name": "A",
+                "visibility": "list",
+                "priority": 1,
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "xhigh"}],
+                "default_reasoning_level": "xhigh",
+                "input_modalities": ["text", "image"],
+                "context_window": 272000,
+            }),
+        ];
         let accepted = ["low".to_string(), "medium".to_string()];
-        let model = model_info(&item, &contexts, Some(&accepted)).unwrap();
-        assert_eq!(model["supported_reasoning_efforts"], json!(["low"]));
-        assert_eq!(model["default_parameters"], Value::Null);
-        assert_eq!(model["context_length"], 400_000);
-        assert_eq!(model["architecture"]["modality"], "text+image->text");
-        let open = model_info(&item, &contexts, None).unwrap();
-        assert_eq!(open["supported_reasoning_efforts"], json!(["low", "xhigh"]));
-        assert_eq!(open["default_parameters"]["reasoning_effort"], "xhigh");
-        assert!(model_info(&json!({}), &contexts, None).is_none());
+        let listed = catalog(&models, Some(&accepted));
+        let ids: Vec<&str> = listed.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert_eq!(listed[0]["is_default"], true);
+        assert_eq!(listed[1]["is_default"], false);
+        assert_eq!(listed[0]["supported_reasoning_efforts"], json!(["low"]));
+        assert_eq!(listed[0]["default_parameters"], Value::Null);
+        assert_eq!(listed[0]["context_length"], 272000);
+        assert_eq!(listed[0]["architecture"]["modality"], "text+image->text");
+        let open = catalog(&models, None);
+        assert_eq!(
+            open[0]["supported_reasoning_efforts"],
+            json!(["low", "xhigh"])
+        );
+        assert_eq!(open[0]["default_parameters"]["reasoning_effort"], "xhigh");
     }
 }

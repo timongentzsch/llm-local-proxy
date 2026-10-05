@@ -93,9 +93,22 @@ def prepare(root: Path, port: int) -> Path:
         },
     )
     access = jwt({"exp": 4102444800})
+    identity = jwt(
+        {
+            "email": "codex@example.com",
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"},
+        }
+    )
     write(
         codex_home / "accounts" / "1" / "auth.json",
-        {"tokens": {"access_token": access, "account_id": "acct-e2e"}},
+        {
+            "tokens": {
+                "id_token": identity,
+                "access_token": access,
+                "refresh_token": "rt-codex-1",
+                "account_id": "acct-e2e",
+            }
+        },
     )
     return config / "config.toml"
 
@@ -535,7 +548,17 @@ def main() -> None:
         # The same requests, in the order each proxy chose to send them.
         key = lambda entry: json.dumps(entry, sort_keys=True)
 
+        # The reference asks codex app-server for these; the port asks the
+        # service itself, so only the port's log has them.
+        native = (
+            "/backend-api/codex/models",
+            "/backend-api/wham/usage",
+            "/api/accounts/deviceauth/",
+            "/oauth/revoke",
+        )
+
         def sent(entries):
+            entries = [e for e in entries if not e["path"].startswith(native)]
             # The port asks the Codex transport for its effort enum once an
             # hour rather than at every catalog refresh, so how often the
             # probe was sent is the one thing allowed to differ.

@@ -13,6 +13,7 @@ with reasoning and a tool call, "limited" with a 429, anything else with text.
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import threading
@@ -57,6 +58,70 @@ USAGE = {
             "percent": 7,
             "resets_at": "2026-10-09T00:00:00Z",
             "scope": {"model": {"display_name": "Opus"}},
+        }
+    ],
+}
+
+# What the Rust port reads directly where the reference asks codex app-server;
+# the same facts as fake_codex.py reports.
+CODEX_MODELS = {
+    "models": [
+        {"slug": "gpt-plain", "display_name": "", "visibility": "list", "priority": 9},
+        {
+            "slug": "gpt-hidden",
+            "display_name": "Hidden",
+            "visibility": "hide",
+            "priority": 0,
+        },
+        {
+            "slug": "gpt-test",
+            "display_name": "GPT Test",
+            "visibility": "list",
+            "priority": 1,
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [
+                {"effort": "low"},
+                {"effort": "medium"},
+                {"effort": "high"},
+                {"effort": "xhigh"},
+            ],
+            "input_modalities": ["text", "image"],
+            "context_window": 400000,
+        },
+    ]
+}
+
+CODEX_LIMITS = {
+    "plan_type": "pro",
+    "rate_limit": {
+        "allowed": True,
+        "limit_reached": False,
+        "primary_window": {
+            "used_percent": 16,
+            "limit_window_seconds": 18000,
+            "reset_after_seconds": 60,
+            "reset_at": 1787234107,
+        },
+        "secondary_window": {
+            "used_percent": 4,
+            "limit_window_seconds": 604800,
+            "reset_after_seconds": 60,
+            "reset_at": 1787820907,
+        },
+    },
+    "additional_rate_limits": [
+        {
+            "limit_name": "Spark",
+            "metered_feature": "spark",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 1,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 60,
+                    "reset_at": 1787820907,
+                },
+                "secondary_window": None,
+            },
         }
     ],
 }
@@ -246,6 +311,16 @@ def codex_tool():
     ]
 
 
+def fresh_jwt(spent: str) -> str:
+    """An access token good for decades that names the refresh token it cost."""
+    claims = json.dumps({"exp": 4102444800, "refreshed_from": spent}).encode()
+    return (
+        "header."
+        + base64.urlsafe_b64encode(claims).rstrip(b"=").decode()
+        + ".signature"
+    )
+
+
 def last_user_text(value) -> str:
     """The text that selects a scenario, from either upstream's body shape."""
     found = ""
@@ -329,6 +404,10 @@ class Handler(BaseHTTPRequestHandler):
         self._record(None)
         if self.headers.get("Authorization") == "Bearer at-stale":
             return self._json(401, {"error": {"message": "token expired"}})
+        if self.path.startswith("/backend-api/codex/models"):
+            return self._json(200, CODEX_MODELS)
+        if self.path == "/backend-api/wham/usage":
+            return self._json(200, CODEX_LIMITS)
         if self.path.startswith("/v1/models"):
             return self._json(200, CLAUDE_MODELS)
         if self.path == "/api/oauth/usage":
@@ -351,6 +430,24 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             body = {"_raw": raw.decode("utf-8", "replace")}
         self._record(body)
+        if self.path == "/api/accounts/deviceauth/usercode":
+            return self._json(
+                200,
+                {"device_auth_id": "dev-1", "user_code": "ABCD-1234", "interval": "5"},
+            )
+        if self.path == "/api/accounts/deviceauth/token":
+            return self._json(403, {"error": "authorization_pending"})
+        if self.path == "/oauth/revoke":
+            return self._json(200, {})
+        if self.path == "/oauth/token":
+            # The ChatGPT token endpoint: a refresh answers with a new pair.
+            return self._json(
+                200,
+                {
+                    "access_token": fresh_jwt(body.get("refresh_token", "")),
+                    "refresh_token": "rt-codex-2",
+                },
+            )
         if self.path == "/v1/oauth/token":
             return self._json(
                 200,

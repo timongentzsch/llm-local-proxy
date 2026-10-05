@@ -36,18 +36,26 @@ LIMITS = {
     "rateLimitsByLimitId": {
         "codex": {
             "limitId": "codex",
-            "limitName": "Codex",
+            "limitName": None,
             "primary": {
                 "usedPercent": 16,
                 "windowDurationMins": 300,
                 "resetsAt": 1787234107,
             },
-            "secondary": {"usedPercent": 4, "windowDurationMins": 10080},
+            "secondary": {
+                "usedPercent": 4,
+                "windowDurationMins": 10080,
+                "resetsAt": 1787820907,
+            },
         },
         "spark": {
             "limitId": "spark",
             "limitName": "Spark",
-            "primary": {"usedPercent": 1, "windowDurationMins": 10080},
+            "primary": {
+                "usedPercent": 1,
+                "windowDurationMins": 10080,
+                "resetsAt": 1787820907,
+            },
             "secondary": None,
         },
     },
@@ -69,7 +77,7 @@ def answer(method: str):
     if method == "account/login/start":
         return {
             "loginId": "login-1",
-            "verificationUrl": "https://auth.example/device",
+            "verificationUrl": "https://auth.openai.com/codex/device",
             "userCode": "ABCD-1234",
         }
     if method == "account/logout":

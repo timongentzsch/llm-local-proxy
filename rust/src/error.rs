@@ -20,9 +20,6 @@ pub enum Error {
     /// An upstream stream or value that was not what its protocol promises.
     /// Answered as 502.
     Upstream(String),
-    /// A call to a local helper process failed (the Codex app-server). The
-    /// request never left the machine, so another account may still serve it.
-    Rpc(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,10 +41,6 @@ impl Error {
         Error::Upstream(message.into())
     }
 
-    pub fn rpc(message: impl Into<String>) -> Self {
-        Error::Rpc(message.into())
-    }
-
     /// A failure of the credentials rather than of the request.
     pub fn unavailable(status: u16, message: impl Into<String>) -> Self {
         Error::Provider {
@@ -62,7 +55,7 @@ impl Error {
         match self {
             Error::Request(_) => 400,
             Error::Provider { status, .. } => *status,
-            Error::Upstream(_) | Error::Rpc(_) => 502,
+            Error::Upstream(_) => 502,
         }
     }
 
@@ -70,7 +63,6 @@ impl Error {
         match self {
             Error::Request(message)
             | Error::Upstream(message)
-            | Error::Rpc(message)
             | Error::Provider { message, .. } => message,
         }
     }

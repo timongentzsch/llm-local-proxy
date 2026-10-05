@@ -1,6 +1,5 @@
 //! The Codex (ChatGPT) subscription.
 
-pub mod app_server;
 pub mod auth;
 pub mod catalog;
 pub mod events;

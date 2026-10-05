@@ -30,7 +30,13 @@ impl Service {
         let http = transport::client(Duration::from_secs(config.request_timeout));
         let ids = ids::random();
         let claude = Claude::new(&directory, http.clone(), ids.clone()).await?;
-        let codex = Codex::new(&directory, &config.codex_home, &config.codex_binary, http).await?;
+        let codex = Codex::new(
+            &directory,
+            &config.codex_home,
+            &config.codex_client_version,
+            http,
+        )
+        .await?;
         Ok(Service {
             keys: KeyStore::new(directory.join("keys.json")),
             providers: vec![Arc::new(claude), Arc::new(codex)],

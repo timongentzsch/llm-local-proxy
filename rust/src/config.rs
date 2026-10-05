@@ -5,13 +5,19 @@ use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+/// The backend lists models per client version; raise this (or set
+/// `codex_client_version`) when a newer model does not show up.
+const CODEX_CLIENT_VERSION: &str = "0.160.0";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
     pub port: u16,
     pub api_key: String,
+    /// Where each Codex slot keeps its `auth.json` (`accounts/<slot>/`).
     pub codex_home: PathBuf,
-    pub codex_binary: String,
+    /// The Codex CLI version the model list is requested for.
+    pub codex_client_version: String,
     /// Seconds an upstream may stay silent before the request fails.
     pub request_timeout: u64,
     pub path: PathBuf,
@@ -79,7 +85,7 @@ fn write_default(path: &Path) -> Result<(), String> {
     let codex_home = std::env::var("CODEX_HOME").unwrap_or_else(|_| "~/.codex".into());
     let text = format!(
         "host = \"{host}\"\nport = 8787\napi_key = \"{}\"\ncodex_home = \"{codex_home}\"\n\
-         codex_binary = \"codex\"\nrequest_timeout = 600\n",
+         request_timeout = 600\n",
         atomic::token_urlsafe(32)
     );
     atomic::write_bytes(path, text.as_bytes()).map_err(|error| error.to_string())
@@ -159,7 +165,7 @@ pub fn load(path: Option<&Path>) -> Result<Config, String> {
         port: port_number,
         api_key,
         codex_home: expand_user(&string(&data, "codex_home", "~/.codex")),
-        codex_binary: string(&data, "codex_binary", "codex"),
+        codex_client_version: string(&data, "codex_client_version", CODEX_CLIENT_VERSION),
         request_timeout: integer(&data, "request_timeout", 600)?.max(1) as u64,
         path: resolved,
         public_host: string(&data, "public_host", "127.0.0.1"),

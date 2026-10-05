@@ -39,6 +39,26 @@ pub fn endpoint(url: &str) -> String {
     }
 }
 
+/// An `application/x-www-form-urlencoded` body.
+pub fn form(pairs: &[(&str, &str)]) -> String {
+    let encode = |text: &str| -> String {
+        text.bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' | b'*' => {
+                    (byte as char).to_string()
+                }
+                b' ' => "+".to_string(),
+                other => format!("%{other:02X}"),
+            })
+            .collect()
+    };
+    pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", encode(key), encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// What went wrong reaching an upstream, in words a client can act on.
 pub fn unreachable(error: &reqwest::Error) -> String {
     if error.is_timeout() {
