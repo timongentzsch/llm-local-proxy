@@ -16,17 +16,20 @@ Usage: llm-local-proxy [--config PATH] [--show-config]
 
   --config PATH    read this config file instead of the default
   --show-config    print the config path and exit
+  --healthcheck    exit 0 if the running proxy answers /healthz, for containers
   --version        print the version and exit";
 
 struct Args {
     config: Option<PathBuf>,
     show_config: bool,
+    healthcheck: bool,
 }
 
 fn args() -> Result<Args, String> {
     let mut parsed = Args {
         config: None,
         show_config: false,
+        healthcheck: false,
     };
     let mut rest = std::env::args().skip(1);
     while let Some(arg) = rest.next() {
@@ -35,6 +38,7 @@ fn args() -> Result<Args, String> {
                 parsed.config = Some(rest.next().ok_or("--config needs a path")?.into());
             }
             "--show-config" => parsed.show_config = true,
+            "--healthcheck" => parsed.healthcheck = true,
             "--version" => {
                 println!("llm-local-proxy {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -63,6 +67,30 @@ fn quote(value: &str) -> String {
             other => format!("%{other:02X}"),
         })
         .collect()
+}
+
+/// Ask the proxy this config describes whether it is healthy.
+fn healthcheck(config: &Config) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let host = match config.host.as_str() {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        host => host,
+    };
+    let fail = |error: std::io::Error| error.to_string();
+    let mut stream = std::net::TcpStream::connect((host, config.port)).map_err(fail)?;
+    let timeout = Some(std::time::Duration::from_secs(3));
+    stream.set_read_timeout(timeout).map_err(fail)?;
+    stream.set_write_timeout(timeout).map_err(fail)?;
+    let request = "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    stream.write_all(request.as_bytes()).map_err(fail)?;
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    match answer.lines().next() {
+        Some(status) if status.contains(" 200 ") => Ok(()),
+        Some(status) => Err(format!("unhealthy: {status}")),
+        None => Err("no answer".into()),
+    }
 }
 
 async fn bind(host: &str, port: u16) -> Result<TcpListener, String> {
@@ -141,6 +169,9 @@ async fn main() {
         if args.show_config {
             println!("{}", config.path.display());
             return Ok(());
+        }
+        if args.healthcheck {
+            return healthcheck(&config);
         }
         run(config).await
     }

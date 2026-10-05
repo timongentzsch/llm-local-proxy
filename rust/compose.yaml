@@ -1,0 +1,36 @@
+# The Rust build on the same volumes as the Python one, so either can serve
+# an existing setup. Run only one of them at a time: both would refresh the
+# same logins.
+#
+#   docker compose -f rust/compose.yaml up --build
+name: llm-local-proxy
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: rust/Dockerfile
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+      # The named-key listener, once public_port = 8788 is set in config.toml.
+      # - "127.0.0.1:8788:8788"
+    volumes:
+      - proxy-config:/config
+      - codex-home:/codex
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "llm-local-proxy", "--healthcheck"]
+      interval: 60s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+volumes:
+  proxy-config:
+  codex-home:

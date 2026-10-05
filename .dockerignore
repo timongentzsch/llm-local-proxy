@@ -5,8 +5,9 @@
 __pycache__
 *.py[cod]
 dist
-tests
 specs
-scripts
 docs
 *.tar
+rust/target
+tests
+scripts

@@ -204,6 +204,9 @@ format/subscription pairs.
 Regenerate goldens only deliberately (`LLM_PROXY_RECORD=1`) and review the
 diff. CI runs the suite on Python 3.11–3.14.
 
+A Rust port lives in [`rust/`](rust/README.md) and is held to this
+implementation by recorded conformance cases and an end-to-end comparison.
+
 See [docs/architecture.md](docs/architecture.md) for the design and wire
 contracts and [docs/specs.md](docs/specs.md) for the specifications they are
 tested against.
