@@ -9,9 +9,8 @@ request   dialects/<d>_ingress ─► ChatRequest ─► providers/<p>/request �
 response  providers/<p>/events ─► StreamEvent ─► dialects/<d>_egress   ─► client
 ```
 
-Paths below are in `rust/src`. The Python implementation in `src/` has the
-same structure and is the reference the Rust one is tested against (see
-[Conformance](#conformance)).
+Paths below are in `src/`. What a request goes through is described for users
+in [behaviour.md](behaviour.md).
 
 Parsing each format once into an intermediate representation (IR) and
 rendering each upstream from it keeps the cost of a new format or provider at
@@ -54,11 +53,12 @@ recorded case drew.
 ## Layout
 
 ```
-rust/src/
+src/
   ir.rs  tools.rs  json.rs  error.rs  ids.rs  reasoning.rs
   service.rs         provider registry, merged catalog, status
   config.rs  atomic.rs  ledger.rs  status.rs  keys.rs
-  http/              listeners, request routing, SSE framing, loopback security
+  http/              listeners, request routing, SSE framing, loopback security,
+                     dashboard.html
   dialects/
     mod.rs           Dialect, Route, the registry
     base.rs          the Encoder trait
@@ -70,18 +70,20 @@ rust/src/
     catalog.rs  transport.rs
     claude/          OAuth, transport, request, events, catalog
     codex/           OAuth, transport, request, events, catalog
-src/llm_local_proxy/ the Python reference; static/index.html is the dashboard
-tests/conformance/   recorded cases the Rust implementation replays
-tests/e2e/           both implementations against canned upstreams
+tests/
+  conformance.rs     replays tests/conformance/*.jsonl against the pure core
+  e2e/               the binary against stand-ins for both upstreams
 ```
 
 A dialect is one `Dialect` value with a mount prefix and a route table; a
 provider is one implementation of `Provider`. Registering either is one line
 in `dialects/mod.rs` or `service.rs`.
 
-`json.rs` exists because the wire formats were pinned against Python: where
-its truthiness, `str()` or `json.dumps` reach the output (an id, an envelope a
-client carries between turns), the helpers there reproduce them byte for byte.
+`json.rs` exists because the wire formats were first pinned by a Python
+implementation: where its truthiness, `str()` or `json.dumps` reach the output
+(an id, an envelope a client carries between turns), the helpers there
+reproduce them byte for byte, so conversations begun on older versions still
+replay.
 
 ## Adding a provider
 
@@ -173,35 +175,37 @@ suffix.
 
 Wire claims are labelled by how they can be checked:
 
-- **[spec]**: the pinned Anthropic OpenAPI snapshot (see [specs.md](specs.md));
-  the reference's `tests/test_conformance.py` and
-  `tests/claude/test_conformance.py` fail when a refresh changes the contract.
+- **[spec]**: the published OpenAPI documents (Anthropic's, and
+  [openai/openai-openapi](https://github.com/openai/openai-openapi)).
 - **[docs]**: published prose that no schema covers, chiefly SSE framing
   (`ping` and `error` events are defined only in the streaming docs).
-- **[empirical]**: observed against a subscription edge, with no specification.
+- **[empirical]**: observed against a subscription edge or read from a
+  vendor's open-source client, with no specification.
 
 [spec] and [empirical] code never share a module. Everything reverse-engineered
-(subscription marker, beta headers, OAuth flows, transport probes) lives under
-`providers/`; nothing in `dialects/` is empirical.
+lives under `providers/`: the Claude subscription marker, beta headers and
+OAuth flow, the ChatGPT login, usage and model endpoints, and the Codex
+transport and its effort probe. Nothing in `dialects/` is empirical.
 
-## Conformance
+## Tests
 
-The Rust implementation is held to the Python one in two ways.
-
-- `scripts/record-conformance.py` runs the Python test suite with its pure
-  entry points wrapped and writes every distinct call to `tests/conformance/`:
+- **Conformance.** `tests/conformance.rs` replays `tests/conformance/*.jsonl`:
   request bodies with the IR they parse to and what both providers render,
-  and every decoder and encoder step with the ids it drew.
-  `rust/tests/conformance.rs` replays them, each layer alone (with the
-  recorded IR as the hand-off) and then end to end. Output must match as JSON
-  text, key order included.
-- `tests/e2e/compare.py` runs both servers against `fake_upstream.py` and
-  diffs client responses, upstream requests and files on disk. The reference
-  uses `fake_codex.py` as its `codex` binary; the Rust implementation reads
-  the same facts from the fake ChatGPT endpoints.
+  and every decoder and encoder step with the ids it drew. Each layer is
+  checked alone, with the recorded IR as the hand-off, and then end to end.
+  Output must match as JSON text, key order included. The cases were recorded
+  from the Python implementation this one replaced; a deliberate change in
+  behaviour means editing the cases it affects.
+- **End to end.** `tests/e2e/run.py` starts the binary against
+  `fake_upstream.py`, drives a scripted session (every format on both
+  subscriptions, refusals, keys, account management) and compares client
+  responses, upstream requests and files on disk with `expected.json`.
+  `codex_login.py` covers refreshing, storing and revoking a ChatGPT login.
+  `bench.py` measures memory, CPU and added latency.
+- **Unit tests** sit next to the code they cover.
 
-A change in translation behaviour therefore starts in the reference: change it
-and its tests, record again, then make the Rust side agree.
+`LLM_PROXY_TEST_UPSTREAM` points every upstream URL at a local stand-in; it
+exists only for these tests.
 
 ## Anthropic Messages contract
 

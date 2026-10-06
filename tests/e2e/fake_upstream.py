@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Canned Anthropic and ChatGPT upstreams for the end-to-end comparison.
+"""Canned Anthropic and ChatGPT upstreams for the end-to-end tests.
 
-Serves just enough of both subscription edges for a proxy to run a request
-through, and logs every request it receives so the two implementations can be
-compared on what they *send* as well as on what their clients receive.
+Serves just enough of both subscription edges for the proxy to run a request
+through, and logs every request it receives, so a test can check what was
+*sent* as well as what the client received.
 
     fake_upstream.py PORT LOG
 
 The scenario is chosen by the last user text of the request: "tool" answers
-with reasoning and a tool call, "limited" with a 429, anything else with text.
+with reasoning and a tool call, "limited" with a 429, "long" with a slow
+200-piece answer, anything else with text.
 """
 
 from __future__ import annotations
@@ -62,8 +63,7 @@ USAGE = {
     ],
 }
 
-# What the Rust port reads directly where the reference asks codex app-server;
-# the same facts as fake_codex.py reports.
+# The ChatGPT backend: the models a login may use and its usage windows.
 CODEX_MODELS = {
     "models": [
         {"slug": "gpt-plain", "display_name": "", "visibility": "list", "priority": 9},

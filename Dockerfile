@@ -3,14 +3,12 @@
 FROM rust:1-alpine AS build
 RUN apk add --no-cache musl-dev
 WORKDIR /src
-COPY rust/Cargo.toml rust/Cargo.lock rust/
-COPY rust/src rust/src
-COPY src/llm_local_proxy/static src/llm_local_proxy/static
-RUN cargo build --release --locked --manifest-path rust/Cargo.toml \
-    && mkdir -p /out/config /out/codex
+COPY Cargo.toml Cargo.lock ./
+COPY src src
+RUN cargo build --release --locked && mkdir -p /out/config /out/codex
 
 FROM scratch
-COPY --from=build /src/rust/target/release/llm-local-proxy /llm-local-proxy
+COPY --from=build /src/target/release/llm-local-proxy /llm-local-proxy
 # Owned by the runtime user, so a fresh volume mounted here is writable.
 COPY --from=build --chown=10001:10001 /out/config /config
 COPY --from=build --chown=10001:10001 /out/codex /codex

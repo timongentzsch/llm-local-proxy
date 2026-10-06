@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Measure one proxy implementation against the fake upstream.
+"""Measure the proxy against the fake upstream.
 
-    tests/e2e/bench.py python
-    tests/e2e/bench.py /path/to/llm-local-proxy
+    tests/e2e/bench.py target/release/llm-local-proxy
 
 Reports what the proxy itself costs: its memory, threads and CPU time, and
-the latency it adds. The upstream is a local stand-in, so absolute latencies
-mean little; the difference between two implementations does.
+the latency it adds. The upstream is a local stand-in on the same machine, so
+absolute latencies mean little; the difference between two builds does.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare import HERE, KEY, free_port, prepare, wait_for
+from run import HERE, KEY, free_port, prepare, wait_for
 
 TICK = os.sysconf("SC_CLK_TCK")
 
@@ -106,11 +105,7 @@ async def measure(port: int, pid: int) -> dict:
 
 def main() -> None:
     target = sys.argv[1]
-    command = (
-        [sys.executable, str(HERE / "reference.py")]
-        if target == "python"
-        else [str(Path(target).resolve())]
-    )
+    command = [str(Path(target).resolve())]
     root = Path(tempfile.mkdtemp(prefix="llp-bench-"))
     port, upstream_port = free_port(), free_port()
     config = prepare(root, port)

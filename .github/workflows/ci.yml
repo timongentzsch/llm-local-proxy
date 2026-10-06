@@ -7,37 +7,16 @@ on: [push, pull_request]
 
 jobs:
   test:
-    strategy:
-      matrix:
-        python: ["3.11", "3.12", "3.13", "3.14"]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
-        with:
-          python-version: ${{ matrix.python }}
-      - run: uv sync --locked
-      - name: fetch wire specs
-        run: ./scripts/refresh-specs.sh
-      - run: uv run ruff check src tests
-      - run: uv run ruff format --check src tests
-      - run: uv run python -m unittest discover -s tests -v
-
-  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal -c clippy -c rustfmt
       - run: cargo fmt --check
-        working-directory: rust
       - run: cargo clippy --all-targets --locked -- -D warnings
-        working-directory: rust
-      - name: unit tests and conformance with the Python reference
+      - name: unit tests and the conformance replay
         run: cargo test --locked
-        working-directory: rust
       - run: cargo build --release --locked
-        working-directory: rust
-      - name: end to end against the Python reference
-        run: python3 tests/e2e/compare.py --rust rust/target/release/llm-local-proxy
-      - name: the port's own ChatGPT login handling
-        run: python3 tests/e2e/native_codex.py rust/target/release/llm-local-proxy
+      - name: end to end against canned upstreams
+        run: |
+          python3 tests/e2e/run.py target/release/llm-local-proxy
+          python3 tests/e2e/codex_login.py target/release/llm-local-proxy

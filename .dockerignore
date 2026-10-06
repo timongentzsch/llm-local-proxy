@@ -1,13 +1,4 @@
-.git
-.github
-.venv
-.ruff_cache
-__pycache__
-*.py[cod]
-*.tar
-dist
-docs
-scripts
-specs
-tests
-rust/target
+*
+!Cargo.toml
+!Cargo.lock
+!src
