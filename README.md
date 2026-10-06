@@ -8,18 +8,19 @@ tool loop; the proxy only translates the protocol.
 
 ## Quick start
 
-Requires [uv](https://docs.astral.sh/uv/) and the
-[Codex CLI](https://github.com/openai/codex), whose `app-server` the proxy
-drives. The Docker image includes both.
-
-```sh
-uv tool install .
-llm-local-proxy
-```
-
 ```sh
 docker compose up --build   # published on 127.0.0.1:8787 only
 ```
+
+or, with a [Rust toolchain](https://rustup.rs):
+
+```sh
+cargo install --path rust
+llm-local-proxy
+```
+
+It is one static binary with nothing beside it; the image is that binary on an
+empty base (about 6 MB).
 
 Open the URL printed at startup; its fragment carries the generated API key.
 Sign in to one or more accounts per subscription, then copy a base URL or a
@@ -110,14 +111,24 @@ another account's cooldown never moves it. A request that starts a
 conversation (no assistant turn yet) skips an account at 90% of a window that
 limits it whole while another has room; one that continues a conversation
 keeps its account, even after a restart. Before any output is
-streamed, a 429 cools the account for five minutes and a rejected credential
-(expired login or missing inference scope) marks it for reauthentication and
-cools it for one minute; either way the request moves to the next account.
-Nothing is retried after output starts.
+streamed, a 429 rests the account for as long as its upstream says
+(`Retry-After`, Claude's unified reset, the reset of an exhausted Codex
+window), at most an hour and five minutes when it does not say; a rejected
+credential (expired login or missing inference scope) marks the account for
+reauthentication and rests it for one minute. Either way the request moves to
+the next account. Nothing is retried after output starts.
+
+**Logins.** Both are the proxy's own, made from the dashboard, and neither
+needs a vendor CLI installed. Claude uses the authorization-code flow of
+Claude Code; Codex uses the device-code flow of the Codex CLI and keeps each
+account in that CLI's own `auth.json` layout. Tokens are refreshed shortly
+before they expire. Only a refused grant asks for a new sign-in: a busy or
+unreachable token endpoint does not, and the token in hand is used while it is
+still valid.
 
 **Usage.** The dashboard's utilization bars come from each subscription and
 include its other clients: Claude's from its OAuth usage endpoint, read at most
-every 30 seconds, and Codex's from the app-server's rate limits. Neither read
+every 30 seconds, and Codex's from its usage endpoint likewise. Neither read
 sends a message, so watching the dashboard never costs tokens or starts a
 window; a window with no activity yet, such as Codex's 5-hour one, appears once
 it opens. The proxy token counts cover proxy traffic only: they come from
@@ -164,9 +175,12 @@ host = "127.0.0.1"
 port = 8787
 api_key = "long-random-local-secret"
 codex_home = "~/.codex"
-codex_binary = "codex"
 request_timeout = 600
 ```
+
+`request_timeout` is how long an upstream may stay silent, in seconds.
+`codex_client_version` (default `0.160.0`) is the Codex CLI version the model
+list is requested for; raise it when a newer model does not show up.
 
 An empty `api_key` disables authentication; otherwise it needs at least 24
 characters. Native installs bind only to loopback addresses. Under Docker keep
@@ -182,30 +196,48 @@ public_url = "https://mac.example.ts.net"   # how remote clients reach it
 
 Account slots are added and removed from the dashboard; each provider allows
 one unsigned slot at a time, and a slot must be signed out before removal.
-Codex logins live in `codex_home/accounts/<slot>`; credentials and token
-ledgers live in `accounts/<provider>/<slot>` next to the config.
+Codex logins live in `codex_home/accounts/<slot>/auth.json`; Claude
+credentials and both token ledgers live in `accounts/<provider>/<slot>` next
+to the config.
 
 ## Development
 
 ```sh
-uv sync --locked
-./scripts/refresh-specs.sh
-PYTHONPATH=src uv run python -m unittest discover -s tests
-uv run ruff check src tests && uv run ruff format --check src tests
+cd rust
+cargo fmt --check && cargo clippy --all-targets -- -D warnings
+cargo test                      # unit tests and the conformance replay
+cargo build --release
+cd ..
+python3 tests/e2e/compare.py --rust rust/target/release/llm-local-proxy
+python3 tests/e2e/native_codex.py rust/target/release/llm-local-proxy
+python3 tests/e2e/bench.py rust/target/release/llm-local-proxy
 ```
 
-Tests at the top of `tests/` are provider-agnostic and run against
-`tests/mock_provider.py`; those that need a real provider's code live in
-`tests/claude/` and `tests/codex/`, and `tests/matrix/` runs every client
-format through both. There, `test_golden.py` pins the byte-level output of
-every request and response lane, and `test_protocol_matrix.py` replays a tool
-turn with populated arguments and signed reasoning through all six
-format/subscription pairs.
-Regenerate goldens only deliberately (`LLM_PROXY_RECORD=1`) and review the
-diff. CI runs the suite on Python 3.11–3.14.
+The proxy was first written in Python, and that implementation stays in `src/`
+as the reference the Rust one is held to:
 
-A Rust port lives in [`rust/`](rust/README.md) and is held to this
-implementation by recorded conformance cases and an end-to-end comparison.
+- `cargo test` replays `tests/conformance/*.jsonl`: every request body the
+  Python suite parses with what both providers render from it, and every
+  stream a decoder reads or an encoder shapes, step by step. Each layer is
+  checked on its own and then end to end, key order included.
+- `tests/e2e/compare.py` starts both against the same canned upstreams and
+  diffs what clients receive, what is sent upstream and what is left on disk.
+- `tests/e2e/native_codex.py` covers what only the Rust one does: refreshing,
+  storing and revoking a ChatGPT login.
+
+To change translation behaviour, change the reference and its tests, record
+the cases again, and make the port agree:
+
+```sh
+uv sync --locked
+PYTHONPATH=src uv run python -m unittest discover -s tests
+uv run ruff check src tests && uv run ruff format --check src tests
+python3 scripts/record-conformance.py
+```
+
+The reference drives `codex app-server` where the Rust implementation talks to
+ChatGPT itself, and rests a rate-limited account for a flat five minutes;
+`tests/e2e/compare.py` names the few places the two are allowed to differ.
 
 See [docs/architecture.md](docs/architecture.md) for the design and wire
 contracts and [docs/specs.md](docs/specs.md) for the specifications they are
@@ -215,12 +247,11 @@ tested against.
 
 An unofficial, independent project, not affiliated with or endorsed by OpenAI
 or Anthropic. It runs on your machine against your own accounts; credentials
-are stored locally and sent only to their provider. Codex login is delegated to
-the official binary, and Claude tokens come from the OAuth flow of its
-first-party client.
+are stored locally and sent only to their provider. Both logins use the OAuth
+flow and client id of the vendor's own first-party CLI.
 
-The proxy speaks undocumented interfaces: the Codex app-server JSON-RPC
-surface, and the Claude subscription Messages transport and OAuth usage
-endpoint, including the client identifiers that mark first-party traffic. They may change without notice, and
+The proxy speaks undocumented interfaces: the ChatGPT login, Codex backend and
+usage endpoints, and the Claude subscription Messages transport and OAuth
+usage endpoint, including the client identifiers that mark first-party traffic. They may change without notice, and
 their use may fall outside your subscription's terms; review those terms and
 use the paid APIs where a supported integration is required. No warranty.

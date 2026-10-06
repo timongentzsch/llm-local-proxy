@@ -105,7 +105,7 @@ async fn bind(host: &str, port: u16) -> Result<TcpListener, String> {
 }
 
 async fn run(config: Config) -> Result<(), String> {
-    // Bind first: a port already in use should not start any app-server.
+    // Bind first: a port already in use should fail before anything else starts.
     let admin = bind(&config.host, config.port).await?;
     let public = match config.public_port {
         0 => None,
@@ -148,8 +148,8 @@ async fn run(config: Config) -> Result<(), String> {
             None => serve(admin, listener(false)).await,
         }
     };
-    // `docker stop` sends SIGTERM; take the same path as Ctrl-C so ledgers
-    // are flushed and the app-server children are closed.
+    // `docker stop` sends SIGTERM; take the same path as Ctrl-C so the token
+    // ledgers are flushed.
     let mut terminate = signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
     let mut interrupt = signal(SignalKind::interrupt()).map_err(|error| error.to_string())?;
     tokio::select! {

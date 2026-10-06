@@ -7,8 +7,8 @@ against published specifications rather than memory.
 
 `scripts/refresh-specs.sh` downloads a reviewed, immutable snapshot of the
 Anthropic OpenAPI document into `specs/` (not committed) and verifies its
-checksum. CI runs it before the tests; locally, the conformance tests
-skip when the file is absent.
+checksum. CI runs it before the Python reference's tests; locally, its spec
+conformance tests skip when the file is absent.
 
 | File | Snapshot | SHA-256 |
 | --- | --- | --- |
@@ -38,7 +38,9 @@ requests, streams and results.
 ## Not covered by any specification
 
 The Claude subscription transport is undocumented: the beta headers and user
-agent in `providers/claude/upstream.py`, the mandatory first system block in
-`providers/claude/subscription.py`, and the OAuth flow in
-`providers/claude/auth.py`. The Codex app-server JSON-RPC surface is likewise
-private. All of it was established empirically and may change without notice.
+agent in `providers/claude/upstream.rs`, the mandatory first system block in
+`providers/claude/subscription.rs`, and the OAuth flow in
+`providers/claude/auth.rs`. So are the ChatGPT login, usage and model
+endpoints in `providers/codex/auth.rs` and the Codex transport in
+`providers/codex/upstream.rs`. All of it was established empirically or from
+the vendors' open-source clients and may change without notice.

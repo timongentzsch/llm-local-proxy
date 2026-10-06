@@ -5,9 +5,13 @@ Responses, Anthropic Messages) over two upstream subscriptions (Codex, Claude).
 Any format can reach any subscription; the request's `model` decides.
 
 ```
-request   dialects/<d>/ingress ─► ChatRequest ─► providers/<p>/request ─► account pool ─► upstream
-response  providers/<p>/events ─► StreamEvent ─► dialects/<d>/egress   ─► client
+request   dialects/<d>_ingress ─► ChatRequest ─► providers/<p>/request ─► account pool ─► upstream
+response  providers/<p>/events ─► StreamEvent ─► dialects/<d>_egress   ─► client
 ```
+
+Paths below are in `rust/src`. The Python implementation in `src/` has the
+same structure and is the reference the Rust one is tested against (see
+[Conformance](#conformance)).
 
 Parsing each format once into an intermediate representation (IR) and
 rendering each upstream from it keeps the cost of a new format or provider at
@@ -15,22 +19,22 @@ N + M instead of N × M.
 
 ## Intermediate representation
 
-`ir.py` defines both directions.
+`ir.rs` defines both directions.
 
 - **`ChatRequest`** carries shared semantics in typed fields: system blocks,
   turns of content blocks, function tools with strictness and parallel-call
   control, tool choice, token limits, reasoning effort and summary, thinking
   mode and display, cache hints and key, session, sampling parameters and
   output format. Wire-specific tool
-  options keep their source format; `tools.py` preserves them on compatible
+  options keep their source format; `tools.rs` preserves them on compatible
   targets and rejects them elsewhere.
-- **Opaque escape hatches** (`Reasoning`, `NativeResponseItem`,
-  `NativeAnthropicBlock`, `NativeTool`) hold content without a lossless mapping,
+- **Opaque escape hatches** (`Block::Reasoning`, `Block::NativeResponseItem`,
+  `Block::NativeAnthropicBlock`, `Tool::Native`) hold content without a lossless mapping,
   such as signed reasoning, rich tool results, documents and search results.
   They are forwarded verbatim on compatible routes and rejected on the rest,
   never interpreted.
 - **`ToolNamespace`** keeps a Responses namespace both verbatim and as parsed
-  function tools. Targets without namespaces use `tools.flatten`, which gives
+  function tools. Targets without namespaces use `tools::flatten`, which gives
   each member a qualified name of at most 64 characters and the map to restore
   calls; tool calls carry their `namespace` back to the client.
 - **`StreamEvent`** is the response vocabulary: `TextDelta`, `ThinkingDelta`,
@@ -40,53 +44,59 @@ N + M instead of N × M.
   Completions narrows them to four.
 
 Each provider supplies a `Decoder` (upstream events to `StreamEvent`s); each
-dialect supplies an `Encoder` subclass that shapes those events into its own
-frames. The HTTP layer pairs the two per request and handles `ProviderError`
-without importing provider code.
+dialect supplies an `Encoder` that shapes those events into its own frames.
+The HTTP layer pairs the two per request and knows neither provider.
+
+Everything in this part is pure: JSON in, JSON out, no clock, no network. Ids
+come from an injected source (`ids.rs`), so a test can hand back the ones a
+recorded case drew.
 
 ## Layout
 
 ```
-src/llm_local_proxy/
-  ir.py  tools.py  errors.py  streaming.py
-  service.py         provider registry, merged catalog, status
-  config.py  atomic.py  ledger.py  status.py  keys.py
-  http/              server, request routing, SSE framing, loopback security
+rust/src/
+  ir.rs  tools.rs  json.rs  error.rs  ids.rs  reasoning.rs
+  service.rs         provider registry, merged catalog, status
+  config.rs  atomic.rs  ledger.rs  status.rs  keys.rs
+  http/              listeners, request routing, SSE framing, loopback security
   dialects/
-    base.py          Dialect, Route, Encoder base
-    openai/          Chat Completions and Responses ingress/egress
-    anthropic/       Messages ingress/egress
+    mod.rs           Dialect, Route, the registry
+    base.rs          the Encoder trait
+    chat_*  responses_*  messages_*    ingress and egress per format
   providers/
-    base.py          Provider, ProviderContext
-    pool.py          AccountPool, AccountStore, PooledProvider
-    limits.py        LimitsStore: usage bars read without blocking
-    auth.py          Auth: one login's lifecycle
-    catalog.py  reasoning.py  transport.py
-    codex/           app-server client, auth, request, events, catalog
+    mod.rs           the Provider trait
+    pool.rs          AccountPool, AccountStore, Pooled, the Auth trait
+    limits.rs        LimitsStore: usage bars read without blocking
+    catalog.rs  transport.rs
     claude/          OAuth, transport, request, events, catalog
-  static/index.html  dashboard
+    codex/           OAuth, transport, request, events, catalog
+src/llm_local_proxy/ the Python reference; static/index.html is the dashboard
+tests/conformance/   recorded cases the Rust implementation replays
+tests/e2e/           both implementations against canned upstreams
 ```
 
 A dialect is one `Dialect` value with a mount prefix and a route table; a
-provider is `create(ProviderContext) -> Provider`. Registering either is one
-line in `dialects/__init__.py` or `providers/__init__.py`.
+provider is one implementation of `Provider`. Registering either is one line
+in `dialects/mod.rs` or `service.rs`.
+
+`json.rs` exists because the wire formats were pinned against Python: where
+its truthiness, `str()` or `json.dumps` reach the output (an id, an envelope a
+client carries between turns), the helpers there reproduce them byte for byte.
 
 ## Adding a provider
 
-1. Subclass `PooledProvider` (`providers/pool.py`) and implement
-   `new_account`, `fetch_catalog`, `account_status` and `no_account`. Slots,
-   logins, failover, catalog caching and status come with it.
-2. Render the upstream request from `ChatRequest`, reusing `tools.py`
+1. Implement `Backend` (`providers/pool.rs`): `new_account`, `fetch_catalog`,
+   `account_status`, `no_account` and `state_dirs`. Wrapping it in `Pooled`
+   brings slots, logins, failover, catalog caching and status.
+2. Render the upstream request from `ChatRequest`, reusing `tools.rs`
    (`render_function`, `responses_tool`, `flatten`, `arguments`) and rejecting
    anything the upstream cannot represent. Cache hints are the exception:
    honour the ones the upstream can express and ignore the rest.
-3. Write a `Decoder` from upstream events to `StreamEvent`s; wrap the stream in
-   `ledger.track_usage` and read it with `transport.read_events`.
-4. Expose `create(ProviderContext) -> Provider` via `PooledProvider.provider`
-   and add it to `REGISTRY` in `providers/__init__.py`.
+3. Write a `Decoder` from upstream events to `StreamEvent`s; read the stream
+   with `transport::read_events` and pass it through `ledger::track`.
+4. Implement `Provider` over the `Pooled` value and add it to `Service::new`.
 
-Every dialect then reaches the new provider without further changes; add its
-lanes to `tests/matrix/test_golden.py` and `tests/matrix/test_protocol_matrix.py`.
+Every dialect then reaches the new provider without further changes.
 
 ## Endpoints
 
@@ -109,7 +119,7 @@ returns 404 otherwise, so clients never trust an invented number.
 
 ## Accounts
 
-Each provider is a `PooledProvider`: an `AccountStore` of slot ids
+Each provider is a `Pooled` backend: an `AccountStore` of slot ids
 (`slots.json`), an `AccountPool` of live accounts, and a shared catalog cache.
 Routing sees one provider per subscription, so model ids carry no account
 suffix.
@@ -120,27 +130,41 @@ suffix.
   account that left. Without a session the starting account advances
   round-robin. A request that starts a conversation (no assistant turn)
   prefers accounts below `SOFT_LIMIT_PERCENT` of every whole-account window,
-  read from `providers/limits.py` without waiting; one that continues a
+  read from `providers/limits.rs` without waiting; one that continues a
   conversation keeps its account, as its history already has a cache there.
   The session is
-  `X-Session-Id`, else a header the dialect names (`Dialect.session_headers`,
+  `X-Session-Id`, else a header the dialect names (`Dialect::session_headers`,
   e.g. Claude Code's), else the request's `prompt_cache_key`.
-- **Failover.** Before the first upstream event, a 429 cools the account for
-  five minutes; a terminal authentication failure (rejected credentials or a
-  missing inference scope) marks it for reauthentication and cools it for one
-  minute. The untouched request then moves to the next account. Other errors
-  keep their status, and nothing switches accounts once output has started.
+- **Failover.** Before the first upstream event, a 429 rests the account for
+  as long as the upstream names (`Retry-After`, Claude's unified reset, the
+  reset of an exhausted Codex window), bounded to an hour, and for five
+  minutes when it names nothing; a Claude 429 that asks for extra usage is
+  about the model and rests nothing. A terminal authentication failure
+  (rejected credentials or a missing inference scope) marks the account for
+  reauthentication and rests it for one minute. The untouched request then
+  moves to the next account. Other errors keep their status, and nothing
+  switches accounts once output has started.
+- **Logins.** `providers/claude/auth.rs` and `providers/codex/auth.rs` each run
+  their vendor CLI's OAuth flow and refresh their own tokens, one refresh at a
+  time per account. A login is held parsed in memory (`atomic::JsonFile`) and
+  re-read when its file changes; a refreshed pair is kept even if the disk
+  refuses it, since the old refresh token is spent. Only a rejected grant
+  ends a login: a busy or unreachable token endpoint does not.
 - **Catalog.** Discovery uses the same pool without affinity and accepts the
-  first live catalog, so one stale login cannot hide a provider's models.
-- **Keys.** `security.identify()` names the caller: `master` for the configured
-  key, or a named key from `keys.KeyStore`. The name rides on
-  `ChatRequest.caller` into each provider's token ledger, which keeps windows
-  per caller (`TokenLedger.by_caller`, merged across accounts by
-  `PooledProvider.callers`). The admin listener serves everything, gating
-  `/api/*` except `/api/me` to the master key; the optional public listener
-  (`make_handler(..., public=True)`) serves only the model API, `/` and
-  `/api/me`, and refuses the master key, so trust comes from the socket rather
-  than from headers or peer addresses.
+  first live catalog, so one stale login cannot hide a provider's models. It
+  is cached for a minute; a failed discovery keeps the last catalog and is
+  retried after five seconds, and concurrent refreshes share one call.
+- **Keys.** `security::identify` names the caller: `master` for the configured
+  key, or a named key from `KeyStore`. The name rides on `ChatRequest.caller`
+  into each provider's token ledger, which keeps windows per caller
+  (`TokenLedger::by_caller`, merged across accounts by `Pooled::callers`). The
+  admin listener serves everything, gating `/api/*` except `/api/me` to the
+  master key; the optional public listener (`Listener { public: true }`)
+  serves only the model API, `/` and `/api/me`, and refuses the master key, so
+  trust comes from the socket rather than from headers or peer addresses.
+- **Ledger.** Token counts are recorded once per request, before its terminal
+  event, and written to disk a second later; a stream dropped first, including
+  by a client hanging up, is recorded as partial.
 - **Slots.** Added and removed live from the dashboard. Only one unsigned slot
   may exist, and a slot must be signed out before removal. Codex state lives
   in `codex_home/accounts/<slot>`, proxy state in `accounts/<provider>/<slot>`.
@@ -150,15 +174,34 @@ suffix.
 Wire claims are labelled by how they can be checked:
 
 - **[spec]**: the pinned Anthropic OpenAPI snapshot (see [specs.md](specs.md));
-  `tests/test_conformance.py` and `tests/claude/test_conformance.py` fail when a
-  refresh changes the contract.
+  the reference's `tests/test_conformance.py` and
+  `tests/claude/test_conformance.py` fail when a refresh changes the contract.
 - **[docs]**: published prose that no schema covers, chiefly SSE framing
   (`ping` and `error` events are defined only in the streaming docs).
 - **[empirical]**: observed against a subscription edge, with no specification.
 
 [spec] and [empirical] code never share a module. Everything reverse-engineered
-(subscription marker, beta headers, OAuth flow, transport probes) lives under
+(subscription marker, beta headers, OAuth flows, transport probes) lives under
 `providers/`; nothing in `dialects/` is empirical.
+
+## Conformance
+
+The Rust implementation is held to the Python one in two ways.
+
+- `scripts/record-conformance.py` runs the Python test suite with its pure
+  entry points wrapped and writes every distinct call to `tests/conformance/`:
+  request bodies with the IR they parse to and what both providers render,
+  and every decoder and encoder step with the ids it drew.
+  `rust/tests/conformance.rs` replays them, each layer alone (with the
+  recorded IR as the hand-off) and then end to end. Output must match as JSON
+  text, key order included.
+- `tests/e2e/compare.py` runs both servers against `fake_upstream.py` and
+  diffs client responses, upstream requests and files on disk. The reference
+  uses `fake_codex.py` as its `codex` binary; the Rust implementation reads
+  the same facts from the fake ChatGPT endpoints.
+
+A change in translation behaviour therefore starts in the reference: change it
+and its tests, record again, then make the Rust side agree.
 
 ## Anthropic Messages contract
 
@@ -227,10 +270,11 @@ Wire claims are labelled by how they can be checked:
   lines.
 - Usage parsing is specific to each upstream (Codex reports terminal totals,
   Claude cumulative snapshots); persistence and stream cleanup share
-  `ledger.track_usage`.
+  `ledger::UsageTracker`.
 - Decoders share a target type, not an implementation. Encoders share only
-  the decoder-driving loop in `dialects/base.Encoder`.
-- Registries are plain tuples; there is no plugin loader or code generation.
+  the decoder-driving methods of the `Encoder` trait.
+- The registries are a static array and a `Vec`; there is no plugin loader or
+  code generation.
 
 ## Known gaps
 
@@ -242,3 +286,5 @@ Wire claims are labelled by how they can be checked:
   fail explicitly.
 - There is no automated test against a live subscription; live checks are run
   manually.
+- The Codex device-code sign-in and token refresh are tested only against a
+  stand-in for ChatGPT's login service.

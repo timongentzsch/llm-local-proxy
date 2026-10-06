@@ -4,6 +4,8 @@ version = "0.4.0"
 edition = "2021"
 description = "A local OpenAI- and Anthropic-compatible gateway for Codex and Claude subscriptions"
 license = "MIT"
+repository = "https://github.com/timongentzsch/llm-local-proxy"
+readme = "../README.md"
 rust-version = "1.82"
 
 [[bin]]
