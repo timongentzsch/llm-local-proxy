@@ -1,6 +1,6 @@
 [package]
 name = "llm-local-proxy"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "A local OpenAI- and Anthropic-compatible gateway for Codex and Claude subscriptions"
 license = "MIT"
