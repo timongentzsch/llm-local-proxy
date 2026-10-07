@@ -33,6 +33,11 @@
   [hidden]{display:none!important}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shimmer{to{background-position:-200% 0}}
 </style>
 <header><h1>llm local proxy</h1><span><i class="spin"></i><i id="dot" class="dot"></i><span id="state" role="status">loading</span></span></header>
+<form id="unlock" class="panel" hidden>
+  <div class="section-head"><h2>api key required</h2></div>
+  <p class="login-hint muted">Paste an api key, or open a link that carries one, like the one printed at startup.</p>
+  <div class="keys-add"><input id="unlock-key" type="password" placeholder="api key" aria-label="api key" autocomplete="off"><button>open</button></div>
+</form>
 <main>
   <div id="providers" class="master"></div>
   <section class="panel user-only">
@@ -187,7 +192,7 @@ async function loadOnce(){
     if(error.status===401){
     // A key that no longer works, e.g. after the proxy regenerated one.
     // Drop it rather than retrying with it until the user clears storage.
-      clearInterval(timer);timer=null;forgetKey();showKey();q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#state").textContent="api key rejected · reopen the link printed at startup";
+      clearInterval(timer);timer=null;forgetKey();lock("api key rejected");
     }else{q("#dot").classList.remove("on");q("#state").textContent=`${error.message} · showing last data`;if(initial){q("#providers").textContent="unavailable";q("#clients").textContent="unavailable"}}
   });
   const models=refreshing?null:api("/v1/models").then(value=>showModels(value.data)).catch(()=>{if(initial){q("#models").textContent="unavailable";q("#command-model").hidden=true}});
@@ -195,12 +200,16 @@ async function loadOnce(){
   if(initial&&q("#commands").querySelector(".skeleton-command"))q("#commands").textContent="unavailable";
   document.body.classList.add("ready");
 }
-function showKey(){q("#key").textContent=key||(authRequired?"open the link printed at startup":"disabled");for(const id of["#copy","#forget"])q(id).style.display=key?"":"none"}
+function showKey(){q("#key").textContent=key||"disabled";for(const id of["#copy","#forget"])q(id).style.display=key?"":"none"}
 q("#copy").onclick=async()=>{try{await navigator.clipboard.writeText(key);q("#copy").textContent="copied";setTimeout(()=>q("#copy").textContent="copy",1500)}catch(e){alert(e.message)}};
 q("#forget").onclick=()=>{forgetKey();location.reload()};
 showKey();
+// Without a working key there is nothing to show, so ask for one. A pasted
+// key takes the same path as a link: into the fragment, which reloads.
+function lock(state){q("main").hidden=true;q("#unlock").hidden=false;q("#dot").classList.remove("on");q("#state").textContent=state;q("#unlock-key").focus()}
+q("#unlock").onsubmit=event=>{event.preventDefault();const value=q("#unlock-key").value.trim();if(value)location.hash=`key=${encodeURIComponent(value)}`};
 // A hidden tab stops polling (each poll reads upstream usage) and catches up
 // as soon as it is shown again.
-if(authRequired&&!key){q("#state").textContent="api key required";q("#providers").replaceChildren();q("#clients").textContent="unavailable";q("#commands").textContent="unavailable";q("#models").textContent="unavailable";q("#command-model").hidden=true;document.body.classList.add("ready")}else{load();timer=setInterval(()=>{if(!document.hidden)load()},60000);addEventListener("visibilitychange",()=>{if(!document.hidden&&timer)load()})}
+if(authRequired&&!key)lock("api key required");else{load();timer=setInterval(()=>{if(!document.hidden)load()},60000);addEventListener("visibilitychange",()=>{if(!document.hidden&&timer)load()})}
 </script>
 </html>
