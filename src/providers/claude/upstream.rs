@@ -26,9 +26,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 // Beta the subscription edge uses to recognize Claude Code traffic; requests
 // without it (and the system marker) are billed against the API pool and 429.
 const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
-// The subscription accepts the Claude Code client user agent.
-const USER_AGENT: &str = "claude-cli/2.1.251 (external, sdk-cli)";
-
 fn upstream(status: u16, message: impl Into<String>) -> Error {
     Error::provider(status, message)
 }
@@ -39,6 +36,8 @@ pub struct ClaudeUpstream {
     pub ledger: Arc<TokenLedger>,
     http: reqwest::Client,
     ids: SharedIds,
+    /// The subscription accepts the Claude Code client user agent.
+    user_agent: String,
 }
 
 impl ClaudeUpstream {
@@ -47,12 +46,14 @@ impl ClaudeUpstream {
         http: reqwest::Client,
         ledger: Arc<TokenLedger>,
         ids: SharedIds,
+        client_version: &str,
     ) -> Self {
         ClaudeUpstream {
             auth,
             ledger,
             http,
             ids,
+            user_agent: format!("claude-cli/{client_version} (external, sdk-cli)"),
         }
     }
 
@@ -170,7 +171,7 @@ impl ClaudeUpstream {
                 .header("Accept", "application/json")
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", OAUTH_BETA)
-                .header("User-Agent", USER_AGENT);
+                .header("User-Agent", &self.user_agent);
             if let Some(timeout) = timeout {
                 request = request.timeout(timeout);
             }
@@ -228,7 +229,7 @@ impl ClaudeUpstream {
                 .header("Accept", "application/json")
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", betas)
-                .header("User-Agent", USER_AGENT)
+                .header("User-Agent", &self.user_agent)
                 .header("x-app", "cli")
                 .header("x-client-request-id", ids::hex(self.ids.as_ref()))
                 .body(payload.clone())

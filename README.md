@@ -83,6 +83,7 @@ the `proxy-config` volume). Use `--config PATH` for another file and
 | `api_key` | generated | The master key. Empty turns authentication off. |
 | `request_timeout` | `600` | Seconds an upstream may stay silent. |
 | `codex_home` | `~/.codex` | Where Codex logins are kept. |
+| `claude_client_version` | `2.1.292` | Raise it if Claude asks for a newer Claude Code. |
 | `codex_client_version` | `0.160.0` | Raise it if a new GPT model is missing from the list. |
 | `public_host`, `public_port`, `public_url` | off | The listener for other machines; see below. |
 

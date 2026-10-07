@@ -35,6 +35,7 @@ const COUNTED_FIELDS: [&str; 7] = [
 
 pub struct ClaudeBackend {
     directory: PathBuf,
+    client_version: String,
     http: reqwest::Client,
     ids: SharedIds,
 }
@@ -55,6 +56,7 @@ impl Backend for ClaudeBackend {
             self.http.clone(),
             ledger.clone(),
             self.ids.clone(),
+            &self.client_version,
         ));
         let reader = upstream.clone();
         let limits = LimitsStore::new(
@@ -119,9 +121,15 @@ pub struct Claude {
 }
 
 impl Claude {
-    pub async fn new(directory: &Path, http: reqwest::Client, ids: SharedIds) -> Result<Self> {
+    pub async fn new(
+        directory: &Path,
+        client_version: &str,
+        http: reqwest::Client,
+        ids: SharedIds,
+    ) -> Result<Self> {
         let backend = ClaudeBackend {
             directory: directory.to_path_buf(),
+            client_version: client_version.to_string(),
             http,
             ids: ids.clone(),
         };

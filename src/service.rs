@@ -29,7 +29,13 @@ impl Service {
         let directory = config.directory().to_path_buf();
         let http = transport::client(Duration::from_secs(config.request_timeout));
         let ids = ids::random();
-        let claude = Claude::new(&directory, http.clone(), ids.clone()).await?;
+        let claude = Claude::new(
+            &directory,
+            &config.claude_client_version,
+            http.clone(),
+            ids.clone(),
+        )
+        .await?;
         let codex = Codex::new(
             &directory,
             &config.codex_home,
