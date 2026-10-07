@@ -364,6 +364,7 @@ class Handler(BaseHTTPRequestHandler):
             "content-type",
             "chatgpt-account-id",
             "originator",
+            "session-id",
         )
         entry = {
             "method": self.command,

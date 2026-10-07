@@ -7,6 +7,7 @@ use crate::json::{py_str, Object};
 use crate::ledger::{track, TokenLedger, UsageTracker};
 use crate::providers::transport::{endpoint, read_events, retry_after, seconds_until, unreachable};
 use crate::providers::EventStream;
+use reqwest::header::HeaderValue;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -91,10 +92,17 @@ impl Upstream {
         let payload = bytes::Bytes::from(
             serde_json::to_vec(body).map_err(|error| Error::provider(502, error.to_string()))?,
         );
+        // The backend reuses a cached prefix only for requests that name
+        // their session here, as Codex CLI does; the body's key alone never
+        // hits. A key that is not a header value goes without.
+        let session = body
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .and_then(|key| HeaderValue::from_str(key).ok());
         let mut refresh = false;
         loop {
             let (access, account) = self.auth.token(refresh).await?;
-            let response = self
+            let mut request = self
                 .http
                 .post(endpoint(RESPONSES_URL))
                 .header("Authorization", format!("Bearer {access}"))
@@ -103,7 +111,11 @@ impl Upstream {
                 .header("Accept", "text/event-stream")
                 .header("User-Agent", USER_AGENT)
                 .header("originator", "llm_local_proxy")
-                .body(payload.clone())
+                .body(payload.clone());
+            if let Some(session) = &session {
+                request = request.header("session-id", session);
+            }
+            let response = request
                 .send()
                 .await
                 .map_err(|error| Error::provider(502, unreachable(&error)))?;

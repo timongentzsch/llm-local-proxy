@@ -264,6 +264,8 @@ exists only for these tests.
    `prompt_cache_options` and `prompt_cache_retention` on every model
    [empirical] and caches by `prompt_cache_key`, which is the client's own key
    when it sent one (`ChatRequest.cache_key`), else the session, else derived.
+   The key is also sent as the `session-id` header: the backend reuses a
+   cached prefix only for requests that carry it [empirical].
 5. **Betas [empirical].** The Claude transport sends its subscription betas
    plus feature betas for web search and structured outputs as requested.
 

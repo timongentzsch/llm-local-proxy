@@ -261,12 +261,15 @@ pub fn merge(windows: impl IntoIterator<Item = Windows>) -> Windows {
 /// A terminal response can have incomplete output but authoritative usage.
 /// Partial means the stream ended before that final accounting arrived --
 /// including a client that hung up, which drops the stream and this with it.
+/// An upstream that reports usage only at its end has none to keep by then,
+/// so such a request is recorded as partial with no counts.
 pub struct UsageTracker<R: FnMut(&Value) -> Option<Usage>> {
     ledger: Arc<TokenLedger>,
     read: R,
     terminal_events: &'static [&'static str],
     caller: String,
     pending: Option<Usage>,
+    started: bool,
     terminal: bool,
 }
 
@@ -283,6 +286,7 @@ impl<R: FnMut(&Value) -> Option<Usage>> UsageTracker<R> {
             terminal_events,
             caller: caller.to_string(),
             pending: None,
+            started: false,
             terminal: false,
         }
     }
@@ -292,6 +296,7 @@ impl<R: FnMut(&Value) -> Option<Usage>> UsageTracker<R> {
         if self.terminal {
             return;
         }
+        self.started = true;
         if let Some(usage) = (self.read)(event) {
             self.pending = Some(usage);
         }
@@ -310,10 +315,9 @@ impl<R: FnMut(&Value) -> Option<Usage>> UsageTracker<R> {
 
 impl<R: FnMut(&Value) -> Option<Usage>> Drop for UsageTracker<R> {
     fn drop(&mut self) {
-        if !self.terminal {
-            if let Some(usage) = &self.pending {
-                self.ledger.record(usage, true, &self.caller);
-            }
+        if self.started && !self.terminal {
+            let usage = self.pending.take().unwrap_or_default();
+            self.ledger.record(&usage, true, &self.caller);
         }
     }
 }
@@ -379,6 +383,15 @@ mod tests {
         let windows = ledger.windows();
         assert_eq!(windows["5h"]["input"], 10);
         assert_eq!(windows["5h"]["partial_requests"], 1);
+        // Usage that only arrives with the terminal event leaves no counts.
+        {
+            let mut tracker = UsageTracker::new(ledger.clone(), read, &["done"], "");
+            tracker.observe(&json!({"type": "x"}));
+        }
+        drop(UsageTracker::new(ledger.clone(), read, &["done"], ""));
+        let windows = ledger.windows();
+        assert_eq!(windows["5h"]["input"], 10);
+        assert_eq!(windows["5h"]["partial_requests"], 2);
     }
 
     #[test]

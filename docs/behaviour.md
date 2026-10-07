@@ -22,7 +22,8 @@ and never a reason to refuse a request. Claude receives Anthropic
 when a request carries none (every OpenAI-format request), the proxy asks
 Claude to cache the prompt automatically. Codex caches prefixes implicitly and
 refuses explicit breakpoints, so they are dropped; `prompt_cache_key` reaches
-it verbatim. `prompt_cache_retention` and `prompt_cache_options` are accepted
+it verbatim, and again as the `session-id` header, without which its backend
+never reuses a prefix. `prompt_cache_retention` and `prompt_cache_options` are accepted
 and ignored.
 
 ## Codex CLI
@@ -110,6 +111,8 @@ window; a window with no activity yet, such as Codex's 5-hour one, appears once
 it opens. The proxy token counts cover proxy traffic only: they come from
 upstream usage and are recorded once per request over rolling 5-hour and
 7-day windows. A stream that ends before final accounting keeps its last
-reported counts and is marked as partial; missing counts are never estimated.
+reported counts and is marked as partial; missing counts are never estimated,
+so a Codex stream, which reports usage only at its end, is then marked with no
+counts.
 A stream that ends before its terminal event fails instead of looking
 complete.
