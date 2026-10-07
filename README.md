@@ -36,7 +36,8 @@ llm-local-proxy
 ## Get started
 
 1. Open the link printed at startup (`http://127.0.0.1:8787/#key=...`). The
-   part after `#key=` is your API key.
+   part after `#key=` is your API key; opened without it, the dashboard asks
+   for the key.
 2. On the dashboard, click **sign in** under Claude, Codex or both, and
    follow the prompt.
 3. Point a client at the proxy. The dashboard has ready-made commands for

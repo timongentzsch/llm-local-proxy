@@ -166,7 +166,8 @@ suffix.
   trust comes from the socket rather than from headers or peer addresses.
 - **Ledger.** Token counts are recorded once per request, before its terminal
   event, and written to disk a second later; a stream dropped first, including
-  by a client hanging up, is recorded as partial.
+  by a client hanging up, is recorded as partial, with no counts when the
+  upstream had reported none yet.
 - **Slots.** Added and removed live from the dashboard. Only one unsigned slot
   may exist, and a slot must be signed out before removal. Codex state lives
   in `codex_home/accounts/<slot>`, proxy state in `accounts/<provider>/<slot>`.
