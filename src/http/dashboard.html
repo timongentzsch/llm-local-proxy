@@ -76,7 +76,10 @@
     border-radius: var(--radius);
   }
   button { flex: none; cursor: pointer; white-space: nowrap; }
+  /* Secondary (default) buttons are outlined and fill on hover; primary ones start filled and invert. */
   button:hover, button:active { color: var(--bg); background-color: var(--fg); border-color: var(--fg); }
+  button.primary { color: var(--bg); background-color: var(--fg); border-color: var(--fg); }
+  button.primary:hover, button.primary:active { color: var(--fg); background-color: var(--bg); }
   select:hover { border-color: var(--fg); }
   button:disabled, select:disabled { opacity: .5; cursor: default; color: var(--fg); background-color: var(--bg); border-color: var(--border); }
   button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -215,7 +218,7 @@
 <form id="unlock" class="panel" hidden>
   <div class="section-head"><h2>api key required</h2></div>
   <p class="login-hint muted">Paste an api key, or open a link that carries one, like the one printed at startup.</p>
-  <div class="keys-add"><input id="unlock-key" type="password" placeholder="api key" aria-label="api key" autocomplete="off"><button>open</button></div>
+  <div class="keys-add"><input id="unlock-key" type="password" placeholder="api key" aria-label="api key" autocomplete="off"><button class="primary">open</button></div>
 </form>
 <main>
   <div id="providers" class="master"></div>
@@ -224,13 +227,13 @@
     <div id="usage" class="usage"></div>
   </section>
   <section class="panel master">
-    <div class="section-head"><h2>keys</h2><span class="keys-add"><input id="key-name" placeholder="new key name" aria-label="new key name" autocomplete="off"><button id="add-key">add key</button></span></div>
+    <div class="section-head"><h2>keys</h2><span class="keys-add"><input id="key-name" placeholder="new key name" aria-label="new key name" autocomplete="off"><button id="add-key" class="primary">add key</button></span></div>
     <div id="keys"></div>
   </section>
   <section class="panel">
     <div class="section-head"><h2>connection</h2></div>
     <div id="clients"></div>
-    <div class="row key-row"><span class="muted">api key</span><code id="key"></code><span class="button-group"><button id="copy">copy</button><button id="forget">forget</button></span></div>
+    <div class="row key-row"><span class="muted">api key</span><code id="key"></code><span class="button-group"><button id="copy" class="primary">copy</button><button id="forget">forget</button></span></div>
   </section>
   <section class="panel">
     <div class="section-head"><h2>launch a client</h2><span class="controls"><select id="command-key" class="master" aria-label="key"></select><select id="command-model" aria-label="model" disabled><option>loading models</option></select></span></div>
@@ -255,7 +258,7 @@
 <template id="skeleton-model"><div class="model skeleton-model" aria-hidden="true"><div class="model-main"><span class="skeleton-line" style="width:42%"></span><span class="skeleton-line" style="width:13ch"></span></div><div class="efforts"><span class="skeleton-line" style="width:7ch"></span><span class="skeleton-line" style="width:6ch"></span></div></div></template>
 <template id="provider-card">
   <section class="provider">
-    <div class="provider-head"><h2 class="title"></h2><div class="provider-controls"><div class="summary muted"></div><button class="add-account">add account</button></div></div>
+    <div class="provider-head"><h2 class="title"></h2><div class="provider-controls"><div class="summary muted"></div><button class="add-account primary">add account</button></div></div>
     <div class="accounts"></div>
   </section>
 </template>
@@ -266,7 +269,7 @@
       <span class="account-controls"><button class="signout" hidden>sign out</button><button class="remove" hidden>remove</button></span>
     </div>
     <div class="usage"></div>
-    <div class="actions"><span class="muted stamp"></span><button class="signin"></button></div>
+    <div class="actions"><span class="muted stamp"></span><button class="signin primary"></button></div>
     <div class="login" hidden>
       <div class="row"><span class="muted">sign in URL</span><span class="login-address"><code class="login-url"></code><button class="copy-login">copy</button></span></div>
       <p class="login-hint"></p>
