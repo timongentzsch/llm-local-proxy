@@ -1,5 +1,8 @@
 # LLM Local Proxy
 
+[![ci](https://github.com/timongentzsch/llm-local-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/timongentzsch/llm-local-proxy/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Use your Claude and ChatGPT (Codex) subscriptions from any tool that speaks the
 OpenAI or Anthropic API. The proxy runs on your machine, signs in with your
 own accounts, and translates between the formats; your tools keep working as
@@ -13,7 +16,8 @@ they are.
   structured output and prompt caching are translated, not dropped.
 - **Several accounts.** Add more than one login per subscription; the proxy
   spreads conversations across them and steps around rate limits.
-- **Small.** One static binary, a 6 MB container image, about 3 MB of memory.
+- **Small.** One binary of about 4.5 MB, a 5 MB container image, under 4 MB of
+  memory when idle.
 
 ## Install
 
@@ -138,6 +142,35 @@ python3 tests/e2e/codex_login.py target/release/llm-local-proxy
 `cargo test` replays recorded cases that pin the wire behaviour; the `e2e`
 scripts run the binary against stand-ins for both upstreams.
 [docs/architecture.md](docs/architecture.md) explains the design.
+
+## How it's built
+
+Rust on `tokio`, `hyper` and `reqwest` (rustls, no OpenSSL), about 14,000
+lines and 15 direct dependencies. Each wire format is parsed once into an
+intermediate representation and rendered once per upstream, so three client
+formats and two subscriptions cost five adapters, not six.
+
+```
+request   dialects/<d>_ingress ─► ChatRequest ─► providers/<p>/request ─► account pool ─► upstream
+response  providers/<p>/events ─► StreamEvent ─► dialects/<d>_egress   ─► client
+```
+
+`dialects/` speaks to clients, `providers/` to Claude and Codex, `http/` owns
+the listeners and loopback security. [docs/architecture.md](docs/architecture.md)
+has the module layout and how to add a provider.
+
+## Engineering
+
+- 54 unit tests, a conformance replay of 746 recorded cases that pin the wire
+  behaviour (`cargo test` runs both in under a second), and end-to-end scripts
+  that drive the release binary against stand-ins for both upstreams.
+- CI runs `cargo fmt`, `clippy -D warnings`, the tests and `cargo audit` on a
+  pinned toolchain, and weekly on the latest stable.
+- API keys are compared in constant time, and a browser request from another
+  origin or to an unknown host name is refused.
+- Listens on loopback by default; the config file must be private (`0600`) or
+  the proxy will not start, and credentials are written atomically with mode
+  `0600`. See [SECURITY.md](SECURITY.md).
 
 ## Disclaimer
 
