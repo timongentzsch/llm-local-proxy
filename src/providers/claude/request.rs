@@ -5,7 +5,9 @@ use super::subscription::CLAUDE_CODE_SYSTEM_MARKER;
 use super::thinking::{unpack, Outcome, Unpacked};
 use crate::error::{Error, Result};
 use crate::ids::{self, Ids};
-use crate::ir::{Block, ChatRequest, ChoiceKind, Role, Source, Text, Tool, ToolChoice, Turn};
+use crate::ir::{
+    Block, ChatRequest, ChoiceKind, Role, Source, Text, Tool, ToolChoice, ToolUse, Turn,
+};
 use crate::json::{get, integer, py_str, truthy, Object};
 use crate::obj;
 use crate::reasoning::ReasoningCache;
@@ -326,19 +328,7 @@ fn blocks(
                 }
                 out.push(merged(entry, cached(result.cache.as_deref())));
             }
-            Block::ToolUse(call) => {
-                let id = if call.id.is_empty() {
-                    format!("toolu_{}", ids::hex24(ids))
-                } else {
-                    call.id.clone()
-                };
-                let name = qualified_name(&call.namespace, &call.name);
-                let input = arguments(&call.arguments, Error::request)?;
-                out.push(merged(
-                    obj! { "type": "tool_use", "id": id, "name": name, "input": input },
-                    cached(call.cache.as_deref()),
-                ));
-            }
+            Block::ToolUse(call) => out.push(tool_use_block(call, ids)?),
             Block::NativeAnthropicBlock(item) => out.push(item.clone()),
             Block::HostedSearch { item, source } => {
                 if *source == Source::Anthropic {
@@ -353,32 +343,44 @@ fn blocks(
             }
         }
     }
-    let uses: Vec<&str> = turn
+    let replay = cached_replay(turn, cache);
+    settle(out, ordinals, lost, has_native_thinking, replay)
+}
+
+/// The thinking blocks the cache holds for the tool calls of `turn`.
+fn cached_replay(turn: &Turn, cache: Option<&ReasoningCache>) -> Vec<Object> {
+    let Some(cache) = cache else {
+        return Vec::new();
+    };
+    let uses: Vec<String> = turn
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::ToolUse(call) => Some(call.id.as_str()),
+            Block::ToolUse(call) if !call.id.is_empty() => Some(call.id.clone()),
             _ => None,
         })
         .collect();
-    let replay: Vec<Object> = match cache {
-        Some(cache) if !uses.is_empty() => {
-            let ids: Vec<String> = uses
-                .iter()
-                .filter(|id| !id.is_empty())
-                .map(|id| id.to_string())
-                .collect();
-            cache
-                .get(&ids)
-                .into_iter()
-                .filter_map(|value| match value {
-                    Value::Object(map) => Some(map),
-                    _ => None,
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    };
+    if uses.is_empty() {
+        return Vec::new();
+    }
+    cache
+        .get(&uses)
+        .into_iter()
+        .filter_map(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Decide, from what the turn carried, which signed blocks go upstream.
+fn settle(
+    mut out: Vec<Object>,
+    ordinals: Vec<i64>,
+    lost: usize,
+    has_native_thinking: bool,
+    replay: Vec<Object>,
+) -> Result<Vec<Object>> {
     if has_native_thinking {
         // Anthropic clients return native thinking blocks themselves. The
         // cache exists for dialects such as Chat Completions that cannot carry
@@ -414,6 +416,20 @@ fn blocks(
     let mut combined = replay;
     combined.extend(out);
     Ok(combined)
+}
+
+fn tool_use_block(call: &ToolUse, ids: &dyn Ids) -> Result<Object> {
+    let id = if call.id.is_empty() {
+        format!("toolu_{}", ids::hex24(ids))
+    } else {
+        call.id.clone()
+    };
+    let name = qualified_name(&call.namespace, &call.name);
+    let input = arguments(&call.arguments, Error::request)?;
+    Ok(merged(
+        obj! { "type": "tool_use", "id": id, "name": name, "input": input },
+        cached(call.cache.as_deref()),
+    ))
 }
 
 fn tool_choice(choice: Option<&ToolChoice>) -> Result<Object> {
