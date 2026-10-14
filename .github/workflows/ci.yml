@@ -3,14 +3,20 @@ name: ci
 permissions:
   contents: read
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install stable --profile minimal -c clippy -c rustfmt
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - name: unit tests and the conformance replay
@@ -20,3 +26,25 @@ jobs:
         run: |
           python3 tests/e2e/run.py target/release/llm-local-proxy
           python3 tests/e2e/codex_login.py target/release/llm-local-proxy
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  latest-stable:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable # overrides rust-toolchain.toml
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
