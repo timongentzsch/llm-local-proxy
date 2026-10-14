@@ -16,6 +16,7 @@ use crate::providers::pool::Auth;
 use crate::providers::transport::{endpoint, form, unreachable};
 use crate::providers::BoxFuture;
 use crate::status::{window_name, AccountStatus, Limit};
+use crate::sync::LockExt;
 use base64::Engine;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -343,7 +344,7 @@ impl CodexAuth {
                     eprintln!("codex: device login did not complete: {error}");
                 }
             });
-            if let Some(previous) = self.polling.lock().unwrap().replace(task.abort_handle()) {
+            if let Some(previous) = self.polling.locked().replace(task.abort_handle()) {
                 previous.abort();
             }
         }
@@ -426,7 +427,7 @@ impl CodexAuth {
     }
 
     async fn sign_out(&self) {
-        if let Some(polling) = self.polling.lock().unwrap().take() {
+        if let Some(polling) = self.polling.locked().take() {
             polling.abort();
         }
         let _guard = self.refreshing.lock().await;

@@ -56,7 +56,7 @@ recorded case drew.
 src/
   ir.rs  tools.rs  json.rs  error.rs  ids.rs  reasoning.rs
   service.rs         provider registry, merged catalog, status
-  config.rs  atomic.rs  ledger.rs  status.rs  keys.rs
+  config.rs  atomic.rs  ledger.rs  status.rs  keys.rs  sync.rs
   http/              listeners, request routing, SSE framing, loopback security,
                      dashboard.html
   dialects/

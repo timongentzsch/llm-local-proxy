@@ -4,6 +4,7 @@
 //! directly. Chat Completions cannot, so providers retain those blocks by
 //! tool-call id.
 
+use crate::sync::LockExt;
 use indexmap::IndexMap;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,7 @@ impl ReasoningCache {
 
     /// The items kept for the first of `call_ids` the cache knows.
     pub fn get(&self, call_ids: &[String]) -> Vec<Value> {
-        let mut items = self.items.lock().unwrap();
+        let mut items = self.items.locked();
         for call_id in call_ids {
             if let Some(found) = items.shift_remove(call_id) {
                 items.insert(call_id.clone(), found.clone());
@@ -44,7 +45,7 @@ impl ReasoningCache {
             return;
         }
         let values = Arc::new(values);
-        let mut items = self.items.lock().unwrap();
+        let mut items = self.items.locked();
         for call_id in call_ids {
             items.shift_remove(call_id);
             items.insert(call_id.clone(), values.clone());

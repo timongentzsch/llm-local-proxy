@@ -5,7 +5,9 @@ use super::subscription::CLAUDE_CODE_SYSTEM_MARKER;
 use super::thinking::{unpack, Outcome, Unpacked};
 use crate::error::{Error, Result};
 use crate::ids::{self, Ids};
-use crate::ir::{Block, ChatRequest, ChoiceKind, Role, Source, Text, Tool, ToolChoice, Turn};
+use crate::ir::{
+    Block, ChatRequest, ChoiceKind, Role, Source, Text, Tool, ToolChoice, ToolUse, Turn,
+};
 use crate::json::{get, integer, py_str, truthy, Object};
 use crate::obj;
 use crate::reasoning::ReasoningCache;
@@ -326,19 +328,7 @@ fn blocks(
                 }
                 out.push(merged(entry, cached(result.cache.as_deref())));
             }
-            Block::ToolUse(call) => {
-                let id = if call.id.is_empty() {
-                    format!("toolu_{}", ids::hex24(ids))
-                } else {
-                    call.id.clone()
-                };
-                let name = qualified_name(&call.namespace, &call.name);
-                let input = arguments(&call.arguments, Error::request)?;
-                out.push(merged(
-                    obj! { "type": "tool_use", "id": id, "name": name, "input": input },
-                    cached(call.cache.as_deref()),
-                ));
-            }
+            Block::ToolUse(call) => out.push(tool_use_block(call, ids)?),
             Block::NativeAnthropicBlock(item) => out.push(item.clone()),
             Block::HostedSearch { item, source } => {
                 if *source == Source::Anthropic {
@@ -353,32 +343,44 @@ fn blocks(
             }
         }
     }
-    let uses: Vec<&str> = turn
+    let replay = cached_replay(turn, cache);
+    settle(out, ordinals, lost, has_native_thinking, replay)
+}
+
+/// The thinking blocks the cache holds for the tool calls of `turn`.
+fn cached_replay(turn: &Turn, cache: Option<&ReasoningCache>) -> Vec<Object> {
+    let Some(cache) = cache else {
+        return Vec::new();
+    };
+    let uses: Vec<String> = turn
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::ToolUse(call) => Some(call.id.as_str()),
+            Block::ToolUse(call) if !call.id.is_empty() => Some(call.id.clone()),
             _ => None,
         })
         .collect();
-    let replay: Vec<Object> = match cache {
-        Some(cache) if !uses.is_empty() => {
-            let ids: Vec<String> = uses
-                .iter()
-                .filter(|id| !id.is_empty())
-                .map(|id| id.to_string())
-                .collect();
-            cache
-                .get(&ids)
-                .into_iter()
-                .filter_map(|value| match value {
-                    Value::Object(map) => Some(map),
-                    _ => None,
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    };
+    if uses.is_empty() {
+        return Vec::new();
+    }
+    cache
+        .get(&uses)
+        .into_iter()
+        .filter_map(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Decide, from what the turn carried, which signed blocks go upstream.
+fn settle(
+    mut out: Vec<Object>,
+    ordinals: Vec<i64>,
+    lost: usize,
+    has_native_thinking: bool,
+    replay: Vec<Object>,
+) -> Result<Vec<Object>> {
     if has_native_thinking {
         // Anthropic clients return native thinking blocks themselves. The
         // cache exists for dialects such as Chat Completions that cannot carry
@@ -416,6 +418,20 @@ fn blocks(
     Ok(combined)
 }
 
+fn tool_use_block(call: &ToolUse, ids: &dyn Ids) -> Result<Object> {
+    let id = if call.id.is_empty() {
+        format!("toolu_{}", ids::hex24(ids))
+    } else {
+        call.id.clone()
+    };
+    let name = qualified_name(&call.namespace, &call.name);
+    let input = arguments(&call.arguments, Error::request)?;
+    Ok(merged(
+        obj! { "type": "tool_use", "id": id, "name": name, "input": input },
+        cached(call.cache.as_deref()),
+    ))
+}
+
 fn tool_choice(choice: Option<&ToolChoice>) -> Result<Object> {
     match choice {
         None => Ok(obj! { "type": "auto" }),
@@ -448,15 +464,8 @@ fn float(value: &Value) -> Value {
         .map_or(Value::Null, Value::Number)
 }
 
-/// The upstream body and the beta features it needs.
-pub fn build(
-    request: &ChatRequest,
-    model: &str,
-    options: Options<'_>,
-    ids: &dyn Ids,
-) -> Result<(Object, Vec<String>)> {
-    check(request)?;
-
+/// The conversation as Messages turns.
+fn messages(request: &ChatRequest, options: &Options<'_>, ids: &dyn Ids) -> Result<Vec<Value>> {
     let mut messages = Vec::new();
     let mut dropped: Vec<Outcome> = Vec::new();
     for turn in &request.turns {
@@ -479,7 +488,11 @@ pub fn build(
         return Err(Error::request("first message must be a user message"));
     }
 
-    let max_tokens = match &request.max_tokens {
+    Ok(messages)
+}
+
+fn max_tokens(request: &ChatRequest, options: &Options<'_>) -> Result<i64> {
+    let asked = match &request.max_tokens {
         Value::Null => match options.max_output {
             Some(max) if max > 0 => json!(max),
             _ => {
@@ -490,13 +503,15 @@ pub fn build(
         },
         other => other.clone(),
     };
-    let max_tokens = match integer(&max_tokens) {
-        Some(count) if count >= 0 => count,
-        _ => return Err(Error::request("max_tokens must not be negative")),
-    };
+    match integer(&asked) {
+        Some(count) if count >= 0 => Ok(count),
+        _ => Err(Error::request("max_tokens must not be negative")),
+    }
+}
 
-    // Must be first to bill against the subscription pool; real clients
-    // already send it.
+/// The system prompt, led by the marker that bills against the subscription
+/// pool; real clients already send it.
+fn system_blocks(request: &ChatRequest) -> Vec<Value> {
     let kept: Vec<&Text> = request
         .system
         .iter()
@@ -515,28 +530,11 @@ pub fn build(
             .filter(|block| !is_marker(block))
             .map(|block| Value::Object(text_block(block))),
     );
-    let mut body = obj! {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": messages,
-        "stream": true,
-        "system": system,
-    };
-    if let Some(temperature) = param(request, "temperature") {
-        body.insert("temperature".into(), float(temperature));
-    }
-    if let Some(top_p) = param(request, "top_p") {
-        body.insert("top_p".into(), float(top_p));
-    }
-    if let Some(top_k) = param(request, "top_k") {
-        body.insert("top_k".into(), top_k.clone());
-    }
-    let sequences = stop_sequences(request.params.get("stop"));
-    if !sequences.is_empty() {
-        body.insert("stop_sequences".into(), Value::Array(sequences));
-    }
+    system
+}
 
-    let mut betas: Vec<String> = Vec::new();
+/// The rendered tools; the beta features they need are added to `betas`.
+fn tools(request: &ChatRequest, betas: &mut Vec<String>) -> Result<Vec<Value>> {
     let mut tools = Vec::new();
     for tool in flatten(&request.tools)?.0 {
         match &tool {
@@ -565,45 +563,17 @@ pub fn build(
             }
         }
     }
-    let choice = request.tool_choice.as_ref();
-    if !tools.is_empty() && choice.map(|c| c.kind) != Some(ChoiceKind::None) {
-        body.insert("tools".into(), Value::Array(tools));
-        let mut selection = tool_choice(choice)?;
-        if let Some(parallel) = request.parallel_tool_calls {
-            selection.insert("disable_parallel_tool_use".into(), json!(!parallel));
-        }
-        body.insert("tool_choice".into(), Value::Object(selection));
-    }
-    // The client's own automatic breakpoint; otherwise ours, unless the client
-    // placed breakpoints itself: the upstream accepts at most four.
-    if request.cache.is_some() || !has_breakpoint(&body) {
-        body.extend(cached(Some(request.cache.as_deref().unwrap_or(""))));
-    }
+    Ok(tools)
+}
 
-    if let Some(format) = &request.output_format {
-        if format.kind != "json_schema" {
-            // Messages constrains output with a schema or not at all; a bare
-            // "must be JSON" mode would have to be faked in the prompt.
-            return Err(Error::request(
-                "Claude upstream can constrain output only with a JSON schema; \
-                 json_object has no Messages equivalent",
-            ));
-        }
-        let schema = format.schema.clone().map_or(Value::Null, Value::Object);
-        body.insert(
-            "output_config".into(),
-            json!({"format": {"type": "json_schema", "schema": schema}}),
-        );
-        betas.push(STRUCTURED_OUTPUTS_BETA.into());
-    }
-
-    // Anthropic's zero-token prewarm generates nothing. The transport switches
-    // just this request to non-streaming and synthesizes the ordinary event
-    // lifecycle, so generation-only controls have no work to do here.
-    if max_tokens == 0 {
-        return Ok((body, betas));
-    }
-
+/// Reasoning effort and the thinking mode, which only apply to a request that
+/// generates something.
+fn reasoning(
+    body: &mut Object,
+    request: &ChatRequest,
+    options: &Options<'_>,
+    max_tokens: i64,
+) -> Result<()> {
     let mut effort: Option<String> = None;
     // A model that declares no effort tiers (reasoning_efforts == []) cannot
     // express one, so the effort stays a preference, like a cache hint; do not
@@ -643,7 +613,7 @@ pub fn build(
         "summarized"
     };
     if request.thinking_mode == "disabled" {
-        return Ok((body, betas));
+        return Ok(());
     }
     if request.thinking_mode == "adaptive" {
         // The client asked the model to size its own reasoning.
@@ -651,7 +621,7 @@ pub fn build(
             "thinking".into(),
             json!({"type": "adaptive", "display": display}),
         );
-        return Ok((body, betas));
+        return Ok(());
     }
     if let Some(budget) = request.thinking_budget {
         let budget = budget.min(max_tokens - 1);
@@ -680,5 +650,81 @@ pub fn build(
             json!({"type": "adaptive", "display": display}),
         );
     }
+    Ok(())
+}
+
+/// The upstream body and the beta features it needs.
+pub fn build(
+    request: &ChatRequest,
+    model: &str,
+    options: Options<'_>,
+    ids: &dyn Ids,
+) -> Result<(Object, Vec<String>)> {
+    check(request)?;
+
+    let messages = messages(request, &options, ids)?;
+    let max_tokens = max_tokens(request, &options)?;
+    let mut body = obj! {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+        "stream": true,
+        "system": system_blocks(request),
+    };
+    if let Some(temperature) = param(request, "temperature") {
+        body.insert("temperature".into(), float(temperature));
+    }
+    if let Some(top_p) = param(request, "top_p") {
+        body.insert("top_p".into(), float(top_p));
+    }
+    if let Some(top_k) = param(request, "top_k") {
+        body.insert("top_k".into(), top_k.clone());
+    }
+    let sequences = stop_sequences(request.params.get("stop"));
+    if !sequences.is_empty() {
+        body.insert("stop_sequences".into(), Value::Array(sequences));
+    }
+
+    let mut betas: Vec<String> = Vec::new();
+    let tools = tools(request, &mut betas)?;
+    let choice = request.tool_choice.as_ref();
+    if !tools.is_empty() && choice.map(|c| c.kind) != Some(ChoiceKind::None) {
+        body.insert("tools".into(), Value::Array(tools));
+        let mut selection = tool_choice(choice)?;
+        if let Some(parallel) = request.parallel_tool_calls {
+            selection.insert("disable_parallel_tool_use".into(), json!(!parallel));
+        }
+        body.insert("tool_choice".into(), Value::Object(selection));
+    }
+    // The client's own automatic breakpoint; otherwise ours, unless the client
+    // placed breakpoints itself: the upstream accepts at most four.
+    if request.cache.is_some() || !has_breakpoint(&body) {
+        body.extend(cached(Some(request.cache.as_deref().unwrap_or(""))));
+    }
+
+    if let Some(format) = &request.output_format {
+        if format.kind != "json_schema" {
+            // Messages constrains output with a schema or not at all; a bare
+            // "must be JSON" mode would have to be faked in the prompt.
+            return Err(Error::request(
+                "Claude upstream can constrain output only with a JSON schema; \
+                 json_object has no Messages equivalent",
+            ));
+        }
+        let schema = format.schema.clone().map_or(Value::Null, Value::Object);
+        body.insert(
+            "output_config".into(),
+            json!({"format": {"type": "json_schema", "schema": schema}}),
+        );
+        betas.push(STRUCTURED_OUTPUTS_BETA.into());
+    }
+
+    // Anthropic's zero-token prewarm generates nothing. The transport switches
+    // just this request to non-streaming and synthesizes the ordinary event
+    // lifecycle, so generation-only controls have no work to do here.
+    if max_tokens == 0 {
+        return Ok((body, betas));
+    }
+    reasoning(&mut body, request, &options, max_tokens)?;
     Ok((body, betas))
 }

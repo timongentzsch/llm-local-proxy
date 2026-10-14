@@ -8,6 +8,7 @@ use crate::providers::limits::{fullest, wall_clock, LimitsStore};
 use crate::providers::{BoxFuture, EventStream};
 use crate::reasoning::ReasoningCache;
 use crate::status::{AccountStatus, ProviderStatus};
+use crate::sync::LockExt;
 use futures_util::stream::{self, StreamExt};
 use indexmap::IndexMap;
 use serde_json::{json, Value};
@@ -110,11 +111,11 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
     }
 
     pub fn accounts(&self) -> Vec<Arc<Account<C>>> {
-        self.state.lock().unwrap().accounts.clone()
+        self.state.locked().accounts.clone()
     }
 
     pub fn add(&self, account: Arc<Account<C>>) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if state.accounts.iter().any(|item| item.id == account.id) {
             return Err(Error::request(format!(
                 "account already exists: {}",
@@ -126,7 +127,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
     }
 
     pub fn remove(&self, account_id: &str) -> Result<Arc<Account<C>>> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         let index = state
             .accounts
             .iter()
@@ -183,7 +184,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
             }
         }
         let session = session.filter(|session| !session.is_empty());
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         let now = wall_clock();
         let ready: Vec<_> = available
             .iter()
@@ -239,7 +240,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
         let Some(session) = session.filter(|session| !session.is_empty()) else {
             return;
         };
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         state.sessions.shift_remove(session);
         state
             .sessions
@@ -258,7 +259,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
         if seconds == 0 {
             return;
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         state
             .cooldown
             .insert(account_id.to_string(), wall_clock() + seconds as f64);
@@ -266,7 +267,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
 
     /// Latest terminal authentication failure observed for one account.
     pub fn account_error(&self, account_id: &str) -> String {
-        let state = self.state.lock().unwrap();
+        let state = self.state.locked();
         state
             .account_errors
             .get(account_id)
@@ -275,7 +276,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
     }
 
     pub fn clear_account_error(&self, account_id: &str) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         state.account_errors.remove(account_id);
         state.cooldown.remove(account_id);
     }
@@ -285,7 +286,7 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
             "" => "authentication failed",
             message => message,
         };
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         state
             .account_errors
             .insert(account_id.to_string(), message.to_string());
@@ -412,12 +413,12 @@ impl AccountStore {
     }
 
     pub fn ids(&self) -> Result<Vec<String>> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.locked();
         self.read()
     }
 
     pub fn add(&self) -> Result<String> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.locked();
         let mut ids = self.read()?;
         let used: HashSet<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect();
         let free = (1..).find(|value| !used.contains(value)).unwrap_or(1);
@@ -427,7 +428,7 @@ impl AccountStore {
     }
 
     pub fn remove(&self, account_id: &str) -> Result<()> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.locked();
         let mut ids = self.read()?;
         if !ids.iter().any(|id| id == account_id) {
             return Err(Error::request(format!("unknown account: {account_id}")));
@@ -657,12 +658,12 @@ impl<B: Backend> Pooled<B> {
 
     /// Drop the cached catalog, e.g. after a login changes what is visible.
     pub fn forget(&self) {
-        *self.catalog.lock().unwrap() = Catalog::default();
+        *self.catalog.locked() = Catalog::default();
     }
 
     fn fresh_catalog(&self) -> Option<Arc<Vec<Value>>> {
         let now = wall_clock();
-        let catalog = self.catalog.lock().unwrap();
+        let catalog = self.catalog.locked();
         match &catalog.fetched {
             Some((at, items)) if now - at < CATALOG_TTL_SECONDS => Some(items.clone()),
             Some((_, items)) if now < catalog.retry_at => Some(items.clone()),
@@ -689,7 +690,7 @@ impl<B: Backend> Pooled<B> {
                 self.failover(true),
             )
             .await;
-        let mut catalog = self.catalog.lock().unwrap();
+        let mut catalog = self.catalog.locked();
         match fetched {
             Ok(items) => {
                 let items = Arc::new(items);

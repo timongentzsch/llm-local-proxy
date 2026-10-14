@@ -1,5 +1,6 @@
 //! Atomic private-file writes shared by config and auth persistence.
 
+use crate::sync::LockExt;
 use serde_json::{Map, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -108,7 +109,7 @@ impl JsonFile {
 
     /// The object in the file; None when it is missing or not an object.
     pub fn read(&self) -> Option<Arc<Map<String, Value>>> {
-        let mut cached = self.cached.lock().unwrap();
+        let mut cached = self.cached.locked();
         if cached.unsaved {
             return cached.value.clone();
         }
@@ -134,7 +135,7 @@ impl JsonFile {
 
     /// Replace the object. It is kept in memory even if the disk refuses it.
     pub fn write(&self, value: Map<String, Value>) -> io::Result<()> {
-        let mut cached = self.cached.lock().unwrap();
+        let mut cached = self.cached.locked();
         let outcome = write_json(&self.path, &Value::Object(value.clone()));
         *cached = Cached {
             loaded: true,
@@ -146,7 +147,7 @@ impl JsonFile {
     }
 
     pub fn remove(&self) {
-        let mut cached = self.cached.lock().unwrap();
+        let mut cached = self.cached.locked();
         let _ = fs::remove_file(&self.path);
         *cached = Cached {
             loaded: true,

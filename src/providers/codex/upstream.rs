@@ -7,6 +7,7 @@ use crate::json::{py_str, Object};
 use crate::ledger::{track, TokenLedger, UsageTracker};
 use crate::providers::transport::{endpoint, read_events, retry_after, seconds_until, unreachable};
 use crate::providers::EventStream;
+use crate::sync::LockExt;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -64,7 +65,7 @@ impl Upstream {
 
     /// Discover the transport enum without running a generation.
     pub async fn reasoning_efforts(&self, model: &str) -> Result<Efforts> {
-        if let Some((at, probed, efforts)) = self.probed.lock().unwrap().as_ref() {
+        if let Some((at, probed, efforts)) = self.probed.locked().as_ref() {
             if probed == model && at.elapsed() < EFFORT_PROBE_TTL {
                 return Ok(efforts.clone());
             }
@@ -83,7 +84,7 @@ impl Upstream {
             // Nothing learned: ask again on the next discovery.
             Err(_) => return Ok(None),
         };
-        *self.probed.lock().unwrap() = Some((Instant::now(), model.to_string(), efforts.clone()));
+        *self.probed.locked() = Some((Instant::now(), model.to_string(), efforts.clone()));
         Ok(efforts)
     }
 

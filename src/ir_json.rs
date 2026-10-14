@@ -3,7 +3,8 @@
 //! Only the conformance replay reads and writes this: it lets each layer --
 //! ingress, request builders, decoders, encoders -- be checked on its own,
 //! with the IR as the recorded hand-off between them. Nothing on the request
-//! path depends on it.
+//! path depends on it. A recorded case naming a type this does not know
+//! panics, which fails the replay; no client input reaches it.
 
 use crate::ir::*;
 use crate::json::Object;

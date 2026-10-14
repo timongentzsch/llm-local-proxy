@@ -15,6 +15,7 @@ use crate::atomic;
 use crate::ir::Usage;
 use crate::keys::MASTER;
 use crate::providers::EventStream;
+use crate::sync::LockExt;
 use futures_util::StreamExt;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
@@ -130,7 +131,7 @@ impl TokenLedger {
         };
         let cutoff = now() - MAX_AGE;
         {
-            let mut records = self.records.lock().unwrap();
+            let mut records = self.records.locked();
             records.push(record);
             records.retain(|record| record.ts > cutoff);
         }
@@ -159,13 +160,7 @@ impl TokenLedger {
     pub fn flush(&self) {
         let Some(path) = &self.path else { return };
         self.flush_pending.store(false, Ordering::SeqCst);
-        let records: Vec<Value> = self
-            .records
-            .lock()
-            .unwrap()
-            .iter()
-            .map(Record::to_json)
-            .collect();
+        let records: Vec<Value> = self.records.locked().iter().map(Record::to_json).collect();
         if let Err(error) = atomic::write_json(path, &Value::Array(records)) {
             eprintln!("ledger: {}: {error}", path.display());
         }
@@ -173,7 +168,7 @@ impl TokenLedger {
 
     /// Summed tokens per window (`{"5h": {...}, "7d": {...}}`).
     pub fn windows(&self) -> Windows {
-        let records = self.records.lock().unwrap();
+        let records = self.records.locked();
         self.sum(records.iter())
     }
 
@@ -181,7 +176,7 @@ impl TokenLedger {
     ///
     /// Records from before keys had names were all made with the master key.
     pub fn by_caller(&self) -> IndexMap<String, Windows> {
-        let records = self.records.lock().unwrap();
+        let records = self.records.locked();
         let mut groups: IndexMap<&str, Vec<&Record>> = IndexMap::new();
         for record in records.iter() {
             let caller = if record.caller.is_empty() {
