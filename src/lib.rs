@@ -17,6 +17,7 @@ pub mod error;
 pub mod http;
 pub mod ids;
 pub mod ir;
+#[doc(hidden)]
 pub mod ir_json;
 pub mod json;
 pub mod keys;
