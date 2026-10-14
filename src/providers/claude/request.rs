@@ -98,7 +98,7 @@ fn check(request: &ChatRequest) -> Result<()> {
         number(top_p, "top_p", 0.0, 1.0, false)?;
     }
     if let Some(top_k) = param(request, "top_k") {
-        if !integer(top_k).is_some_and(|k| k > 0) {
+        if integer(top_k).is_none_or(|k| k <= 0) {
             return Err(Error::request("top_k must be a positive integer"));
         }
     }

@@ -147,7 +147,7 @@ pub fn load(path: Option<&Path>) -> Result<Config, String> {
 
     let host = string(&data, "host", "127.0.0.1");
     let api_key = string(&data, "api_key", "");
-    if !is_loopback(&host) && !(container_mode() && matches!(host.as_str(), "0.0.0.0" | "::")) {
+    if !(is_loopback(&host) || container_mode() && matches!(host.as_str(), "0.0.0.0" | "::")) {
         return Err("host must be a loopback address".into());
     }
     let port_number = port(integer(&data, "port", 8787)?, "port")?;
