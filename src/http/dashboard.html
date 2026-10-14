@@ -129,6 +129,8 @@
   .account-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .account-meta { display: block; margin: 1px 0 0 15px; font-size: var(--text-sm); color: var(--muted); }
   .actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-3); }
+  .reset { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .stamp { font-size: var(--text-sm); }
   .usage:empty { display: none; }
   .limit { margin: var(--space-2) 0; font-size: var(--text-sm); }
@@ -297,10 +299,21 @@ document.body.classList.toggle("user",key.startsWith("llp_"));
 function busy(delta){active+=delta;document.body.classList.toggle("loading",active>0)}
 async function api(path,options={}){busy(1);try{const headers={"Content-Type":"application/json"};if(key)headers.Authorization=`Bearer ${key}`;const r=await fetch(path,{...options,headers}),j=await r.json().catch(()=>({}));if(!r.ok){const e=Error(j.error?.message||j.error||r.statusText);e.status=r.status;throw e}return j}finally{busy(-1)}}
 const timeFmt=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZoneName:"short"});
-function fmtTime(v){if(v==null||v==="")return"";const n=Number(v);let d=Number.isFinite(n)&&n>1e9?new Date(n>1e12?n:n*1000):new Date(v);return isNaN(d)?String(v):timeFmt.format(d)}
+function parseTime(v){if(v==null||v==="")return null;const n=Number(v),d=Number.isFinite(n)&&n>1e9?new Date(n>1e12?n:n*1000):new Date(v);return isNaN(d)?null:d}
+function fmtTime(v){const d=parseTime(v);return d?timeFmt.format(d):v==null?"":String(v)}
+// "in 2 h 15 min": the two largest non-zero units; past a week, a date reads better.
+const dateFmt=new Intl.DateTimeFormat(undefined,{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",hour12:false});
+function fmtRelative(ms){const min=Math.floor(ms/6e4);if(min<1)return"in < 1 min";if(min>7*1440)return dateFmt.format(Date.now()+ms);const parts=[[Math.floor(min/1440),"d"],[Math.floor(min%1440/60),"h"],[min%60,"min"]].filter(p=>p[0]).slice(0,2);return"in "+parts.map(p=>p.join(" ")).join(" ")}
 function fmtTokens(n){if(!n)return"0";if(n>=1e9)return(n/1e9).toFixed(2)+"B";if(n>=1e6)return(n/1e6).toFixed(2)+"M";if(n>=1e3)return(n/1e3).toFixed(1)+"k";return String(n)}
 function windowLabel(w){return w==="5h"?"5 hour":w==="7d"?"weekly":w}
-function bar(root,label,percent,resetsAt){const pct=Math.min(100,Math.round(percent||0));const box=document.createElement("div"),line=document.createElement("div"),fill=document.createElement("i");const reset=resetsAt?` · resets ${fmtTime(resetsAt)}`:"";box.className="limit";box.textContent=`${label} · ${pct}% used${reset}`;line.className="bar";fill.style.width=pct+"%";line.append(fill);box.append(line);root.append(box)}
+// Reset times show relative by default; clicking one switches every reset
+// between relative and absolute, and the choice is remembered.
+const RESET_STORE="llm-local-proxy.reset-absolute";
+let resetAbsolute=false;try{resetAbsolute=localStorage.getItem(RESET_STORE)==="1"}catch{}
+function renderResets(){for(const el of document.querySelectorAll(".reset")){const at=Number(el.dataset.at),ms=at-Date.now();el.textContent=ms<=0?"resetting…":`resets ${resetAbsolute?fmtTime(at):fmtRelative(ms)}`;el.title=ms<=0?"":resetAbsolute?"click for relative time":`${fmtTime(at)} · click for absolute time`}}
+function resetSpan(resetsAt){const d=parseTime(resetsAt);if(!d)return null;const el=document.createElement("span");el.className="reset";el.dataset.at=d.getTime();el.tabIndex=0;el.setAttribute("role","button");const toggle=()=>{resetAbsolute=!resetAbsolute;try{localStorage.setItem(RESET_STORE,resetAbsolute?"1":"0")}catch{}renderResets()};el.onclick=toggle;el.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();toggle()}};return el}
+setInterval(renderResets,60000);
+function bar(root,label,percent,resetsAt){const pct=Math.min(100,Math.round(percent||0));const box=document.createElement("div"),line=document.createElement("div"),fill=document.createElement("i"),reset=resetSpan(resetsAt);box.className="limit";box.append(`${label} · ${pct}% used`);if(reset)box.append(" · ",reset);line.className="bar";fill.style.width=pct+"%";line.append(fill);box.append(line);root.append(box);renderResets()}
 function hasTokens(t){return !!(t&&Object.values(t).some(w=>w&&(w.input||w.output||w.cache_read||w.cache_write||w.partial_requests)))}
 function tokenLine(t){const read=t.cache_read||0,input=(t.input||0)+read+(t.cache_write||0);let s=`${fmtTokens(input)} in`;if(input&&read)s+=` · ${Math.round(read/input*100)}% cache hits`;return`${s} · ${fmtTokens(t.output||0)} out${t.partial_requests?" · includes partial usage":""}`}
 function showTokens(root,tokens,prefix="proxy tokens"){if(!hasTokens(tokens))return;let shown="";for(const w of Object.keys(tokens)){const t=tokens[w];if(!t||(!t.input&&!t.output&&!t.cache_read&&!t.cache_write&&!t.partial_requests))continue;const line=tokenLine(t);if(line===shown)continue;shown=line;const div=document.createElement("div");div.className="limit";div.textContent=`${prefix} · ${windowLabel(w)}: ${line}`;root.append(div)}}
