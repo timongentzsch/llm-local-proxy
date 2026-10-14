@@ -207,87 +207,30 @@ fn user_text(turn: &Turn) -> String {
         .join("\n")
 }
 
-/// The upstream body and the prompt-cache key it was given.
-pub fn build(
-    request: &ChatRequest,
-    cache: &ReasoningCache,
-    reasoning_efforts: Option<&[String]>,
-) -> Result<(Object, String)> {
-    if request.model.is_empty() {
-        return Err(Error::request("model is required"));
-    }
-    reject_unsupported(&request.params)?;
-
-    // Codex caches prefixes implicitly and refuses explicit breakpoints, so
-    // cache hints are dropped; the cache key is what keeps a prefix warm.
-    let instructions = request
-        .system
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let mut items = Vec::new();
-    // The opening user turn seeds the fallback cache key, and empty text is a
-    // legitimate value for an image-only turn: a sentinel that cannot tell
-    // "empty" from "not seen yet" would re-seed the key from a later turn and
-    // move the whole conversation to a different upstream cache mid-flight.
-    let mut first_user: Option<String> = None;
-    for turn in &request.turns {
-        if turn.role == Role::User && first_user.is_none() {
-            first_user = Some(user_text(turn));
-        }
-        items.extend(turn_items(turn, cache)?);
-    }
-
-    let mut cache_key = if request.cache_key.is_empty() {
-        request.session.clone()
+/// The client's cache key, else the session, else a digest of how the
+/// conversation opened.
+fn cache_key(request: &ChatRequest, instructions: &str, first_user: String) -> String {
+    let given = if request.cache_key.is_empty() {
+        &request.session
     } else {
-        request.cache_key.clone()
+        &request.cache_key
     };
-    if cache_key.is_empty() {
-        let seed = format!("{instructions}\0{}", first_user.unwrap_or_default());
-        let digest = Sha256::digest(seed.as_bytes());
-        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-        cache_key = format!("proxy-{}", &hex[..24]);
+    if !given.is_empty() {
+        return given.clone();
     }
+    let seed = format!("{instructions}\0{first_user}");
+    let digest = Sha256::digest(seed.as_bytes());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("proxy-{}", &hex[..24])
+}
 
-    let mut body = obj! {
-        "model": request.model,
-        "instructions": instructions,
-        "input": items,
-        "store": false,
-        "stream": true,
-        "prompt_cache_key": cache_key,
-    };
-    let tools = request
-        .tools
-        .iter()
-        .map(responses_tool)
-        .collect::<Result<Vec<_>>>()?;
-    if !tools.is_empty() {
-        body.insert(
-            "tools".into(),
-            tools.into_iter().map(Value::Object).collect(),
-        );
-        body.insert(
-            "tool_choice".into(),
-            responses_choice(request.tool_choice.as_ref()),
-        );
-        body.insert(
-            "parallel_tool_calls".into(),
-            (request.parallel_tool_calls != Some(false)).into(),
-        );
-    }
-    if let Some(format) = &request.output_format {
-        body.insert(
-            "text".into(),
-            Value::Object(obj! { "format": output_format(format) }),
-        );
-    }
-    if !request.verbosity.is_empty() {
-        setdefault_object(&mut body, "text")
-            .insert("verbosity".into(), request.verbosity.clone().into());
-    }
+/// Reasoning effort, summary and context, after refusing what Codex cannot
+/// honour.
+fn reasoning(
+    body: &mut Object,
+    request: &ChatRequest,
+    reasoning_efforts: Option<&[String]>,
+) -> Result<()> {
     if request.thinking_budget.is_some() {
         return Err(Error::request(
             "Codex upstream cannot faithfully represent an Anthropic thinking budget; \
@@ -340,9 +283,84 @@ pub fn build(
         body.insert("reasoning".into(), Value::Object(reasoning));
     }
     if !request.reasoning_context.is_empty() {
-        setdefault_object(&mut body, "reasoning")
+        setdefault_object(body, "reasoning")
             .insert("context".into(), request.reasoning_context.clone().into());
     }
+    Ok(())
+}
+
+/// The upstream body and the prompt-cache key it was given.
+pub fn build(
+    request: &ChatRequest,
+    cache: &ReasoningCache,
+    reasoning_efforts: Option<&[String]>,
+) -> Result<(Object, String)> {
+    if request.model.is_empty() {
+        return Err(Error::request("model is required"));
+    }
+    reject_unsupported(&request.params)?;
+
+    // Codex caches prefixes implicitly and refuses explicit breakpoints, so
+    // cache hints are dropped; the cache key is what keeps a prefix warm.
+    let instructions = request
+        .system
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut items = Vec::new();
+    // The opening user turn seeds the fallback cache key, and empty text is a
+    // legitimate value for an image-only turn: a sentinel that cannot tell
+    // "empty" from "not seen yet" would re-seed the key from a later turn and
+    // move the whole conversation to a different upstream cache mid-flight.
+    let mut first_user: Option<String> = None;
+    for turn in &request.turns {
+        if turn.role == Role::User && first_user.is_none() {
+            first_user = Some(user_text(turn));
+        }
+        items.extend(turn_items(turn, cache)?);
+    }
+
+    let cache_key = cache_key(request, &instructions, first_user.unwrap_or_default());
+
+    let mut body = obj! {
+        "model": request.model,
+        "instructions": instructions,
+        "input": items,
+        "store": false,
+        "stream": true,
+        "prompt_cache_key": cache_key,
+    };
+    let tools = request
+        .tools
+        .iter()
+        .map(responses_tool)
+        .collect::<Result<Vec<_>>>()?;
+    if !tools.is_empty() {
+        body.insert(
+            "tools".into(),
+            tools.into_iter().map(Value::Object).collect(),
+        );
+        body.insert(
+            "tool_choice".into(),
+            responses_choice(request.tool_choice.as_ref()),
+        );
+        body.insert(
+            "parallel_tool_calls".into(),
+            (request.parallel_tool_calls != Some(false)).into(),
+        );
+    }
+    if let Some(format) = &request.output_format {
+        body.insert(
+            "text".into(),
+            Value::Object(obj! { "format": output_format(format) }),
+        );
+    }
+    if !request.verbosity.is_empty() {
+        setdefault_object(&mut body, "text")
+            .insert("verbosity".into(), request.verbosity.clone().into());
+    }
+    reasoning(&mut body, request, reasoning_efforts)?;
     // Models can reason at their catalog default even when the client omits an
     // explicit effort, so always request the completed encrypted item.
     body.insert("include".into(), vec!["reasoning.encrypted_content"].into());
