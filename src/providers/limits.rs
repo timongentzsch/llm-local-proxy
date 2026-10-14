@@ -8,6 +8,7 @@
 use crate::error::{Error, Result};
 use crate::providers::BoxFuture;
 use crate::status::Limit;
+use crate::sync::LockExt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -52,7 +53,7 @@ impl LimitsStore {
     /// at once, so request routing never waits on the network.
     pub async fn current(self: &Arc<Self>, wait: bool) -> (Bars, Option<f64>) {
         let generation = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.locked();
             let due = state.next_read.is_none_or(|at| Instant::now() >= at);
             if state.reading || !due {
                 return (state.bars.clone(), state.updated_at);
@@ -65,18 +66,18 @@ impl LimitsStore {
         }
         let store = self.clone();
         tokio::spawn(async move { store.refresh(generation).await });
-        let state = self.state.lock().unwrap();
+        let state = self.state.locked();
         (state.bars.clone(), state.updated_at)
     }
 
     /// The bars as last observed, without starting a read.
     pub fn last(&self) -> Bars {
-        self.state.lock().unwrap().bars.clone()
+        self.state.locked().bars.clone()
     }
 
     /// Forget the bars of a login this slot no longer holds.
     pub fn clear(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         state.bars.clear();
         state.updated_at = None;
         state.next_read = None;
@@ -86,7 +87,7 @@ impl LimitsStore {
 
     async fn refresh(&self, generation: u64) -> (Bars, Option<f64>) {
         let outcome = (self.read)().await;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         state.reading = false;
         if generation != state.generation {
             return (state.bars.clone(), state.updated_at);

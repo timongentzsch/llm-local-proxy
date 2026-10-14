@@ -1,5 +1,6 @@
 //! Where ids come from, so tests can hand back the ones a case recorded.
 
+use crate::sync::LockExt;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -43,19 +44,18 @@ pub struct QueuedIds(Mutex<VecDeque<u128>>);
 
 impl QueuedIds {
     pub fn push(&self, values: impl IntoIterator<Item = u128>) {
-        self.0.lock().unwrap().extend(values);
+        self.0.locked().extend(values);
     }
 
     pub fn remaining(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.0.locked().len()
     }
 }
 
 impl Ids for QueuedIds {
     fn uuid(&self) -> u128 {
         self.0
-            .lock()
-            .unwrap()
+            .locked()
             .pop_front()
             .expect("drew more ids than the case recorded")
     }

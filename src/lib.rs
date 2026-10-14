@@ -25,4 +25,5 @@ pub mod providers;
 pub mod reasoning;
 pub mod service;
 pub mod status;
+pub mod sync;
 pub mod tools;

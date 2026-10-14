@@ -6,6 +6,7 @@
 
 use crate::atomic;
 use crate::error::{Error, Result};
+use crate::sync::LockExt;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -42,7 +43,7 @@ impl KeyStore {
 
     /// Every name with its key.
     pub fn all(&self) -> Result<IndexMap<String, String>> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.locked();
         self.read()
     }
 
@@ -52,7 +53,7 @@ impl KeyStore {
                 "key name must be 1-32 lowercase letters, digits, '.', '_' or '-' and not '{MASTER}'"
             )));
         }
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.locked();
         let mut keys = self.read()?;
         if keys.contains_key(name) {
             return Err(Error::request(format!("key already exists: {name}")));
@@ -64,7 +65,7 @@ impl KeyStore {
     }
 
     pub fn remove(&self, name: &str) -> Result<()> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.locked();
         let mut keys = self.read()?;
         if keys.shift_remove(name).is_none() {
             return Err(Error::request(format!("unknown key: {name}")));
