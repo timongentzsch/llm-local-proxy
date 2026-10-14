@@ -161,22 +161,28 @@
   .key-row { flex-wrap: wrap; align-items: center; margin-top: var(--space-4); }
   .key-row code { margin-left: auto; min-width: 0; }
 
-  /* Launch a client: label, then the command line with its copy button beside it. */
+  /* Launch a client: label, then the command line with a copy icon inside its right end. */
   .command { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: start; gap: var(--space-4); padding: var(--space-3) 0; }
   .command, .model { border-top: 0; }
   .command > .muted { line-height: var(--control-height); }
-  .command-code { display: flex; align-items: flex-start; gap: var(--space-2); min-width: 0; }
+  .command-code { position: relative; min-width: 0; }
   .command code {
-    flex: 1;
-    min-width: 0;
+    display: block;
     overflow-x: auto;
-    padding: 0 var(--space-3);
+    padding: 0 calc(var(--control-height) + var(--space-1)) 0 var(--space-3);
     line-height: calc(var(--control-height) - 2px);
     white-space: pre;
     word-break: normal;
     border: 1px solid var(--border);
     border-radius: var(--radius);
   }
+
+  .command-copy { position: absolute; top: 1px; right: 1px; display: grid; place-items: center; width: calc(var(--control-height) - 2px); height: calc(var(--control-height) - 2px); padding: 0; border-color: transparent; opacity: 0; }
+  .command-code:hover .command-copy, .command-copy:focus-visible, .command-copy.done { opacity: 1; }
+  .command-copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .command-copy .check, .command-copy.done .clip { display: none; }
+  .command-copy.done .check { display: block; }
+  @media (hover: none) { .command-copy { opacity: 1; } }
 
   /* Models */
   #models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-5); }
@@ -254,6 +260,7 @@
   </section>
 </template>
 <template id="skeleton-client"><div class="row skeleton-client" aria-hidden="true"><span class="skeleton-line" style="width:20ch"></span><span class="skeleton-line" style="width:74%"></span></div></template>
+<template id="copy-icon"><button class="command-copy"><svg class="clip" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8"/><path d="M10.5 5.5v-3h-8v8h3"/></svg><svg class="check" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg></button></template>
 <template id="skeleton-command"><div class="row command skeleton-command" aria-hidden="true"><span class="skeleton-line" style="width:7ch;margin-top:10px"></span><span class="command-code skeleton-code"><span class="skeleton-button"></span></span></div></template>
 <template id="skeleton-model"><div class="model skeleton-model" aria-hidden="true"><div class="model-main"><span class="skeleton-line" style="width:42%"></span><span class="skeleton-line" style="width:13ch"></span></div><div class="efforts"><span class="skeleton-line" style="width:7ch"></span><span class="skeleton-line" style="width:6ch"></span></div></div></template>
 <template id="provider-card">
@@ -344,16 +351,19 @@ function showDialects(items){const root=q("#clients"),sig=JSON.stringify(items);
 function fmtContext(n){n=Number(n);if(!Number.isFinite(n)||n<=0)return"context unknown";if(n>=1e6&&n%1e6===0)return`${n/1e6}M context`;if(n>=1e3&&n%1e3===0)return`${n/1e3}k context`;return`${n.toLocaleString()} context`}
 function showModels(models){const root=q("#models"),select=q("#command-model"),selected=select.value,sig=JSON.stringify(models);if(sig===shownModels&&root.querySelector(".model:not(.skeleton-model)"))return;shownModels=sig;modelList=models;root.replaceChildren();select.replaceChildren();for(const model of models){const option=document.createElement("option");option.value=model.id;option.textContent=model.id;select.append(option);const row=document.createElement("div"),main=document.createElement("div"),id=document.createElement("code"),context=document.createElement("span"),efforts=document.createElement("div");row.className="model";main.className="model-main";id.textContent=model.id;id.title=model.name||model.id;context.className="model-context muted";context.textContent=fmtContext(model.context_length);efforts.className="efforts";const modes=Array.isArray(model.supported_reasoning_efforts)?model.supported_reasoning_efforts:[];if(modes.length){for(const mode of modes){const badge=document.createElement("span");badge.className="effort";badge.textContent=mode;efforts.append(badge)}}else{const empty=document.createElement("span");empty.className="efforts-empty";empty.textContent="effort modes not reported";efforts.append(empty)}main.append(id,context);row.append(main,efforts);root.append(row)}if(selected&&models.some(m=>m.id===selected))select.value=selected;select.disabled=false;if(!models.length){root.textContent="no models available";select.hidden=true;select.disabled=true}else select.hidden=false;showCommands()}
 function shell(v){return"'"+String(v).replaceAll("'","'\\''")+"'"}
+// Claude Code lists /anthropic/v1/models when discovery is on, but keeps only ids
+// containing "claude" or "anthropic", so the other models go in a modelPicker setting.
+// OpenCode lists only the models in its config, whose limit needs both numbers.
 // OMP has no base URL flag; its litellm provider reads one from the
 // environment and discovers the proxy's models from /models.
 function showCommands(){
   const root=q("#commands"),model=q("#command-model").value,selected=modelList.find(item=>item.id===model),context=Number(selected?.context_length)||0,claudeModel=context>=1e6&&!/\[1m\]$/i.test(model)?`${model}[1m]`:model,named=keysInfo?.keys.find(k=>k.name===q("#command-key").value),urls=named&&keysInfo.public_dialects.length?keysInfo.public_dialects:dialects,openai=urls.find(d=>d.name==="openai")?.base_url,anthropic=urls.find(d=>d.name==="anthropic")?.base_url,clientKey=named?.key||key||"local";
   if(!model||!openai||!anthropic){if(!root.querySelector(".skeleton-command"))root.textContent="unavailable";return}
-  const codexContext=context>0?` -c ${shell(`model_context_window=${context}`)}`:"",codex=`LLM_PROXY_API_KEY=${shell(clientKey)} codex --model ${shell(model)} -c 'model_provider="local_proxy"' -c ${shell(`model_providers.local_proxy={ name="LLM Local Proxy", base_url="${openai}", env_key="LLM_PROXY_API_KEY", wire_api="responses" }`)}${codexContext}`,claude=`ANTHROPIC_BASE_URL=${shell(anthropic)} ANTHROPIC_AUTH_TOKEN=${shell(clientKey)} claude --model ${shell(claudeModel)}`,modelConfig={name:model};
-  if(context>0)modelConfig.limit={context};
-  const config={"$schema":"https://opencode.ai/config.json",provider:{"local-proxy":{npm:"@ai-sdk/openai",name:"LLM Local Proxy",options:{baseURL:openai,apiKey:"{env:LLM_PROXY_API_KEY}"},models:{[model]:modelConfig}}}},opencode=`LLM_PROXY_API_KEY=${shell(clientKey)} OPENCODE_CONFIG_CONTENT=${shell(JSON.stringify(config))} opencode --model ${shell(`local-proxy/${model}`)}`,omp=`LITELLM_BASE_URL=${shell(openai)} LITELLM_API_KEY=${shell(clientKey)} omp --model ${shell(`litellm/${model}`)}`;
+  const codexContext=context>0?` -c ${shell(`model_context_window=${context}`)}`:"",codex=`LLM_PROXY_API_KEY=${shell(clientKey)} codex --model ${shell(model)} -c 'model_provider="local_proxy"' -c ${shell(`model_providers.local_proxy={ name="LLM Local Proxy", base_url="${openai}", env_key="LLM_PROXY_API_KEY", wire_api="responses" }`)}${codexContext}`,others=modelList.filter(m=>!/claude|anthropic/i.test(m.id)).map(m=>({model:m.id})),picker=others.length?` --settings ${shell(JSON.stringify({modelPicker:{options:others}}))}`:"",claude=`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 ANTHROPIC_BASE_URL=${shell(anthropic)} ANTHROPIC_AUTH_TOKEN=${shell(clientKey)} claude --model ${shell(claudeModel)}${picker}`,models={};
+  for(const m of modelList){const config={name:m.name||m.id},window=Number(m.context_length)||0;if(window>0)config.limit={context:window,output:m.default_parameters?.max_tokens||32768};models[m.id]=config}
+  const config={"$schema":"https://opencode.ai/config.json",provider:{"local-proxy":{npm:"@ai-sdk/openai",name:"LLM Local Proxy",options:{baseURL:openai,apiKey:"{env:LLM_PROXY_API_KEY}"},models}}},opencode=`LLM_PROXY_API_KEY=${shell(clientKey)} OPENCODE_CONFIG_CONTENT=${shell(JSON.stringify(config))} opencode --model ${shell(`local-proxy/${model}`)}`,omp=`LITELLM_BASE_URL=${shell(openai)} LITELLM_API_KEY=${shell(clientKey)} omp --model ${shell(`litellm/${model}`)}`;
   const commands=[["codex",codex],["claude code",claude],["opencode",opencode],["omp",omp]],sig=JSON.stringify(commands);if(sig===shownCommands&&root.querySelector(".command-copy"))return;shownCommands=sig;
-  root.replaceChildren();for(const [name,command] of commands){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=document.createElement("button");let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;copy.className="command-copy";copy.textContent="copy";copy.setAttribute("aria-label",`copy ${name} command`);copy.onclick=async()=>{try{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.textContent="copied";reset=setTimeout(()=>copy.textContent="copy",1500)}catch(e){alert(e.message)}};box.append(code,copy);row.append(label,box);root.append(row)}}
+  root.replaceChildren();for(const [name,command] of commands){const row=document.createElement("div"),label=document.createElement("span"),box=document.createElement("div"),code=document.createElement("code"),copy=q("#copy-icon").content.firstElementChild.cloneNode(true);let reset;row.className="row command";label.className="muted";label.textContent=name;box.className="command-code";code.textContent=command;const idle=`copy ${name} command`,tell=text=>{copy.title=text;copy.setAttribute("aria-label",text)};tell(idle);copy.onclick=async()=>{try{await navigator.clipboard.writeText(command);clearTimeout(reset);copy.classList.add("done");tell("copied");reset=setTimeout(()=>{copy.classList.remove("done");tell(idle)},1500)}catch(e){alert(e.message)}};box.append(code,copy);row.append(label,box);root.append(row)}}
 q("#command-model").onchange=showCommands;q("#command-key").onchange=showCommands;
 // Named keys (master only): each with its usage per provider, a share link
 // that opens that key's own reduced dashboard, and revocation.
