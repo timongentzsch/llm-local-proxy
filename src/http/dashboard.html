@@ -16,9 +16,8 @@
     --space-5: 16px;
     --space-6: 24px;
 
-    --text-xs: 10px;
-    --text-sm: 11px;
-    --text-md: 12px;
+    --text-sm: 12px;
+    --text-md: 13px;
     --text-lg: 16px;
 
     --control-height: 28px;
@@ -49,7 +48,7 @@
 
   body { color: var(--fg); background: var(--bg); max-width: 1040px; margin: 28px auto; padding: 0 18px 48px; line-height: 1.45; }
   h1 { font-size: var(--text-lg); margin: 0; }
-  h2 { font-size: 13px; margin: 0; }
+  h2 { font-size: var(--text-md); margin: 0; }
   code { font: inherit; word-break: break-all; }
   .muted { color: var(--muted); }
 
@@ -130,7 +129,7 @@
   .account-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .account-meta { display: block; margin: 1px 0 0 15px; font-size: var(--text-sm); color: var(--muted); }
   .actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-3); }
-  .stamp { font-size: var(--text-xs); }
+  .stamp { font-size: var(--text-sm); }
   .usage:empty { display: none; }
   .limit { margin: var(--space-2) 0; font-size: var(--text-sm); }
   .bar { height: 3px; background: var(--track); margin-top: 3px; }
@@ -179,9 +178,9 @@
   .model { padding: var(--space-3) 0; }
   .model-main { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); }
   .model-context { white-space: nowrap; }
-  .efforts { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
-  .effort { border: 1px solid var(--border); padding: 0 var(--space-2); font-size: var(--text-xs); }
-  .efforts-empty { color: var(--muted); font-size: var(--text-xs); }
+  .efforts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin-top: var(--space-2); }
+  .effort { color: var(--muted); font-size: var(--text-sm); }
+  .efforts-empty { color: var(--muted); font-size: var(--text-sm); }
 
   /* Loading skeletons */
   .skeleton-line, .skeleton-code, .skeleton-button { display: block; background: var(--track); animation: pulse 1.4s ease-in-out infinite; }
@@ -378,7 +377,7 @@ async function loadOnce(){
   if(initial&&q("#commands").querySelector(".skeleton-command"))q("#commands").textContent="unavailable";
   document.body.classList.add("ready");
 }
-function showKey(){q("#key").textContent=key||"disabled";for(const id of["#copy","#forget"])q(id).style.display=key?"":"none"}
+function showKey(){q("#key").textContent=key||"disabled";q("#copy").parentElement.hidden=!key}
 q("#copy").onclick=async()=>{try{await navigator.clipboard.writeText(key);q("#copy").textContent="copied";setTimeout(()=>q("#copy").textContent="copy",1500)}catch(e){alert(e.message)}};
 q("#forget").onclick=()=>{forgetKey();location.reload()};
 showKey();
