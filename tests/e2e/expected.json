@@ -5965,6 +5965,9 @@
         "type": "text"
        },
        {
+        "cache_control": {
+         "type": "ephemeral"
+        },
         "id": "toolu_up1",
         "input": {
          "city": "Berlin"

@@ -260,7 +260,10 @@ exists only for these tests.
 4. **Prompt caching.** Cache controls are hints in the IR (`cache` on blocks,
    tools and the request: None, or a TTL). Claude renders them as
    `cache_control`, and adds its automatic top-level breakpoint only when the
-   client placed none, since the upstream accepts at most four. Codex drops
+   client placed none, since the upstream accepts at most four. With it goes
+   a second one on the last block of the message before the last: the
+   automatic one sits on the final block, so a final message that changes on
+   every call would otherwise leave nothing the next request can read. Codex drops
    them: its backend refuses `prompt_cache_breakpoint`,
    `prompt_cache_options` and `prompt_cache_retention` on every model
    [empirical] and caches by `prompt_cache_key`, which is the client's own key

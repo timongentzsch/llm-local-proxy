@@ -699,7 +699,25 @@ pub fn build(
     // The client's own automatic breakpoint; otherwise ours, unless the client
     // placed breakpoints itself: the upstream accepts at most four.
     if request.cache.is_some() || !has_breakpoint(&body) {
-        body.extend(cached(Some(request.cache.as_deref().unwrap_or(""))));
+        let ttl = request.cache.as_deref().unwrap_or("");
+        body.extend(cached(Some(ttl)));
+        // The automatic breakpoint sits on the last block, so a client whose
+        // final message changes on every call (a status note) never reads
+        // what it wrote. A second one on the message before keeps the
+        // history readable.
+        if let Some(Value::Array(messages)) = body.get_mut("messages") {
+            let before = messages.len().checked_sub(2);
+            if let Some(Value::Array(blocks)) = before
+                .and_then(|index| messages.get_mut(index))
+                .and_then(|message| message.get_mut("content"))
+            {
+                if let Some(Value::Object(last)) = blocks.last_mut() {
+                    if last.get("type").and_then(Value::as_str) != Some("thinking") {
+                        last.extend(cached(Some(ttl)));
+                    }
+                }
+            }
+        }
     }
 
     if let Some(format) = &request.output_format {

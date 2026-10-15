@@ -20,7 +20,9 @@ Caching never changes output, so cache controls are hints
 and never a reason to refuse a request. Claude receives Anthropic
 `cache_control` breakpoints with their TTL wherever the client placed them;
 when a request carries none (every OpenAI-format request), the proxy asks
-Claude to cache the prompt automatically. Codex caches prefixes implicitly and
+Claude to cache the prompt automatically, and marks the message before the
+last as well, so a client whose final message changes on every call (a status
+note) still reads its cached history. Codex caches prefixes implicitly and
 refuses explicit breakpoints, so they are dropped; `prompt_cache_key` reaches
 it verbatim, and again as the `session-id` header, without which its backend
 never reuses a prefix. `prompt_cache_retention` and `prompt_cache_options` are accepted
