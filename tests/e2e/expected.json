@@ -3049,7 +3049,93 @@
     }
    }
   },
+  "claude-test rejected /openai/v1/chat/completions stream=False": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "claude-test rejected /openai/v1/responses stream=False": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "claude-test rejected /anthropic/v1/messages stream=False": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "type": "error",
+    "request_id": null,
+    "error": {
+     "type": "invalid_request_error",
+     "message": "Could not process image"
+    }
+   }
+  },
   "claude-test limited stream=True": {
+   "status": 429,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "slow down",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "claude-test limited messages stream=True": {
+   "status": 429,
+   "content_type": "application/json",
+   "body": {
+    "type": "error",
+    "request_id": null,
+    "error": {
+     "type": "rate_limit_error",
+     "message": "slow down"
+    }
+   }
+  },
+  "claude-test rejected /openai/v1/chat/completions stream=True": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "claude-test rejected /openai/v1/responses stream=True": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "claude-test rejected /anthropic/v1/messages stream=True": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "type": "error",
+    "request_id": null,
+    "error": {
+     "type": "invalid_request_error",
+     "message": "Could not process image"
+    }
+   }
+  },
+  "claude-test cut /openai/v1/chat/completions stream=True": {
    "status": 200,
    "content_type": "text/event-stream",
    "body": [
@@ -3075,8 +3161,44 @@
     {
      "event": null,
      "data": {
+      "id": "chatcmpl-<id>",
+      "object": "chat.completion.chunk",
+      "created": "<time>",
+      "model": "claude-test",
+      "choices": [
+       {
+        "index": 0,
+        "delta": {
+         "content": "Grüße, "
+        },
+        "finish_reason": null
+       }
+      ]
+     }
+    },
+    {
+     "event": null,
+     "data": {
+      "id": "chatcmpl-<id>",
+      "object": "chat.completion.chunk",
+      "created": "<time>",
+      "model": "claude-test",
+      "choices": [
+       {
+        "index": 0,
+        "delta": {
+         "content": "pong"
+        },
+        "finish_reason": null
+       }
+      ]
+     }
+    },
+    {
+     "event": null,
+     "data": {
       "error": {
-       "message": "slow down",
+       "message": "upstream stream ended before its terminal event",
        "type": "proxy_error"
       }
      }
@@ -3087,7 +3209,120 @@
     }
    ]
   },
-  "claude-test limited messages stream=True": {
+  "claude-test cut /openai/v1/responses stream=True": {
+   "status": 200,
+   "content_type": "text/event-stream",
+   "body": [
+    {
+     "event": "response.created",
+     "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+       "id": "resp_<id>",
+       "object": "response",
+       "created_at": "<time>",
+       "status": "in_progress",
+       "model": "claude-test",
+       "output": [],
+       "parallel_tool_calls": true,
+       "tool_choice": "auto",
+       "tools": [
+        {
+         "type": "function",
+         "name": "get_weather",
+         "parameters": {
+          "type": "object",
+          "properties": {
+           "city": {
+            "type": "string"
+           }
+          }
+         },
+         "description": "Weather for a city"
+        }
+       ],
+       "usage": null,
+       "error": null,
+       "incomplete_details": null
+      }
+     }
+    },
+    {
+     "event": "response.output_item.added",
+     "data": {
+      "type": "response.output_item.added",
+      "sequence_number": 1,
+      "output_index": 0,
+      "item": {
+       "type": "message",
+       "id": "msg_<id>",
+       "status": "in_progress",
+       "role": "assistant",
+       "content": [
+        {
+         "type": "output_text",
+         "text": "",
+         "annotations": [],
+         "logprobs": []
+        }
+       ]
+      }
+     }
+    },
+    {
+     "event": "response.content_part.added",
+     "data": {
+      "type": "response.content_part.added",
+      "sequence_number": 2,
+      "item_id": "msg_<id>",
+      "output_index": 0,
+      "content_index": 0,
+      "part": {
+       "type": "output_text",
+       "text": "",
+       "annotations": [],
+       "logprobs": []
+      }
+     }
+    },
+    {
+     "event": "response.output_text.delta",
+     "data": {
+      "type": "response.output_text.delta",
+      "sequence_number": 3,
+      "item_id": "msg_<id>",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "Grüße, ",
+      "logprobs": []
+     }
+    },
+    {
+     "event": "response.output_text.delta",
+     "data": {
+      "type": "response.output_text.delta",
+      "sequence_number": 4,
+      "item_id": "msg_<id>",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "pong",
+      "logprobs": []
+     }
+    },
+    {
+     "event": "error",
+     "data": {
+      "type": "error",
+      "sequence_number": 5,
+      "code": "upstream_error",
+      "message": "upstream stream ended before its terminal event",
+      "param": null
+     }
+    }
+   ]
+  },
+  "claude-test cut /anthropic/v1/messages stream=True": {
    "status": 200,
    "content_type": "text/event-stream",
    "body": [
@@ -3117,13 +3352,46 @@
      }
     },
     {
+     "event": "content_block_start",
+     "data": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "event": "content_block_delta",
+     "data": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Grüße, "
+      }
+     }
+    },
+    {
+     "event": "content_block_delta",
+     "data": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "pong"
+      }
+     }
+    },
+    {
      "event": "error",
      "data": {
       "type": "error",
       "request_id": null,
       "error": {
        "type": "api_error",
-       "message": "slow down"
+       "message": "upstream stream ended before its terminal event"
       }
      }
     }
@@ -3151,7 +3419,93 @@
     }
    }
   },
+  "gpt-test rejected /openai/v1/chat/completions stream=False": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "gpt-test rejected /openai/v1/responses stream=False": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "gpt-test rejected /anthropic/v1/messages stream=False": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "type": "error",
+    "request_id": null,
+    "error": {
+     "type": "invalid_request_error",
+     "message": "Could not process image"
+    }
+   }
+  },
   "gpt-test limited stream=True": {
+   "status": 429,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "slow down",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "gpt-test limited messages stream=True": {
+   "status": 429,
+   "content_type": "application/json",
+   "body": {
+    "type": "error",
+    "request_id": null,
+    "error": {
+     "type": "rate_limit_error",
+     "message": "slow down"
+    }
+   }
+  },
+  "gpt-test rejected /openai/v1/chat/completions stream=True": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "gpt-test rejected /openai/v1/responses stream=True": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "error": {
+     "message": "Could not process image",
+     "type": "proxy_error"
+    }
+   }
+  },
+  "gpt-test rejected /anthropic/v1/messages stream=True": {
+   "status": 400,
+   "content_type": "application/json",
+   "body": {
+    "type": "error",
+    "request_id": null,
+    "error": {
+     "type": "invalid_request_error",
+     "message": "Could not process image"
+    }
+   }
+  },
+  "gpt-test cut /openai/v1/chat/completions stream=True": {
    "status": 200,
    "content_type": "text/event-stream",
    "body": [
@@ -3177,8 +3531,44 @@
     {
      "event": null,
      "data": {
+      "id": "chatcmpl-<id>",
+      "object": "chat.completion.chunk",
+      "created": "<time>",
+      "model": "gpt-test",
+      "choices": [
+       {
+        "index": 0,
+        "delta": {
+         "content": "Grüße, "
+        },
+        "finish_reason": null
+       }
+      ]
+     }
+    },
+    {
+     "event": null,
+     "data": {
+      "id": "chatcmpl-<id>",
+      "object": "chat.completion.chunk",
+      "created": "<time>",
+      "model": "gpt-test",
+      "choices": [
+       {
+        "index": 0,
+        "delta": {
+         "content": "pong"
+        },
+        "finish_reason": null
+       }
+      ]
+     }
+    },
+    {
+     "event": null,
+     "data": {
       "error": {
-       "message": "slow down",
+       "message": "upstream stream ended before its terminal event",
        "type": "proxy_error"
       }
      }
@@ -3189,7 +3579,120 @@
     }
    ]
   },
-  "gpt-test limited messages stream=True": {
+  "gpt-test cut /openai/v1/responses stream=True": {
+   "status": 200,
+   "content_type": "text/event-stream",
+   "body": [
+    {
+     "event": "response.created",
+     "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+       "id": "resp_<id>",
+       "object": "response",
+       "created_at": "<time>",
+       "status": "in_progress",
+       "model": "gpt-test",
+       "output": [],
+       "parallel_tool_calls": true,
+       "tool_choice": "auto",
+       "tools": [
+        {
+         "type": "function",
+         "name": "get_weather",
+         "parameters": {
+          "type": "object",
+          "properties": {
+           "city": {
+            "type": "string"
+           }
+          }
+         },
+         "description": "Weather for a city"
+        }
+       ],
+       "usage": null,
+       "error": null,
+       "incomplete_details": null
+      }
+     }
+    },
+    {
+     "event": "response.output_item.added",
+     "data": {
+      "type": "response.output_item.added",
+      "sequence_number": 1,
+      "output_index": 0,
+      "item": {
+       "type": "message",
+       "id": "msg_<id>",
+       "status": "in_progress",
+       "role": "assistant",
+       "content": [
+        {
+         "type": "output_text",
+         "text": "",
+         "annotations": [],
+         "logprobs": []
+        }
+       ]
+      }
+     }
+    },
+    {
+     "event": "response.content_part.added",
+     "data": {
+      "type": "response.content_part.added",
+      "sequence_number": 2,
+      "item_id": "msg_<id>",
+      "output_index": 0,
+      "content_index": 0,
+      "part": {
+       "type": "output_text",
+       "text": "",
+       "annotations": [],
+       "logprobs": []
+      }
+     }
+    },
+    {
+     "event": "response.output_text.delta",
+     "data": {
+      "type": "response.output_text.delta",
+      "sequence_number": 3,
+      "item_id": "msg_<id>",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "Grüße, ",
+      "logprobs": []
+     }
+    },
+    {
+     "event": "response.output_text.delta",
+     "data": {
+      "type": "response.output_text.delta",
+      "sequence_number": 4,
+      "item_id": "msg_<id>",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "pong",
+      "logprobs": []
+     }
+    },
+    {
+     "event": "error",
+     "data": {
+      "type": "error",
+      "sequence_number": 5,
+      "code": "upstream_error",
+      "message": "upstream stream ended before its terminal event",
+      "param": null
+     }
+    }
+   ]
+  },
+  "gpt-test cut /anthropic/v1/messages stream=True": {
    "status": 200,
    "content_type": "text/event-stream",
    "body": [
@@ -3219,13 +3722,46 @@
      }
     },
     {
+     "event": "content_block_start",
+     "data": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "event": "content_block_delta",
+     "data": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Grüße, "
+      }
+     }
+    },
+    {
+     "event": "content_block_delta",
+     "data": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "pong"
+      }
+     }
+    },
+    {
      "event": "error",
      "data": {
       "type": "error",
       "request_id": null,
       "error": {
        "type": "api_error",
-       "message": "slow down"
+       "message": "upstream stream ended before its terminal event"
       }
      }
     }
@@ -3699,16 +4235,18 @@
      "master": {
       "claude": {
        "5h": {
-        "input": 320,
-        "output": 267,
-        "cache_read": 1600,
-        "cache_write": 80
+        "input": 380,
+        "output": 270,
+        "cache_read": 1900,
+        "cache_write": 95,
+        "partial_requests": 3
        },
        "7d": {
-        "input": 320,
-        "output": 267,
-        "cache_read": 1600,
-        "cache_write": 80
+        "input": 380,
+        "output": 270,
+        "cache_read": 1900,
+        "cache_write": 95,
+        "partial_requests": 3
        }
       },
       "codex": {
@@ -3716,13 +4254,15 @@
         "input": 728,
         "output": 442,
         "cache_read": 832,
-        "cache_write": 0
+        "cache_write": 0,
+        "partial_requests": 3
        },
        "7d": {
         "input": 728,
         "output": 442,
         "cache_read": 832,
-        "cache_write": 0
+        "cache_write": 0,
+        "partial_requests": 3
        }
       }
      }
@@ -3825,16 +4365,18 @@
      "master": {
       "claude": {
        "5h": {
-        "input": 320,
-        "output": 267,
-        "cache_read": 1600,
-        "cache_write": 80
+        "input": 380,
+        "output": 270,
+        "cache_read": 1900,
+        "cache_write": 95,
+        "partial_requests": 3
        },
        "7d": {
-        "input": 320,
-        "output": 267,
-        "cache_read": 1600,
-        "cache_write": 80
+        "input": 380,
+        "output": 270,
+        "cache_read": 1900,
+        "cache_write": 95,
+        "partial_requests": 3
        }
       },
       "codex": {
@@ -3842,13 +4384,15 @@
         "input": 728,
         "output": 442,
         "cache_read": 832,
-        "cache_write": 0
+        "cache_write": 0,
+        "partial_requests": 3
        },
        "7d": {
         "input": 728,
         "output": 442,
         "cache_read": 832,
-        "cache_write": 0
+        "cache_write": 0,
+        "partial_requests": 3
        }
       }
      },
@@ -4035,16 +4579,18 @@
         ],
         "tokens": {
          "5h": {
-          "input": 340,
-          "output": 274,
-          "cache_read": 1700,
-          "cache_write": 85
+          "input": 400,
+          "output": 277,
+          "cache_read": 2000,
+          "cache_write": 100,
+          "partial_requests": 3
          },
          "7d": {
-          "input": 340,
-          "output": 274,
-          "cache_read": 1700,
-          "cache_write": 85
+          "input": 400,
+          "output": 277,
+          "cache_read": 2000,
+          "cache_write": 100,
+          "partial_requests": 3
          }
         },
         "updated_at": "<time>",
@@ -4092,13 +4638,15 @@
           "input": 728,
           "output": 442,
           "cache_read": 832,
-          "cache_write": 0
+          "cache_write": 0,
+          "partial_requests": 3
          },
          "7d": {
           "input": 728,
           "output": 442,
           "cache_read": 832,
-          "cache_write": 0
+          "cache_write": 0,
+          "partial_requests": 3
          }
         },
         "updated_at": "<time>",
@@ -4208,13 +4756,15 @@
           "input": 728,
           "output": 442,
           "cache_read": 832,
-          "cache_write": 0
+          "cache_write": 0,
+          "partial_requests": 3
          },
          "7d": {
           "input": 728,
           "output": 442,
           "cache_read": 832,
-          "cache_write": 0
+          "cache_write": 0,
+          "partial_requests": 3
          }
         },
         "updated_at": null,
@@ -4377,7 +4927,67 @@
      {
       "content": [
        {
-        "text": "limited",
+        "text": "cut",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "cut",
         "type": "text"
        }
       ],
@@ -4558,6 +5168,306 @@
       "content": [
        {
         "text": "limited",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "limited",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "rejected",
         "type": "text"
        }
       ],
@@ -5365,6 +6275,195 @@
      {
       "content": [
        {
+        "text": "cut",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "output_config": {
+     "effort": "low"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64000,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "output_config": {
+     "effort": "low"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64000,
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "claude-test",
+    "output_config": {
+     "effort": "low"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "type": "text"
+     },
+     {
+      "text": "Be terse.",
+      "type": "text"
+     }
+    ],
+    "tool_choice": {
+     "type": "auto"
+    },
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "input_schema": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "get_weather"
+     }
+    ]
+   },
+   "has_request_id": true,
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer at-fresh",
+    "content-type": "application/json",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "path": "/v1/messages",
+   "user_agent": "claude-cli"
+  },
+  {
+   "body": {
+    "cache_control": {
+     "type": "ephemeral"
+    },
+    "max_tokens": 64000,
+    "messages": [
+     {
+      "content": [
+       {
         "text": "say pong",
         "type": "text"
        }
@@ -5711,7 +6810,7 @@
      {
       "content": [
        {
-        "text": "limited",
+        "text": "cut",
         "type": "input_text"
        }
       ],
@@ -5721,7 +6820,11 @@
     "instructions": "Be terse.",
     "model": "gpt-test",
     "parallel_tool_calls": true,
-    "prompt_cache_key": "proxy-1fb24ce375ec46f988b2e69a",
+    "prompt_cache_key": "proxy-53d4b95a86df84ab49bebd41",
+    "reasoning": {
+     "effort": "low",
+     "summary": "auto"
+    },
     "store": false,
     "stream": true,
     "tool_choice": "auto",
@@ -5748,7 +6851,111 @@
     "chatgpt-account-id": "acct-e2e",
     "content-type": "application/json",
     "originator": "llm_local_proxy",
-    "session-id": "proxy-1fb24ce375ec46f988b2e69a"
+    "session-id": "proxy-53d4b95a86df84ab49bebd41"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "cut",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-53d4b95a86df84ab49bebd41",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-53d4b95a86df84ab49bebd41"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "cut",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-53d4b95a86df84ab49bebd41",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-53d4b95a86df84ab49bebd41"
    },
    "method": "POST",
    "path": "/backend-api/codex/responses",
@@ -5905,6 +7112,378 @@
     "content-type": "application/json",
     "originator": "llm_local_proxy",
     "session-id": "proxy-1fb24ce375ec46f988b2e69a"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "limited",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-1fb24ce375ec46f988b2e69a",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-1fb24ce375ec46f988b2e69a"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-5045b88d96787ff29dbb941e",
+    "reasoning": {
+     "effort": "low",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-5045b88d96787ff29dbb941e"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-5045b88d96787ff29dbb941e",
+    "reasoning": {
+     "effort": "low",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-5045b88d96787ff29dbb941e"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-5045b88d96787ff29dbb941e",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-5045b88d96787ff29dbb941e"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-5045b88d96787ff29dbb941e",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-5045b88d96787ff29dbb941e"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-5045b88d96787ff29dbb941e",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-5045b88d96787ff29dbb941e"
+   },
+   "method": "POST",
+   "path": "/backend-api/codex/responses",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": [
+       {
+        "text": "rejected",
+        "type": "input_text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "instructions": "Be terse.",
+    "model": "gpt-test",
+    "parallel_tool_calls": true,
+    "prompt_cache_key": "proxy-5045b88d96787ff29dbb941e",
+    "store": false,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "description": "Weather for a city",
+      "name": "get_weather",
+      "parameters": {
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "has_request_id": false,
+   "headers": {
+    "accept": "text/event-stream",
+    "authorization": "Bearer header.eyJleHAiOiA0MTAyNDQ0ODAwfQ.signature",
+    "chatgpt-account-id": "acct-e2e",
+    "content-type": "application/json",
+    "originator": "llm_local_proxy",
+    "session-id": "proxy-5045b88d96787ff29dbb941e"
    },
    "method": "POST",
    "path": "/backend-api/codex/responses",
@@ -6748,6 +8327,33 @@
    {
     "ts": "<time>",
     "input": 20,
+    "output": 1,
+    "cache_read": 100,
+    "cache_write": 5,
+    "partial": true,
+    "caller": "master"
+   },
+   {
+    "ts": "<time>",
+    "input": 20,
+    "output": 1,
+    "cache_read": 100,
+    "cache_write": 5,
+    "partial": true,
+    "caller": "master"
+   },
+   {
+    "ts": "<time>",
+    "input": 20,
+    "output": 1,
+    "cache_read": 100,
+    "cache_write": 5,
+    "partial": true,
+    "caller": "master"
+   },
+   {
+    "ts": "<time>",
+    "input": 20,
     "output": 30,
     "cache_read": 100,
     "cache_write": 5,
@@ -6886,6 +8492,33 @@
     "output": 34,
     "cache_read": 64,
     "cache_write": 0,
+    "caller": "master"
+   },
+   {
+    "ts": "<time>",
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "cache_write": 0,
+    "partial": true,
+    "caller": "master"
+   },
+   {
+    "ts": "<time>",
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "cache_write": 0,
+    "partial": true,
+    "caller": "master"
+   },
+   {
+    "ts": "<time>",
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "cache_write": 0,
+    "partial": true,
     "caller": "master"
    },
    {

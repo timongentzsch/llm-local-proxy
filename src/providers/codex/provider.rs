@@ -14,7 +14,6 @@ use crate::providers::limits::LimitsStore;
 use crate::providers::pool::{account_file, Account, AccountPool, Backend, Pooled};
 use crate::providers::{BoxFuture, EventStream, Provider};
 use crate::status::{AccountStatus, ProviderStatus};
-use futures_util::TryFutureExt;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -175,15 +174,19 @@ impl Provider for Codex {
             };
             let body = Arc::new(body);
             let caller = request.caller.clone();
-            let opening = self.pooled.pool.clone().stream(
-                Some(session),
-                move |account| {
-                    let (body, caller) = (body.clone(), caller.clone());
-                    Box::pin(async move { account.client.events(&body, &caller).await })
-                },
-                self.pooled.failover(request.starts_conversation()),
-            );
-            let events: EventStream = Box::pin(opening.try_flatten_stream());
+            let events: EventStream = self
+                .pooled
+                .pool
+                .clone()
+                .stream(
+                    Some(session),
+                    move |account| {
+                        let (body, caller) = (body.clone(), caller.clone());
+                        Box::pin(async move { account.client.events(&body, &caller).await })
+                    },
+                    self.pooled.failover(request.starts_conversation()),
+                )
+                .await?;
             let decoder = CodexDecoder::new(self.pooled.cache.clone());
             Ok((events, Box::new(decoder) as Box<dyn Decoder>))
         })

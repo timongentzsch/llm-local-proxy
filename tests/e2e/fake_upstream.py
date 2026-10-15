@@ -8,7 +8,8 @@ through, and logs every request it receives, so a test can check what was
     fake_upstream.py PORT LOG
 
 The scenario is chosen by the last user text of the request: "tool" answers
-with reasoning and a tool call, "limited" with a 429, "long" with a slow
+with reasoning and a tool call, "limited" with a 429, "rejected" with a 400,
+"cut" with text that stops before the stream's end, "long" with a slow
 200-piece answer, anything else with text.
 """
 
@@ -473,6 +474,17 @@ class Handler(BaseHTTPRequestHandler):
                         "error": {"type": "rate_limit_error", "message": "slow down"},
                     },
                 )
+            if "rejected" in scenario:
+                return self._json(
+                    400,
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "Could not process image",
+                        },
+                    },
+                )
             if body.get("max_tokens") == 0:
                 return self._json(
                     200,
@@ -488,6 +500,8 @@ class Handler(BaseHTTPRequestHandler):
             if "long" in scenario:
                 return self._sse(claude_long(), named=True)
             events = claude_tool() if "tool" in scenario else claude_text()
+            if "cut" in scenario:
+                events = events[:4]
             return self._sse(events, named=True)
         if self.path == "/backend-api/codex/responses":
             if (body.get("reasoning") or {}).get("effort") == "__probe__":
@@ -505,7 +519,14 @@ class Handler(BaseHTTPRequestHandler):
                     429,
                     {"error": {"type": "usage_limit_reached", "message": "slow down"}},
                 )
+            if "rejected" in scenario:
+                return self._json(
+                    400,
+                    {"error": {"message": "Could not process image"}},
+                )
             events = codex_tool() if "tool" in scenario else codex_text()
+            if "cut" in scenario:
+                events = events[:3]
             return self._sse(events, named=True)
         self._json(404, {"error": {"message": "not found"}})
 
