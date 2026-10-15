@@ -16,7 +16,6 @@ use crate::providers::pool::{account_file, account_id, Account, AccountPool, Bac
 use crate::providers::{BoxFuture, EventStream, Provider};
 use crate::status::{AccountStatus, ProviderStatus};
 use crate::tools::flatten;
-use futures_util::TryFutureExt;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -215,15 +214,19 @@ impl Provider for Claude {
             let names = flatten(&request.tools)?.1;
             let (body, betas) = (Arc::new(body), Arc::new(betas));
             let caller = request.caller.clone();
-            let opening = self.pooled.pool.clone().stream(
-                Some(request.session.clone()),
-                move |account| {
-                    let (body, betas, caller) = (body.clone(), betas.clone(), caller.clone());
-                    Box::pin(async move { account.client.events(&body, &betas, &caller).await })
-                },
-                self.pooled.failover(request.starts_conversation()),
-            );
-            let events: EventStream = Box::pin(opening.try_flatten_stream());
+            let events: EventStream = self
+                .pooled
+                .pool
+                .clone()
+                .stream(
+                    Some(request.session.clone()),
+                    move |account| {
+                        let (body, betas, caller) = (body.clone(), betas.clone(), caller.clone());
+                        Box::pin(async move { account.client.events(&body, &betas, &caller).await })
+                    },
+                    self.pooled.failover(request.starts_conversation()),
+                )
+                .await?;
             let decoder =
                 ClaudeDecoder::new(Some(self.pooled.cache.clone()), names, self.ids.clone());
             Ok((events, Box::new(decoder) as Box<dyn Decoder>))

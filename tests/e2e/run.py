@@ -243,13 +243,20 @@ def script(client: Client):
                 for path, body in text(model, prompt, stream):
                     kind = "stream" if stream else "plain"
                     yield f"{model} {path} {kind} {prompt!r}", post(path, body)
-    # The upstream refuses: a status for a plain request, a frame for a stream.
+    # The upstream refuses: the same status for a plain request and for a
+    # stream that has sent nothing. One that dies after its first text is a
+    # frame, since the 200 is already out.
     for model in ("claude-test", "gpt-test"):
         for stream in (False, True):
             path, body = text(model, "limited", stream)[0]
             yield f"{model} limited stream={stream}", post(path, body)
             path, body = text(model, "limited", stream)[2]
             yield f"{model} limited messages stream={stream}", post(path, body)
+            for prompt in ("rejected", "cut"):
+                if prompt == "cut" and not stream:
+                    continue
+                for path, body in text(model, prompt, stream):
+                    yield f"{model} {prompt} {path} stream={stream}", post(path, body)
 
     # A tool round, replayed: signed reasoning must survive every dialect.
     yield (

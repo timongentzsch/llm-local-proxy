@@ -40,7 +40,9 @@ pub trait Provider: Send + Sync {
     /// (canonical model, parsed request) -> (upstream events, decoder).
     ///
     /// The request is rendered here, so one the upstream cannot express fails
-    /// now; the stream itself opens on first poll.
+    /// now. The stream is opened here too, up to its first event, so an
+    /// upstream refusal is an error the caller can answer with its status
+    /// before any response bytes are committed.
     fn chat<'a>(
         &'a self,
         canonical: &'a str,
