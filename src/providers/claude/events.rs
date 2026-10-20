@@ -398,9 +398,9 @@ impl Decoder for ClaudeDecoder {
             .into(),
             ..Finish::default()
         });
-        // Claude runs no search that follows a client tool call in the same
-        // response; it stops at the call, and a search still open then never
-        // ran. (At `pause_turn` an open search resumes on the continuation.)
+        // Claude runs no search in a response that also calls a client tool;
+        // it stops at the call, and a search still open then never ran. (At
+        // `pause_turn` an open search resumes on the continuation.)
         let stopped_at_call = stop.reason == "tool_use";
         let mut open: Vec<String> = self
             .search_phase
