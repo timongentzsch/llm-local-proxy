@@ -44,7 +44,7 @@ pub struct Options<'a> {
 /// Claude is never told the search did not run, and without this note it
 /// works around results it believes it has.
 const DROPPED_SEARCH: &str = "The web_search you issued in your previous response did not run: \
-Claude drops a search that follows another tool call in the same response. Run it again on its own.";
+Claude drops a search in a response that also calls another tool. Run it again on its own.";
 
 /// Block kinds Claude signs, and therefore will not accept rebuilt.
 const SIGNED: [&str; 2] = ["thinking", "redacted_thinking"];
@@ -470,20 +470,15 @@ fn float(value: &Value) -> Value {
         .map_or(Value::Null, Value::Number)
 }
 
-/// A search echoed after a tool call of its turn and never completed: Claude
-/// stopped at the call, so the search did not run.
+/// A turn with a tool call and a search that never completed: Claude stopped
+/// at the call, so the search did not run.
 fn drops_search(turn: &Turn) -> bool {
-    let mut after_call = false;
-    turn.blocks.iter().any(|block| match block {
-        Block::ToolUse(_) => {
-            after_call = true;
-            false
-        }
-        Block::HostedSearch { item, .. } => {
-            after_call && item.get("status") != Some(&json!("completed"))
-        }
-        _ => false,
-    })
+    let has = |wanted: fn(&Block) -> bool| turn.blocks.iter().any(wanted);
+    has(|block| matches!(block, Block::ToolUse(_)))
+        && has(|block| match block {
+            Block::HostedSearch { item, .. } => item.get("status") != Some(&json!("completed")),
+            _ => false,
+        })
 }
 
 /// The conversation as Messages turns.
