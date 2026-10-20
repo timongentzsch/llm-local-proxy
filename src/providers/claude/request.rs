@@ -40,6 +40,12 @@ pub struct Options<'a> {
     pub reasoning_cache: Option<&'a ReasoningCache>,
 }
 
+/// Told to Claude after the tool results of a turn whose search it dropped.
+/// Claude is never told the search did not run, and without this note it
+/// works around results it believes it has.
+const DROPPED_SEARCH: &str = "The web_search you issued in your previous response did not run: \
+Claude drops a search that follows another tool call in the same response. Run it again on its own.";
+
 /// Block kinds Claude signs, and therefore will not accept rebuilt.
 const SIGNED: [&str; 2] = ["thinking", "redacted_thinking"];
 
@@ -464,12 +470,35 @@ fn float(value: &Value) -> Value {
         .map_or(Value::Null, Value::Number)
 }
 
+/// A search echoed after a tool call of its turn and never completed: Claude
+/// stopped at the call, so the search did not run.
+fn drops_search(turn: &Turn) -> bool {
+    let mut after_call = false;
+    turn.blocks.iter().any(|block| match block {
+        Block::ToolUse(_) => {
+            after_call = true;
+            false
+        }
+        Block::HostedSearch { item, .. } => {
+            after_call && item.get("status") != Some(&json!("completed"))
+        }
+        _ => false,
+    })
+}
+
 /// The conversation as Messages turns.
 fn messages(request: &ChatRequest, options: &Options<'_>, ids: &dyn Ids) -> Result<Vec<Value>> {
     let mut messages = Vec::new();
     let mut dropped: Vec<Outcome> = Vec::new();
+    let mut dropped_search = false;
     for turn in &request.turns {
-        let content = blocks(turn, options.reasoning_cache, &mut dropped, ids)?;
+        let mut content = blocks(turn, options.reasoning_cache, &mut dropped, ids)?;
+        if turn.role == Role::User && std::mem::take(&mut dropped_search) {
+            content.push(obj! {"type": "text", "text": DROPPED_SEARCH});
+        }
+        if turn.role == Role::Assistant {
+            dropped_search = drops_search(turn);
+        }
         if !content.is_empty() {
             messages.push(json!({"role": turn.role.as_str(), "content": content}));
         }
