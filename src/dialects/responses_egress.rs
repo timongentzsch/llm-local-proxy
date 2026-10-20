@@ -333,10 +333,16 @@ impl ResponseEncoder {
             chunks.push(self.event("response.web_search_call.searching", fields));
             return chunks;
         }
-        if !matches!(event.phase.as_str(), "completed" | "failed") {
+        if !matches!(event.phase.as_str(), "completed" | "failed" | "dropped") {
             return chunks;
         }
-        self.set_field(index, "status", json!(event.phase));
+        // Responses has no status for a search that never ran.
+        let status = if event.phase == "dropped" {
+            "failed"
+        } else {
+            &event.phase
+        };
+        self.set_field(index, "status", json!(status));
         if event.phase == "completed" {
             let fields = obj! {"output_index": index, "item_id": self.item_id(index)};
             chunks.push(self.event("response.web_search_call.completed", fields));

@@ -228,6 +228,8 @@ pub struct ToolChoice {
 pub struct HostedToolEvent {
     pub tool: String,
     pub id: String,
+    /// `started`, `searching`, then `completed` or `failed`; or `dropped`,
+    /// when the provider ended its response without running the search.
     pub phase: String,
     /// What the provider searched for, when it said. Carried so an Anthropic
     /// client sees the `server_tool_use` input its upstream actually sent.
@@ -352,7 +354,7 @@ fn phase_rank(phase: &str) -> Option<i32> {
     match phase {
         "started" => Some(0),
         "searching" => Some(1),
-        "completed" | "failed" => Some(2),
+        "completed" | "failed" | "dropped" => Some(2),
         _ => None,
     }
 }

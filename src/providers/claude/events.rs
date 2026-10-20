@@ -398,7 +398,24 @@ impl Decoder for ClaudeDecoder {
             .into(),
             ..Finish::default()
         });
-        let mut events = vec![StreamEvent::Finish(stop)];
+        // Claude runs no search that follows a client tool call in the same
+        // response; it stops at the call, and a search still open then never
+        // ran. (At `pause_turn` an open search resumes on the continuation.)
+        let stopped_at_call = stop.reason == "tool_use";
+        let mut open: Vec<String> = self
+            .search_phase
+            .iter()
+            .filter(|(_, phase)| {
+                stopped_at_call && matches!(phase.as_str(), "started" | "searching")
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        open.sort();
+        let mut events: Vec<StreamEvent> = open
+            .iter()
+            .flat_map(|id| self.hosted(id, "dropped", String::new(), String::new(), None))
+            .collect();
+        events.push(StreamEvent::Finish(stop));
         if let Some(usage) = self.usage.snapshot(self.web_searches.len() as i64) {
             events.push(StreamEvent::Usage(usage));
         }
