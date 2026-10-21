@@ -49,6 +49,9 @@ pub struct ClaudeDecoder {
     thinking_id: String,
     text_span: String,
     open_redacted: Option<String>,
+    /// A server tool's use or result other than search, and the input it
+    /// streams: passed on whole when it closes.
+    open_native: Option<(Object, String)>,
     stop: Option<Finish>,
     usage: ClaudeUsage,
 }
@@ -70,6 +73,7 @@ impl ClaudeDecoder {
             thinking_id: String::new(),
             text_span: String::new(),
             open_redacted: None,
+            open_native: None,
             stop: None,
             usage: ClaudeUsage::new(),
         }
@@ -81,6 +85,15 @@ impl ClaudeDecoder {
         let index = get(event, "index").clone();
         if kind == "text" {
             self.text_span = py_str(&index);
+        }
+        let name = get(block, "name").as_str().unwrap_or("");
+        if (kind == "server_tool_use" && name != "web_search")
+            || (kind.ends_with("_tool_result") && kind != "web_search_tool_result")
+        {
+            if let Value::Object(block) = block {
+                self.open_native = Some((block.clone(), String::new()));
+            }
+            return vec![];
         }
         match kind {
             "tool_use" => return self.tool_start(block, index),
@@ -225,6 +238,12 @@ impl ClaudeDecoder {
                 },
             });
         }
+        if let Some((mut block, input)) = self.open_native.take() {
+            if let Ok(Value::Object(input)) = serde_json::from_str::<Value>(&input) {
+                block.insert("input".into(), Value::Object(input));
+            }
+            events.push(StreamEvent::NativeBlock { block });
+        }
         events.extend(self.close_call());
         events
     }
@@ -277,6 +296,10 @@ impl ClaudeDecoder {
             }
             "input_json_delta" => {
                 let piece = field("partial_json");
+                if let Some((_, input)) = self.open_native.as_mut() {
+                    input.push_str(&piece);
+                    return vec![];
+                }
                 match self.open_call.as_mut() {
                     Some(call) if !piece.is_empty() => {
                         call.arguments.push_str(&piece);

@@ -579,6 +579,7 @@ fn tools(request: &ChatRequest, betas: &mut Vec<String>) -> Result<Vec<Value>> {
                     betas.push(WEB_SEARCH_BETA.into());
                 }
             }
+            Tool::NativeAnthropic(item) => tools.push(Value::Object(item.clone())),
             Tool::Native(item) | Tool::Namespace(crate::ir::ToolNamespace { item, .. }) => {
                 return Err(Error::request(format!(
                     "Claude upstream cannot faithfully represent Responses tools: {}",

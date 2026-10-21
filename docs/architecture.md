@@ -38,7 +38,7 @@ N + M instead of N × M.
   calls; tool calls carry their `namespace` back to the client.
 - **`StreamEvent`** is the response vocabulary: `TextDelta`, `ThinkingDelta`,
   `ThinkingSignature`, `RedactedThinkingDelta`, `ReasoningItem`, `NativeItem`,
-  `ToolCallStart`/`ToolCallArgs`/`ToolCallEnd`, `HostedToolEvent`, `Citation`,
+  `NativeBlock`, `ToolCallStart`/`ToolCallArgs`/`ToolCallEnd`, `HostedToolEvent`, `Citation`,
   `Usage` and `Finish`. Stop reasons use Anthropic's seven-value enum; Chat
   Completions narrows them to four.
 

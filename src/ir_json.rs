@@ -87,6 +87,7 @@ fn tool_json(tool: &Tool) -> Value {
             "source": search.source.as_str(),
         }),
         Tool::Native(item) => json!({"type": "NativeTool", "item": item}),
+        Tool::NativeAnthropic(item) => json!({"type": "NativeAnthropicTool", "item": item}),
         Tool::Namespace(namespace) => json!({
             "type": "ToolNamespace",
             "name": namespace.name,
@@ -156,6 +157,7 @@ pub fn event_json(event: &StreamEvent) -> Value {
         }
         StreamEvent::ReasoningItem { item } => json!({"type": "ReasoningItem", "item": item}),
         StreamEvent::NativeItem { item } => json!({"type": "NativeItem", "item": item}),
+        StreamEvent::NativeBlock { block } => json!({"type": "NativeBlock", "block": block}),
         StreamEvent::ToolCallStart {
             index,
             id,
@@ -310,6 +312,7 @@ fn tool_from(value: &Value) -> Tool {
             source: source(value),
         }),
         "NativeTool" => Tool::Native(o(value, "item")),
+        "NativeAnthropicTool" => Tool::NativeAnthropic(o(value, "item")),
         "ToolNamespace" => Tool::Namespace(ToolNamespace {
             name: s(value, "name"),
             tools: value["tools"]
@@ -404,6 +407,9 @@ pub fn event_from(value: &Value) -> StreamEvent {
         },
         "NativeItem" => StreamEvent::NativeItem {
             item: o(value, "item"),
+        },
+        "NativeBlock" => StreamEvent::NativeBlock {
+            block: o(value, "block"),
         },
         "ToolCallStart" => StreamEvent::ToolCallStart {
             index: value["index"].clone(),

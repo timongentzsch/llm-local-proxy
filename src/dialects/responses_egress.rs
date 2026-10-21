@@ -517,6 +517,10 @@ impl Encoder for ResponseEncoder {
             StreamEvent::ThinkingDelta { text, item_id } => self.one_thinking(&text, &item_id),
             StreamEvent::ReasoningItem { item } => Ok(self.complete_reasoning(item)),
             StreamEvent::NativeItem { item } => Ok(self.one_native(item)),
+            StreamEvent::NativeBlock { .. } => Err(Error::provider(
+                502,
+                "native Anthropic output requires the Messages endpoint",
+            )),
             StreamEvent::TextDelta { text, .. } => self.one_text(&text),
             StreamEvent::ToolCallStart {
                 index,

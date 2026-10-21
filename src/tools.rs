@@ -210,6 +210,10 @@ pub fn responses_tool(tool: &Tool) -> Result<Object> {
         Tool::Native(item) => Ok(item.clone()),
         Tool::Namespace(namespace) => Ok(namespace.item.clone()),
         Tool::WebSearch(search) => responses_web_search(search),
+        Tool::NativeAnthropic(item) => Err(Error::request(format!(
+            "{} is an Anthropic tool; only Claude models take it",
+            item.get("type").map_or_else(|| "unknown".into(), py_str)
+        ))),
         Tool::Function(function) => {
             let mut result = crate::obj! { "type": "function" };
             result.extend(render_function(function, "responses", "parameters")?);
