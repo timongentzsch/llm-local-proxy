@@ -61,11 +61,15 @@ impl LimitsStore {
             state.reading = true;
             state.generation
         };
-        if wait {
-            return self.refresh(generation).await;
-        }
+        // Spawned even when waiting: a caller that leaves mid-read must not
+        // take the read with it, or `reading` stays set and no read follows.
         let store = self.clone();
-        tokio::spawn(async move { store.refresh(generation).await });
+        let read = tokio::spawn(async move { store.refresh(generation).await });
+        if wait {
+            if let Ok(result) = read.await {
+                return result;
+            }
+        }
         let state = self.state.locked();
         (state.bars.clone(), state.updated_at)
     }
@@ -136,4 +140,43 @@ pub fn fullest(bars: &[Limit]) -> Option<f64> {
         .fold(None, |max, value| {
             Some(max.map_or(value, |max: f64| max.max(value)))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn a_read_outlives_the_caller_that_left() {
+        let gate = Arc::new(Notify::new());
+        let opened = gate.clone();
+        let store = LimitsStore::new(
+            "test",
+            Box::new(move || {
+                let gate = opened.clone();
+                Box::pin(async move {
+                    gate.notified().await;
+                    Ok(vec![Limit {
+                        label: "5 hour".into(),
+                        used_percent: 1.0,
+                        resets_at: Value::Null,
+                        model: String::new(),
+                    }])
+                })
+            }),
+        );
+        // A dashboard request dropped mid-read must not leave the store reading.
+        let left = tokio::time::timeout(Duration::from_millis(10), store.current(true)).await;
+        assert!(left.is_err());
+        gate.notify_one();
+        let landed = tokio::time::timeout(Duration::from_secs(1), async {
+            while store.last().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(landed.is_ok());
+    }
 }
