@@ -186,6 +186,9 @@ pub enum Tool {
     WebSearch(WebSearchTool),
     /// A Responses tool definition retained without schema conversion.
     Native(Object),
+    /// An Anthropic tool type other than search (code execution, bash, ...),
+    /// sent to Claude as the client defined it.
+    NativeAnthropic(Object),
     Namespace(ToolNamespace),
 }
 
@@ -318,6 +321,11 @@ pub enum StreamEvent {
     /// A complete native Responses output item.
     NativeItem {
         item: Object,
+    },
+    /// A complete Anthropic content block with no neutral form: a server
+    /// tool's use or result other than search, as Claude streamed it.
+    NativeBlock {
+        block: Object,
     },
     ToolCallStart {
         /// Stable within one response; providers number calls differently,

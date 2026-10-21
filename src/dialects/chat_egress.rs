@@ -116,6 +116,10 @@ impl Encoder for ChunkEncoder {
                 502,
                 "native Responses output requires the Responses endpoint",
             )),
+            StreamEvent::NativeBlock { .. } => Err(Error::provider(
+                502,
+                "native Anthropic output requires the Messages endpoint",
+            )),
             StreamEvent::TextDelta { text, .. } => {
                 self.content.push_str(&text);
                 Ok(vec![self.chunk(json!({"content": text}), None)])

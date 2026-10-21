@@ -160,7 +160,11 @@ fn block(part: &Value) -> Result<Block> {
     }
     let source = part.get("source").unwrap_or(&null);
     let file_image = is("image") && source.get("type") == Some(&Value::String("file".into()));
+    // A server tool's result (code execution, web fetch, ...) has no neutral
+    // form either; search's was taken above.
+    let server_result = kind_name.ends_with("_tool_result") && kind_name != "tool_result";
     if NATIVE_KINDS.contains(&kind_name)
+        || server_result
         || file_image
         || (cache.is_some() && !CACHED_KINDS.contains(&kind_name))
     {
@@ -291,7 +295,9 @@ fn tools(value: &Value) -> Result<Vec<Tool>> {
             continue;
         }
         if !kind.is_empty() && kind != "custom" {
-            return Err(Error::request(format!("unsupported server tool: {kind}")));
+            // Another tool type of Anthropic's: sent on as the client wrote it.
+            tools.push(Tool::NativeAnthropic(item.clone()));
+            continue;
         }
         let fields: Object = item
             .iter()

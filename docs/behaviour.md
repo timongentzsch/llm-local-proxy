@@ -68,6 +68,15 @@ search replays to the upstream that ran it and is left out elsewhere, so
 conversations continue across formats. Function calls always return to the
 client.
 
+## Other Anthropic tools
+
+Any other tool type a Messages client defines (`code_execution_20250825`,
+`web_fetch_20250910`, `bash_20250124`, ...) goes to Claude as written. What a
+server tool ran comes back as Claude streamed it: its `server_tool_use`, with
+the input it streamed, and its `*_tool_result`, which the client replays in
+later turns. Codex refuses such a tool, and the Chat Completions and
+Responses endpoints refuse the blocks: they have no form for them.
+
 ## Limits
 
 Codex ignores `max_tokens`. Claude requires one, so it receives the

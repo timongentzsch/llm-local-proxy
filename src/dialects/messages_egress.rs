@@ -26,6 +26,8 @@ enum Kind {
     ToolUse,
     ServerToolUse,
     WebSearchToolResult,
+    /// A block passed on whole, as the upstream wrote it.
+    Native,
 }
 
 /// The content block being written, and what its closing needs.
@@ -277,6 +279,11 @@ impl Encoder for MessageEncoder {
                 502,
                 "native Responses output requires the Responses endpoint",
             )),
+            StreamEvent::NativeBlock { block } => {
+                let mut frames = self.open_block(Kind::Native, block)?;
+                frames.extend(self.close()?);
+                Ok(frames)
+            }
             StreamEvent::TextDelta { text, span } => {
                 let mut frames = self.text(&span)?;
                 self.open_mut()?.set_text("text", &text);
