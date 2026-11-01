@@ -471,12 +471,15 @@ fn float(value: &Value) -> Value {
 }
 
 /// A turn with a tool call and a search that never completed: Claude stopped
-/// at the call, so the search did not run.
+/// at the call, so the search did not run. Only a Responses item has a status;
+/// a Messages client echoes Claude's own blocks, which carry none.
 fn drops_search(turn: &Turn) -> bool {
     let has = |wanted: fn(&Block) -> bool| turn.blocks.iter().any(wanted);
     has(|block| matches!(block, Block::ToolUse(_)))
         && has(|block| match block {
-            Block::HostedSearch { item, .. } => item.get("status") != Some(&json!("completed")),
+            Block::HostedSearch { item, source } => {
+                *source == Source::Responses && item.get("status") != Some(&json!("completed"))
+            }
             _ => false,
         })
 }
