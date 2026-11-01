@@ -254,9 +254,12 @@ exists only for these tests.
    forward lifecycle steps are emitted. When the client echoes these records,
    ingress parses them as `HostedSearch`: they replay verbatim to an upstream
    of the same format (Anthropic requires them to continue a `pause_turn`) and
-   are omitted elsewhere, since the search has run and its answer is in the
-   transcript. Cited text keeps its citations for Claude and its text for
-   Codex.
+   are omitted elsewhere. A `web_search_call` holds no results, so once a
+   Responses client has moved past a search on Claude, the model keeps only
+   what it wrote about them. Where a response searches and then calls a
+   function it wrote nothing, and the results are gone: such a client should
+   use the Messages endpoint or run search as a tool of its own. Cited text
+   keeps its citations for Claude and its text for Codex.
 4. **Prompt caching.** Cache controls are hints in the IR (`cache` on blocks,
    tools and the request: None, or a TTL). Claude renders them as
    `cache_control`, and adds its automatic top-level breakpoint only when the

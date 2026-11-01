@@ -108,8 +108,8 @@ pub enum Block {
     ///
     /// It replays verbatim to an upstream that speaks `source` (the
     /// pause_turn continuation Anthropic requires) and is omitted elsewhere:
-    /// the search already ran, its answer is in the transcript, and the
-    /// record was written for the client by this proxy.
+    /// the record was written for the client by this proxy and holds no
+    /// results, so the model keeps only what its answer says of them.
     HostedSearch {
         item: Object,
         source: Source,

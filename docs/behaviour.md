@@ -65,7 +65,11 @@ user's approximate location carry across formats; search caps and context
 sizes are hints. Options with no equivalent are refused: blocked domains on
 Codex, cache-only search on Claude. Results arrive as citations. A finished
 search replays to the upstream that ran it and is left out elsewhere, so
-conversations continue across formats. Function calls always return to the
+conversations continue across formats. Over Responses to Claude the results
+themselves don't survive the response: a model that searched and then called
+a function no longer sees them on the next request, and can take its figures
+for invented ones. Use the Messages endpoint, or run search as a tool of the
+client's own, for those conversations. Function calls always return to the
 client.
 
 ## Other Anthropic tools
