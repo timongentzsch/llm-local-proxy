@@ -225,12 +225,12 @@ exists only for these tests.
   tokens because Codex reports usage only at the end; `message_delta` carries
   the final totals.
 
-| Anthropic stop reason | Chat Completions |
-| --- | --- |
-| `end_turn`, `stop_sequence`, `pause_turn` | `stop` |
-| `tool_use` | `tool_calls` |
-| `max_tokens`, `model_context_window_exceeded` | `length` |
-| `refusal` | `content_filter` |
+| Anthropic stop reason | Chat Completions | Responses |
+| --- | --- | --- |
+| `end_turn`, `stop_sequence`, `pause_turn` | `stop` | `completed` |
+| `tool_use` | `tool_calls` | `completed` |
+| `max_tokens`, `model_context_window_exceeded` | `length` | `incomplete`, `max_output_tokens` |
+| `refusal` | `content_filter` | `incomplete`, `content_filter` |
 
 ## Sharp edges
 

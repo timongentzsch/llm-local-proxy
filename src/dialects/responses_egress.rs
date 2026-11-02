@@ -558,6 +558,9 @@ impl Encoder for ResponseEncoder {
                     {
                         Some("max_output_tokens".into())
                     }
+                    // A completed response with no output reads as the model
+                    // having nothing to say; Chat says content_filter too.
+                    _ if event.reason == "refusal" => Some("content_filter".into()),
                     _ => None,
                 };
                 Ok(Vec::new())
