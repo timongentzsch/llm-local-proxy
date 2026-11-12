@@ -184,11 +184,16 @@ fn anthropic_catalog(models: &[Value]) -> Value {
                 "display_name": if truthy(name) { name } else { id },
                 "created_at": "1970-01-01T00:00:00Z",
             };
-            // Anthropic's own field for the window. A client that sizes its
-            // context against the catalog gets the same number on both mounts.
+            // Anthropic's own fields for the window and the output limit. A
+            // client that sizes its context or its replies against the catalog
+            // gets the same numbers on both mounts.
             let context = get(model, "context_length");
             if truthy(context) {
                 entry.insert("max_input_tokens".into(), context.clone());
+            }
+            let output = get(get(model, "default_parameters"), "max_tokens");
+            if truthy(output) {
+                entry.insert("max_tokens".into(), output.clone());
             }
             Value::Object(entry)
         })
@@ -261,11 +266,14 @@ mod tests {
         assert_eq!((ANTHROPIC.error)(502, "x")["error"]["type"], "api_error");
 
         let models = [
-            json!({"id": "m", "name": "M", "context_length": 1000}),
+            json!({"id": "m", "name": "M", "context_length": 1000,
+                   "default_parameters": {"max_tokens": 100}}),
             json!({"id": "n"}),
         ];
         let listing = (ANTHROPIC.catalog)(&models);
         assert_eq!(listing["data"][0]["max_input_tokens"], 1000);
+        assert_eq!(listing["data"][0]["max_tokens"], 100);
+        assert!(listing["data"][1].get("max_tokens").is_none());
         assert_eq!(listing["data"][1]["display_name"], "n");
         assert_eq!(listing["first_id"], "m");
         assert_eq!(listing["last_id"], "n");
