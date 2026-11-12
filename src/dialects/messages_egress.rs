@@ -109,6 +109,9 @@ impl MessageEncoder {
                 Ok(input) => {
                     open.block.insert("input".into(), Value::Object(input));
                 }
+                // A call the length limit cut is closed as it stands, as
+                // Anthropic closes it: the stop reason tells the client.
+                Err(_) if self.cut() => {}
                 Err(error) => {
                     self.open = Some(open);
                     return Err(error);
@@ -236,6 +239,13 @@ impl MessageEncoder {
 
     // -- message assembly -------------------------------------------------
 
+    fn cut(&self) -> bool {
+        matches!(
+            self.stop_reason.as_deref(),
+            Some("max_tokens" | "model_context_window_exceeded")
+        )
+    }
+
     fn stop(&self) -> String {
         match &self.stop_reason {
             Some(reason) if !reason.is_empty() => reason.clone(),
@@ -344,7 +354,9 @@ impl Encoder for MessageEncoder {
                     json!({"type": "input_json_delta", "partial_json": fragment}),
                 )])
             }
-            StreamEvent::ToolCallEnd { .. } => self.close(),
+            // Whether a broken call was cut by the length limit shows only in
+            // the stop reason, which follows: until then it stays open.
+            StreamEvent::ToolCallEnd { .. } => Ok(self.close().unwrap_or_default()),
             StreamEvent::HostedTool(event) => self.hosted(event),
             StreamEvent::Citation(event) => self.citation_frames(event),
             StreamEvent::Usage(event) => {

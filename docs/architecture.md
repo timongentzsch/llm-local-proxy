@@ -224,6 +224,10 @@ exists only for these tests.
   open at a time under rising indices. `message_start` reports zero input
   tokens because Codex reports usage only at the end; `message_delta` carries
   the final totals.
+- **Tool calls.** Arguments that are not a JSON object fail the response: a
+  broken call is never passed on as an empty one. A call the length limit cut
+  is the exception. Its block is closed as it stands and `max_tokens` or
+  `model_context_window_exceeded` is the stop reason, as Anthropic reports it.
 
 | Anthropic stop reason | Chat Completions | Responses |
 | --- | --- | --- |
