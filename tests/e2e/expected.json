@@ -10,7 +10,7 @@
   "dashboard": {
    "status": 200,
    "content_type": "text/html; charset=utf-8",
-   "body": "<html of 38076 bytes>"
+   "body": "<html of 38218 bytes>"
   },
   "favicon": {
    "status": 204,
@@ -381,6 +381,7 @@
           "model": "Opus"
          }
         ],
+        "notes": [],
         "tokens": {
          "5h": {
           "input": 0,
@@ -434,6 +435,9 @@
           "resets_at": 1787820907,
           "model": ""
          }
+        ],
+        "notes": [
+         "2 limit resets available"
         ],
         "tokens": {
          "5h": {
@@ -4577,6 +4581,7 @@
           "model": "Opus"
          }
         ],
+        "notes": [],
         "tokens": {
          "5h": {
           "input": 400,
@@ -4632,6 +4637,9 @@
           "resets_at": 1787820907,
           "model": ""
          }
+        ],
+        "notes": [
+         "2 limit resets available"
         ],
         "tokens": {
          "5h": {
@@ -4729,6 +4737,7 @@
         "signed_in": false,
         "account": "",
         "limits": [],
+        "notes": [],
         "tokens": {},
         "updated_at": null,
         "error": "",
@@ -4751,6 +4760,7 @@
         "signed_in": false,
         "account": "",
         "limits": [],
+        "notes": [],
         "tokens": {
          "5h": {
           "input": 728,

@@ -11,9 +11,9 @@
 use crate::atomic::JsonFile;
 use crate::error::{Error, Result};
 use crate::json::{get, py_str, truthy, Object};
-use crate::providers::limits::LimitsStore;
+use crate::providers::limits::{LimitsStore, Reading};
 use crate::providers::pool::Auth;
-use crate::providers::transport::{endpoint, form, unreachable};
+use crate::providers::transport::{endpoint, form, retry_after, unreachable};
 use crate::providers::BoxFuture;
 use crate::status::{window_name, AccountStatus, Limit};
 use crate::sync::LockExt;
@@ -265,13 +265,15 @@ impl CodexAuth {
                 refresh = true;
                 continue;
             }
+            // How long a rate-limited read should stay away, when it says.
+            let cooldown = retry_after(response.headers()).filter(|_| status == 429);
             let raw = response.text().await.unwrap_or_default();
             if !(200..300).contains(&status) {
                 return Err(Error::Provider {
                     status,
                     message: format!("Codex {what} failed: {}", error_detail(&raw).1),
                     account_unavailable: status == 401,
-                    cooldown: None,
+                    cooldown,
                 });
             }
             return serde_json::from_str(&raw)
@@ -281,8 +283,12 @@ impl CodexAuth {
 
     /// Read-only metadata: it costs no tokens and covers the whole
     /// subscription, other clients included.
-    pub async fn limits(&self) -> Result<Vec<Limit>> {
-        Ok(limits(&self.backend(&endpoint(USAGE_URL), "usage").await?))
+    pub async fn limits(&self) -> Result<Reading> {
+        let usage = self.backend(&endpoint(USAGE_URL), "usage").await?;
+        Ok(Reading {
+            bars: limits(&usage),
+            notes: notes(&usage),
+        })
     }
 
     /// The models this login may use, as the backend lists them.
@@ -502,7 +508,9 @@ impl Auth for CodexAuth {
         Box::pin(async {
             let mut status = self.card().await;
             if let Some(limits) = self.limits.get().filter(|_| status.signed_in) {
-                (status.limits, status.updated_at) = limits.current(true).await;
+                let (reading, updated_at) = limits.current(true).await;
+                (status.limits, status.notes, status.updated_at) =
+                    (reading.bars, reading.notes, updated_at);
             }
             Ok(status)
         })
@@ -616,9 +624,40 @@ pub fn limits(value: &Value) -> Vec<Limit> {
     items.into_iter().map(|(_, _, limit)| limit).collect()
 }
 
+/// Account facts the usage document carries beside its windows.
+///
+/// A limit reset is a credit that empties the windows on demand; one left
+/// unspent is worth knowing about before a limit bites.
+pub fn notes(value: &Value) -> Vec<String> {
+    let resets = get(get(value, "rate_limit_reset_credits"), "available_count")
+        .as_u64()
+        .unwrap_or(0);
+    match resets {
+        0 => Vec::new(),
+        1 => vec!["1 limit reset available".into()],
+        count => vec![format!("{count} limit resets available")],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unspent_limit_resets_are_noted() {
+        let credits =
+            |count: Value| json!({"rate_limit_reset_credits": {"available_count": count}});
+        assert_eq!(notes(&credits(json!(2))), ["2 limit resets available"]);
+        assert_eq!(notes(&credits(json!(1))), ["1 limit reset available"]);
+        for none in [
+            credits(json!(0)),
+            credits(json!("2")),
+            json!({}),
+            json!(null),
+        ] {
+            assert!(notes(&none).is_empty());
+        }
+    }
 
     fn jwt(claims: Value) -> String {
         let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());

@@ -62,7 +62,7 @@ impl Backend for ClaudeBackend {
             Self::NAME,
             Box::new(move || {
                 let reader = reader.clone();
-                Box::pin(async move { reader.limits().await })
+                Box::pin(async move { reader.limits().await.map(Into::into) })
             }),
         );
         let account = Account {
@@ -95,7 +95,9 @@ impl Backend for ClaudeBackend {
                 return Ok(status);
             }
             if let Some(limits) = &account.limits {
-                (status.limits, status.updated_at) = limits.current(true).await;
+                let (reading, updated_at) = limits.current(true).await;
+                (status.limits, status.notes, status.updated_at) =
+                    (reading.bars, reading.notes, updated_at);
             }
             status.tokens = json!(account.client.ledger.windows());
             Ok(status)

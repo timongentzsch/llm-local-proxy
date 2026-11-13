@@ -123,7 +123,11 @@ include its other clients: Claude's from its OAuth usage endpoint, read at most
 every 30 seconds, and Codex's from its usage endpoint likewise. Neither read
 sends a message, so watching the dashboard never costs tokens or starts a
 window; a window with no activity yet, such as Codex's 5-hour one, appears once
-it opens. The proxy token counts cover proxy traffic only: they come from
+it opens. A model's own allowance gets a bar named for the model and its
+window, and Codex limit resets still unspent are noted under the bars. A read
+that is refused waits five minutes before the next, or as long as a 429's
+`Retry-After` says, up to an hour; the last bars stand meanwhile, and a window
+whose reset passes while they stand reads as unused. The proxy token counts cover proxy traffic only: they come from
 upstream usage and are recorded once per request over rolling 5-hour and
 7-day windows. A stream that ends before final accounting keeps its last
 reported counts and is marked as partial; missing counts are never estimated,
