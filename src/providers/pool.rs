@@ -232,8 +232,8 @@ impl<C: Send + Sync + 'static> AccountPool<C> {
         let Some(limits) = &account.limits else {
             return false;
         };
-        let (bars, _) = limits.current(false).await;
-        fullest(&bars).unwrap_or(0.0) >= SOFT_LIMIT_PERCENT
+        let (reading, _) = limits.current(false).await;
+        fullest(&reading.bars).unwrap_or(0.0) >= SOFT_LIMIT_PERCENT
     }
 
     fn remember(&self, session: Option<&str>, account_id: &str) {
@@ -934,7 +934,8 @@ mod tests {
                             used_percent: percent,
                             resets_at: Value::Null,
                             model: String::new(),
-                        }])
+                        }]
+                        .into())
                     })
                 }),
             )

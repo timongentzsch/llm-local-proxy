@@ -125,6 +125,7 @@ CODEX_LIMITS = {
             },
         }
     ],
+    "rate_limit_reset_credits": {"available_count": 2, "applicable_available_count": 2},
 }
 
 CLAUDE_USAGE = {

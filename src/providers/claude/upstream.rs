@@ -314,26 +314,50 @@ pub fn limits(value: &Value) -> Result<Vec<Limit>> {
             });
         }
     }
-    // Model-scoped weekly caps (e.g. one model's own allowance) appear only
-    // in this list; the unscoped session and weekly entries repeat the above.
+    // Model-scoped caps (e.g. one model's own weekly allowance) appear only
+    // in this list; its unscoped session and weekly entries repeat the above.
+    // A model can hold more than one, told apart by the window its kind names.
+    let mut seen = Vec::new();
     for entry in get(value, "limits").as_array().into_iter().flatten() {
-        if !entry.is_object() || get(entry, "kind") != "weekly_scoped" {
-            continue;
-        }
         let model = get(get(entry, "scope"), "model");
         let name = [get(model, "display_name"), get(model, "id")]
             .into_iter()
-            .find(|name| truthy(name));
-        if let (Some(name), Some(used)) = (name, number(get(entry, "percent"))) {
-            items.push(Limit {
-                label: format!("{} {}", py_str(name), window_label("7d")),
-                used_percent: used,
-                resets_at: get(entry, "resets_at").clone(),
-                model: py_str(name),
-            });
+            .find(|name| truthy(name))
+            .map(py_str);
+        let (Some(name), Some(used)) = (name, number(get(entry, "percent"))) else {
+            continue;
+        };
+        let kind = get(entry, "kind").as_str().unwrap_or_default();
+        let label = match scoped_window(kind) {
+            "" => name.clone(),
+            window => format!("{name} {window}"),
+        };
+        if seen.contains(&label) {
+            continue;
         }
+        seen.push(label.clone());
+        items.push(Limit {
+            label,
+            used_percent: used,
+            resets_at: get(entry, "resets_at").clone(),
+            model: name,
+        });
     }
     Ok(items)
+}
+
+/// The window a scoped limit's kind names ("weekly_scoped", "five_hour_scoped").
+fn scoped_window(kind: &str) -> &'static str {
+    let kind = kind.to_ascii_lowercase();
+    if kind.contains("month") {
+        "monthly"
+    } else if kind.contains("week") || kind.contains("day") {
+        "weekly"
+    } else if kind.contains("hour") || kind.contains("session") {
+        "5 hour"
+    } else {
+        ""
+    }
 }
 
 /// Log the block shape of every turn when upstream refuses a signed one.
@@ -553,11 +577,18 @@ mod tests {
             "limits": [
                 {"kind": "weekly_scoped", "percent": 7, "scope": {"model": {"display_name": "Opus"}}},
                 {"kind": "session", "percent": 12.5},
+                {"kind": "weekly_all", "percent": 40, "scope": null},
+                {"kind": "five_hour_scoped", "percent": 3, "scope": {"model": {"id": "opus"}}},
+                {"kind": "weekly_scoped", "percent": 9, "scope": {"model": {"display_name": "Opus"}}},
+                {"kind": "novel", "percent": 1, "scope": {"model": {"display_name": "Fable"}}},
             ],
         }))
         .unwrap();
         let labels: Vec<&str> = bars.iter().map(|bar| bar.label.as_str()).collect();
-        assert_eq!(labels, ["5 hour", "weekly", "Opus weekly"]);
+        assert_eq!(
+            labels,
+            ["5 hour", "weekly", "Opus weekly", "opus 5 hour", "Fable"]
+        );
         assert_eq!(bars[2].model, "Opus");
         assert_eq!(bars[0].used_percent, 12.5);
         assert!(limits(&json!({"five_hour": {"utilization": true}}))

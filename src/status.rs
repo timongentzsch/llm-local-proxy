@@ -27,6 +27,8 @@ pub struct AccountStatus {
     /// One-line account description (e.g. "user@example.com · pro").
     pub account: String,
     pub limits: Vec<Limit>,
+    /// Account facts beside the bars, e.g. limit resets still unspent.
+    pub notes: Vec<String>,
     /// Token ledger windows: `{"5h": {"input": .., "output": .., ...}, ...}`.
     pub tokens: Value,
     /// When the usage numbers were last observed, epoch seconds.
@@ -49,6 +51,7 @@ impl AccountStatus {
                 "resets_at": limit.resets_at,
                 "model": limit.model,
             })).collect::<Vec<_>>(),
+            "notes": self.notes,
             "tokens": if self.tokens.is_null() { json!({}) } else { self.tokens.clone() },
             "updated_at": self.updated_at,
             "error": self.error,
