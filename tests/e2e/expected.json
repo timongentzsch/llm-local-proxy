@@ -4794,6 +4794,26 @@
    "body": null,
    "has_request_id": false,
    "headers": {
+    "accept": "*/*"
+   },
+   "method": "GET",
+   "path": "/claude-code-releases/latest",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": null,
+   "has_request_id": false,
+   "headers": {
+    "accept": "*/*"
+   },
+   "method": "GET",
+   "path": "/repos/openai/codex/releases/latest",
+   "user_agent": "llm-local-proxy"
+  },
+  {
+   "body": null,
+   "has_request_id": false,
+   "headers": {
     "accept": "application/json",
     "anthropic-beta": "oauth-2025-04-20",
     "anthropic-version": "2023-06-01",
@@ -4863,7 +4883,7 @@
     "chatgpt-account-id": "acct-e2e"
    },
    "method": "GET",
-   "path": "/backend-api/codex/models?client_version=0.160.0",
+   "path": "/backend-api/codex/models?client_version=0.172.0",
    "user_agent": "llm-local-proxy"
   },
   {
@@ -4875,7 +4895,7 @@
     "chatgpt-account-id": "acct-e2e"
    },
    "method": "GET",
-   "path": "/backend-api/codex/models?client_version=0.160.0",
+   "path": "/backend-api/codex/models?client_version=0.172.0",
    "user_agent": "llm-local-proxy"
   },
   {
@@ -8549,6 +8569,14 @@
    "accounts": [
     "1"
    ]
+  },
+  "config/claude-client-version.json": {
+   "version": "2.1.331",
+   "checked_at": "<time>"
+  },
+  "config/codex-client-version.json": {
+   "version": "0.172.0",
+   "checked_at": "<time>"
   },
   "config/keys.json": {
    "keys": {}

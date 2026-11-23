@@ -5,23 +5,16 @@ use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-/// The backend lists models per client version; raise this (or set
-/// `codex_client_version`) when a newer model does not show up.
-const CODEX_CLIENT_VERSION: &str = "0.160.0";
-/// The subscription refuses newer models to older Claude Code versions;
-/// raise this (or set `claude_client_version`) when it asks for an update.
-const CLAUDE_CLIENT_VERSION: &str = "2.1.292";
-
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
     pub port: u16,
     pub api_key: String,
-    /// The Claude Code version requests to the subscription claim.
+    /// The Claude Code version to report, or "auto" to follow releases.
     pub claude_client_version: String,
     /// Where each Codex slot keeps its `auth.json` (`accounts/<slot>/`).
     pub codex_home: PathBuf,
-    /// The Codex CLI version the model list is requested for.
+    /// The Codex CLI version to report, or "auto" to follow releases.
     pub codex_client_version: String,
     /// Seconds an upstream may stay silent before the request fails.
     pub request_timeout: u64,
@@ -169,9 +162,9 @@ pub fn load(path: Option<&Path>) -> Result<Config, String> {
         host,
         port: port_number,
         api_key,
-        claude_client_version: string(&data, "claude_client_version", CLAUDE_CLIENT_VERSION),
+        claude_client_version: string(&data, "claude_client_version", "auto"),
         codex_home: expand_user(&string(&data, "codex_home", "~/.codex")),
-        codex_client_version: string(&data, "codex_client_version", CODEX_CLIENT_VERSION),
+        codex_client_version: string(&data, "codex_client_version", "auto"),
         request_timeout: integer(&data, "request_timeout", 600)?.max(1) as u64,
         path: resolved,
         public_host: string(&data, "public_host", "127.0.0.1"),

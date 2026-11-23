@@ -11,6 +11,7 @@
 //! the part `tests/conformance.rs` replays recorded cases against.
 
 pub mod atomic;
+pub mod client_version;
 pub mod config;
 pub mod dialects;
 pub mod error;

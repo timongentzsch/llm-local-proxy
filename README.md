@@ -88,9 +88,14 @@ the `proxy-config` volume). Use `--config PATH` for another file and
 | `api_key` | generated | The master key. Empty turns authentication off. |
 | `request_timeout` | `600` | Seconds an upstream may stay silent. |
 | `codex_home` | `~/.codex` | Where Codex logins are kept. |
-| `claude_client_version` | `2.1.292` | Raise it if Claude asks for a newer Claude Code. |
-| `codex_client_version` | `0.160.0` | Raise it if a new GPT model is missing from the list. |
+| `claude_client_version` | `"auto"` | Follow the latest Claude Code release or set a version to pin it. |
+| `codex_client_version` | `"auto"` | Follow the latest Codex CLI release or set a version to pin it. |
 | `public_host`, `public_port`, `public_url` | off | The listener for other machines; see below. |
+
+Automatic versions are checked at startup when the cache is missing or older
+than 24 hours, then refreshed daily while the proxy runs. If a check fails,
+the proxy keeps the last successful version or uses the bundled fallback on
+a fresh install.
 
 ## Sharing it
 

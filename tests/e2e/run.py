@@ -440,6 +440,7 @@ VOLATILE = [
     (re.compile(r"/tmp/[^\"' ]*"), "<tmp>"),
 ]
 VOLATILE_KEYS = {
+    "checked_at",
     "created",
     "created_at",
     "updated_at",

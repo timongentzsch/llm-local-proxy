@@ -4,6 +4,7 @@
 //! catalog, the status cards, health. It is deliberately transport-free --
 //! nothing here knows about HTTP -- and provider-agnostic.
 
+use crate::client_version::{ClientVersion, CLAUDE, CODEX};
 use crate::config::Config;
 use crate::dialects::DIALECTS;
 use crate::error::Result;
@@ -29,20 +30,22 @@ impl Service {
         let directory = config.directory().to_path_buf();
         let http = transport::client(Duration::from_secs(config.request_timeout));
         let ids = ids::random();
-        let claude = Claude::new(
-            &directory,
-            &config.claude_client_version,
-            http.clone(),
-            ids.clone(),
-        )
-        .await?;
-        let codex = Codex::new(
-            &directory,
-            &config.codex_home,
-            &config.codex_client_version,
-            http,
-        )
-        .await?;
+        let (claude_version, codex_version) = tokio::join!(
+            ClientVersion::resolve(
+                &config.claude_client_version,
+                CLAUDE,
+                &directory,
+                http.clone()
+            ),
+            ClientVersion::resolve(
+                &config.codex_client_version,
+                CODEX,
+                &directory,
+                http.clone()
+            ),
+        );
+        let claude = Claude::new(&directory, claude_version, http.clone(), ids.clone()).await?;
+        let codex = Codex::new(&directory, &config.codex_home, codex_version, http).await?;
         Ok(Service {
             keys: KeyStore::new(directory.join("keys.json")),
             providers: vec![Arc::new(claude), Arc::new(codex)],

@@ -2,6 +2,7 @@
 
 use super::auth::{ClaudeAuth, OAUTH_BETA};
 use super::usage::ClaudeUsage;
+use crate::client_version::ClientVersion;
 use crate::error::{Error, Result};
 use crate::ids::{self, SharedIds};
 use crate::json::{get, py_str, truthy, Object};
@@ -36,8 +37,7 @@ pub struct ClaudeUpstream {
     pub ledger: Arc<TokenLedger>,
     http: reqwest::Client,
     ids: SharedIds,
-    /// The subscription accepts the Claude Code client user agent.
-    user_agent: String,
+    client_version: ClientVersion,
 }
 
 impl ClaudeUpstream {
@@ -46,15 +46,20 @@ impl ClaudeUpstream {
         http: reqwest::Client,
         ledger: Arc<TokenLedger>,
         ids: SharedIds,
-        client_version: &str,
+        client_version: impl Into<ClientVersion>,
     ) -> Self {
         ClaudeUpstream {
             auth,
             ledger,
             http,
             ids,
-            user_agent: format!("claude-cli/{client_version} (external, sdk-cli)"),
+            client_version: client_version.into(),
         }
+    }
+
+    fn user_agent(&self) -> String {
+        let version = self.client_version.current();
+        format!("claude-cli/{version} (external, sdk-cli)")
     }
 
     pub async fn models(&self) -> Result<Vec<Value>> {
@@ -171,7 +176,7 @@ impl ClaudeUpstream {
                 .header("Accept", "application/json")
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", OAUTH_BETA)
-                .header("User-Agent", &self.user_agent);
+                .header("User-Agent", self.user_agent());
             if let Some(timeout) = timeout {
                 request = request.timeout(timeout);
             }
@@ -229,7 +234,7 @@ impl ClaudeUpstream {
                 .header("Accept", "application/json")
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("anthropic-beta", betas)
-                .header("User-Agent", &self.user_agent)
+                .header("User-Agent", self.user_agent())
                 .header("x-app", "cli")
                 .header("x-client-request-id", ids::hex(self.ids.as_ref()))
                 .body(payload.clone())

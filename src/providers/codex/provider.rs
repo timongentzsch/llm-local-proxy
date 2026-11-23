@@ -5,6 +5,7 @@ use super::catalog::catalog;
 use super::events::CodexDecoder;
 use super::request::build;
 use super::upstream::{accepted, Upstream};
+use crate::client_version::ClientVersion;
 use crate::error::{Error, Result};
 use crate::ir::{ChatRequest, Decoder};
 use crate::json::{get, py_str, truthy, Object};
@@ -24,7 +25,7 @@ pub struct CodexBackend {
     codex_home: PathBuf,
     /// The CLI version the model list is asked for; the backend offers a
     /// client only the models that version can drive.
-    client_version: String,
+    client_version: ClientVersion,
     http: reqwest::Client,
 }
 
@@ -72,7 +73,7 @@ impl Backend for CodexBackend {
         &self,
         account: Arc<Account<Client>>,
     ) -> BoxFuture<'static, Result<Vec<Value>>> {
-        let client_version = self.client_version.clone();
+        let client_version = self.client_version.current();
         Box::pin(async move {
             let upstream = &account.client;
             let models = upstream.auth.models(&client_version).await?;
@@ -126,13 +127,13 @@ impl Codex {
     pub async fn new(
         directory: &Path,
         codex_home: &Path,
-        client_version: &str,
+        client_version: impl Into<ClientVersion>,
         http: reqwest::Client,
     ) -> Result<Self> {
         let backend = CodexBackend {
             directory: directory.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
-            client_version: client_version.to_string(),
+            client_version: client_version.into(),
             http,
         };
         Ok(Codex {

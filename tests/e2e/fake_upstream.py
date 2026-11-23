@@ -382,9 +382,11 @@ class Handler(BaseHTTPRequestHandler):
             file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def _json(self, status, value):
-        data = json.dumps(value).encode()
+        self._reply(status, json.dumps(value).encode(), "application/json")
+
+    def _reply(self, status, data, content_type):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -405,6 +407,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._record(None)
+        if self.path == "/repos/openai/codex/releases/latest":
+            return self._json(200, {"tag_name": "rust-v0.172.0"})
+        if self.path == "/claude-code-releases/latest":
+            return self._reply(200, b"2.1.331\n", "text/plain")
         if self.headers.get("Authorization") == "Bearer at-stale":
             return self._json(401, {"error": {"message": "token expired"}})
         if self.path.startswith("/backend-api/codex/models"):

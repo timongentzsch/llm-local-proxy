@@ -5,6 +5,7 @@ use super::catalog::model_info;
 use super::events::ClaudeDecoder;
 use super::request::{build, Options};
 use super::upstream::ClaudeUpstream;
+use crate::client_version::ClientVersion;
 use crate::error::{Error, Result};
 use crate::ids::SharedIds;
 use crate::ir::{ChatRequest, Decoder};
@@ -34,7 +35,7 @@ const COUNTED_FIELDS: [&str; 7] = [
 
 pub struct ClaudeBackend {
     directory: PathBuf,
-    client_version: String,
+    client_version: ClientVersion,
     http: reqwest::Client,
     ids: SharedIds,
 }
@@ -55,7 +56,7 @@ impl Backend for ClaudeBackend {
             self.http.clone(),
             ledger.clone(),
             self.ids.clone(),
-            &self.client_version,
+            self.client_version.clone(),
         ));
         let reader = upstream.clone();
         let limits = LimitsStore::new(
@@ -124,13 +125,13 @@ pub struct Claude {
 impl Claude {
     pub async fn new(
         directory: &Path,
-        client_version: &str,
+        client_version: impl Into<ClientVersion>,
         http: reqwest::Client,
         ids: SharedIds,
     ) -> Result<Self> {
         let backend = ClaudeBackend {
             directory: directory.to_path_buf(),
-            client_version: client_version.to_string(),
+            client_version: client_version.into(),
             http,
             ids: ids.clone(),
         };
