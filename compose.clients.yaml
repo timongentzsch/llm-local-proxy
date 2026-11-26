@@ -1,0 +1,17 @@
+# Lets containers of another Compose project on this Docker host reach the
+# public listener, by name, without publishing it on the host:
+#   LLM_PROXY_CLIENT_NETWORK=<their network> \
+#     docker compose -f compose.yaml -f compose.clients.yaml up -d
+# They call http://llm-proxy:<public_port>/v1 with a named key.
+services:
+  proxy:
+    networks:
+      default:
+      clients:
+        aliases:
+          - llm-proxy
+
+networks:
+  clients:
+    external: true
+    name: ${LLM_PROXY_CLIENT_NETWORK:?the Docker network of the containers that call the proxy}

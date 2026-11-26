@@ -117,6 +117,18 @@ public_url = "https://mac.example.ts.net"   # how others reach it
   you. Traffic is encrypted and limited to your tailnet.
 - **Direct.** Set `public_host = "0.0.0.0"` (in Docker, also publish the port
   in `compose.yaml`). This is plain HTTP: put a TLS proxy in front of it.
+- **Containers on the same Docker host.** A container cannot use the local
+  listener: its loopback is its own, and the proxy answers only loopback
+  hosts there. Set `public_host = "0.0.0.0"` and start the proxy with
+  `compose.clients.yaml`, naming the other project's network:
+
+  ```sh
+  LLM_PROXY_CLIENT_NETWORK=other_default \
+    docker compose -f compose.yaml -f compose.clients.yaml up -d
+  ```
+
+  Their containers then reach `http://llm-proxy:8788/v1` with a named key.
+  Nothing is published on the host, so only that network can connect.
 
 ## Good to know
 
